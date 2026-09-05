@@ -1,0 +1,8 @@
+/bin/
+/web/node_modules/
+/web/.next/
+/web/out/
+.env
+.env.local
+*.log
+.DS_Store

@@ -1,0 +1,342 @@
+<title>Axiom 图标与动效</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --canvas: #ffffff; --s1: #f7f8fa; --s2: #eef0f4; --s3: #e4e7ee;
+    --hair: #e0e3ec; --hair-strong: #cfd3de;
+    --ink: #16171d; --ink-2: #5b5e6b; --ink-3: #8a8d99;
+    --accent: #5e6ad2; --accent-hover: #4b57c4; --tele: #4d58c8;
+    --ok: #187a31; --warn: #8f5e08; --bad: #c9303a;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --canvas: #010102; --s1: #0d0e13; --s2: #15161d; --s3: #1e2029;
+      --hair: #23252f; --hair-strong: #2f3240;
+      --ink: #f7f8f8; --ink-2: #9a9ca6; --ink-3: #62656f;
+      --accent: #5e6ad2; --accent-hover: #828fff; --tele: #9aa3ff;
+      --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    }
+  }
+  :root[data-theme="dark"] {
+    --canvas: #010102; --s1: #0d0e13; --s2: #15161d; --s3: #1e2029;
+    --hair: #23252f; --hair-strong: #2f3240;
+    --ink: #f7f8f8; --ink-2: #9a9ca6; --ink-3: #62656f;
+    --accent: #5e6ad2; --accent-hover: #828fff; --tele: #9aa3ff;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--canvas); color: var(--ink); font: 15px/1.6 Inter, "PingFang SC", "Noto Sans SC", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+  main { max-width: 1080px; margin: 0 auto; padding: 56px 32px 96px; }
+  .prose { max-width: 720px; }
+  h1 { font-size: 34px; line-height: 1.15; font-weight: 600; letter-spacing: -0.02em; margin: 8px 0 12px; text-wrap: balance; }
+  h2 { font-size: 22px; line-height: 1.25; font-weight: 600; letter-spacing: -0.01em; margin: 64px 0 12px; text-wrap: balance; }
+  h3 { font-size: 15px; font-weight: 600; margin: 28px 0 8px; }
+  p { margin: 0 0 12px; color: var(--ink); }
+  p.lede { font-size: 17px; color: var(--ink-2); }
+  .eyebrow { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--tele); }
+  .muted { color: var(--ink-2); }
+  .small { font-size: 13px; }
+  hr { border: 0; border-top: 1px solid var(--hair); margin: 40px 0; }
+  a { color: var(--accent-hover); }
+  code { font-family: "JetBrains Mono", monospace; font-size: 12.5px; background: var(--s2); padding: 1px 5px; border-radius: 4px; }
+
+  /* 类比表 */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--hair); border-radius: 8px; background: var(--s1); }
+  table { border-collapse: collapse; width: 100%; min-width: 860px; font-size: 13.5px; }
+  th { text-align: left; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; padding: 10px 14px; border-bottom: 1px solid var(--hair-strong); background: var(--s2); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { color: var(--ink-2); }
+  td .term { font-weight: 600; }
+  td .ic { display: inline-flex; vertical-align: middle; margin-right: 6px; }
+
+  /* 图标表 */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .cell { background: var(--s1); border: 1px solid var(--hair); border-radius: 8px; padding: 14px 14px 12px; display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: start; }
+  .cell .big { width: 56px; height: 56px; display: grid; place-items: center; background: var(--s2); border-radius: 6px; }
+  .cell .big svg { width: 32px; height: 32px; }
+  .cell .name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .cell .name svg { width: 16px; height: 16px; color: var(--ink-2); }
+  .cell .src { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+  .cell .why { font-size: 13px; color: var(--ink-2); margin-top: 6px; line-height: 1.5; }
+  svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* 动效样稿 */
+  .demos { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  .demo { background: var(--s1); border: 1px solid var(--hair); border-radius: 8px; padding: 14px; }
+  .demo header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+  .demo header b { font-weight: 600; font-size: 14px; }
+  .demo header span { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-3); }
+  .stage { height: 84px; background: var(--s2); border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 14px; position: relative; overflow: hidden; }
+  .stage svg.i { width: 28px; height: 28px; }
+  .demo p { font-size: 13px; color: var(--ink-2); margin: 10px 0 0; }
+  .btn { font: 500 12px Inter, sans-serif; color: var(--ink); background: var(--s2); border: 1px solid var(--hair-strong); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  .btn:hover { background: var(--s3); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); display: inline-block; }
+  .row { display: flex; align-items: center; gap: 10px; width: 78%; height: 36px; padding: 0 12px; background: var(--s1); border: 1px solid var(--hair); border-radius: 6px; font-size: 13px; position: relative; overflow: hidden; }
+  .row .fill { flex: 1; }
+  .kbd { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-3); }
+
+  /* A 压缩成方块 */
+  .play .cube { animation: compact 420ms var(--ease-out); }
+  .play .cube-led { animation: ledon 420ms var(--ease-out) forwards; }
+  @keyframes compact { 0% { transform: scale(1); } 45% { transform: scale(0.84, 0.86); } 100% { transform: scale(1); } }
+  @keyframes ledon { 0%, 45% { background: var(--ink-3); box-shadow: none; } 60%, 100% { background: var(--ok); box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); } }
+  /* B 发芽 */
+  .sprout path { stroke-dasharray: 40; stroke-dashoffset: 0; }
+  .play .sprout .stem, .play .sprout .leaf { stroke-dashoffset: 40; animation: draw 480ms var(--ease-out) forwards; }
+  .play .sprout .leaf { animation-delay: 160ms; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .play .glow { animation: glow 700ms var(--ease-out); }
+  @keyframes glow { 30% { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--ok) 80%, transparent)); } 100% { filter: none; } }
+  /* C 上线充电 */
+  .ring { stroke-dasharray: 66; stroke-dashoffset: 66; }
+  .play .ring { animation: fillring 520ms var(--ease-out) forwards; }
+  @keyframes fillring { to { stroke-dashoffset: 0; } }
+  .play .eye { animation: eyeon 200ms 480ms linear forwards; opacity: 0.25; }
+  @keyframes eyeon { to { opacity: 1; } }
+  .busy .eye-l { animation: blink 1.4s infinite; } .busy .eye-r { animation: blink 1.4s 0.7s infinite; }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  /* D 领取 */
+  .pile { transition: transform 240ms var(--ease-out), opacity 240ms; }
+  .play .pile { transform: translateX(120px); opacity: 0; }
+  .play .picked { animation: slidein 260ms 120ms var(--ease-out) both; }
+  @keyframes slidein { from { transform: translateX(-24px); opacity: 0; } to { transform: none; opacity: 1; } }
+  /* E 扫描 */
+  .scan::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 22%, transparent) 50%, transparent); transform: translateX(-100%); }
+  .play .scan::after { animation: sweep 320ms var(--ease-in-out) forwards; }
+  @keyframes sweep { to { transform: translateX(100%); } }
+  .play .scanline { animation: scanline 320ms var(--ease-in-out); }
+  @keyframes scanline { 0% { transform: translateY(-6px); } 100% { transform: translateY(6px); } }
+  /* F 舵轮 */
+  .helm { transition: transform 240ms var(--ease-out); }
+  .play .helm { transform: rotate(90deg); }
+  .play .helm-led { animation: ledon 300ms forwards; }
+  /* G 信标 */
+  .play .beacon { animation: beacon 900ms linear; }
+  @keyframes beacon { 0%, 40%, 100% { opacity: 0.35; } 10%, 30% { opacity: 1; } }
+  /* H 逾期 */
+  .overdue { animation: overdue 5s infinite; background: var(--bad); }
+  @keyframes overdue { 0%, 100% { opacity: 1; } 4% { opacity: 0.2; } 8% { opacity: 1; } 12% { opacity: 0.2; } 16%, 100% { opacity: 1; } }
+  /* I 环绕 */
+  .orbit { animation: orbit 12s linear infinite; transform-origin: 12px 12px; }
+  @keyframes orbit { to { transform: rotate(360deg); } }
+  /* J 数字滚动（简化：一位） */
+  .odo { display: inline-flex; overflow: hidden; height: 24px; font-family: "JetBrains Mono", monospace; font-size: 22px; line-height: 24px; }
+  .odo .col { display: flex; flex-direction: column; transition: transform 160ms var(--ease-out); }
+  .play .odo .col.r { transform: translateY(-24px); }
+
+  .rules { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .rules > div { background: var(--s1); border: 1px solid var(--hair); border-radius: 8px; padding: 14px 16px; }
+  .rules ul { margin: 6px 0 0; padding-left: 18px; font-size: 13.5px; color: var(--ink-2); }
+  .rules li { margin: 4px 0; }
+  ol.plan { padding-left: 20px; }
+  ol.plan li { margin: 6px 0; }
+  @media (max-width: 720px) { .rules { grid-template-columns: 1fr; } main { padding: 32px 18px 64px; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; } }
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- 目标：靴中的芽 -->
+    <symbol id="ic-goal" viewBox="0 0 24 24"><path d="M7 14h10l-1 6H8z"/><path d="M12 14v-4"/><path d="M12 10c0-3 2-4 4-4-0 2.5-1.5 4-4 4z"/><path d="M12 12c0-2.5-1.7-3.5-3.5-3.5 0 2.2 1.5 3.5 3.5 3.5z"/></symbol>
+    <!-- 任务：方块 -->
+    <symbol id="ic-task" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></symbol>
+    <!-- 进行中：正在压缩 -->
+    <symbol id="ic-task-active" viewBox="0 0 24 24"><path d="M12 5l6 3.5v7L12 19l-6-3.5v-7z"/><path d="M6 8.5l6 3.5 6-3.5"/><path d="M12 12v7"/><path d="M3 12h1.5M19.5 12H21M12 2v1.5M12 20.5V22"/></symbol>
+    <!-- 待领取：方块堆 -->
+    <symbol id="ic-backlog" viewBox="0 0 24 24"><path d="M4 14h6v6H4zM14 14h6v6h-6zM9 6h6v6H9z"/></symbol>
+    <!-- Agent：视窗 -->
+    <symbol id="ic-agent" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="6"/><circle cx="9" cy="12" r="1.2" fill="currentColor" stroke="none" class="eye eye-l"/><circle cx="15" cy="12" r="1.2" fill="currentColor" stroke="none" class="eye eye-r"/></symbol>
+    <!-- 成员 -->
+    <symbol id="ic-member" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6"/></symbol>
+    <!-- 验收：扫描 -->
+    <symbol id="ic-accept" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.5"/><path d="M5 12h14" class="scanline"/></symbol>
+    <!-- 待确认操作：舵轮 -->
+    <symbol id="ic-approve" viewBox="0 0 24 24"><g class="helm" style="transform-origin:12px 12px"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="1.5"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M18.4 5.6l-2.2 2.2M7.8 16.2l-2.2 2.2"/></g></symbol>
+    <!-- 执行记录：进度环中的播放 -->
+    <symbol id="ic-run" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 1-6.4 2.6" class="ring-path"/><path d="M10 9l5 3-5 3z"/></symbol>
+    <!-- 用量：太阳能电池 -->
+    <symbol id="ic-usage" viewBox="0 0 24 24"><rect x="3" y="10" width="16" height="9" rx="2"/><path d="M19 13h2v3h-2"/><path d="M6 13v3M9.5 13v3M13 13v3"/><path d="M12 3v2M8.5 4.5l1.2 1.5M15.5 4.5l-1.2 1.5"/></symbol>
+    <!-- Bug：异物与刷子 -->
+    <symbol id="ic-bug" viewBox="0 0 24 24"><rect x="4" y="13" width="10" height="4" rx="1"/><path d="M5 17v3M8 17v3M11 17v3M13 17v3"/><path d="M14 13l4-6"/><circle cx="19" cy="6" r="1.6" fill="currentColor" stroke="none"/></symbol>
+    <!-- 关联（发现于）：痕迹 -->
+    <symbol id="ic-trail" viewBox="0 0 24 24"><circle cx="5" cy="17" r="1.2" fill="currentColor" stroke="none"/><circle cx="9.5" cy="13" r="1.2" fill="currentColor" stroke="none"/><circle cx="14" cy="10" r="1.2" fill="currentColor" stroke="none"/><path d="M17 7h3v3"/><path d="M20 7l-3 3"/></symbol>
+    <!-- 阻塞：链 -->
+    <symbol id="ic-blocks" viewBox="0 0 24 24"><path d="M10 14a3.5 3.5 0 0 1 0-5l2-2a3.5 3.5 0 0 1 5 5l-1 1"/><path d="M14 10a3.5 3.5 0 0 1 0 5l-2 2a3.5 3.5 0 0 1-5-5l1-1"/></symbol>
+    <!-- 逾期 -->
+    <symbol id="ic-overdue" viewBox="0 0 24 24"><circle cx="11" cy="13" r="7"/><path d="M11 9v4l2.5 1.5"/><circle cx="19" cy="5" r="2" fill="currentColor" stroke="none"/></symbol>
+    <!-- 已取消：气闸 -->
+    <symbol id="ic-cancel" viewBox="0 0 24 24"><path d="M4 5v14h9"/><path d="M4 5h9"/><path d="M12 12h9M17 8l4 4-4 4"/></symbol>
+    <!-- 通知：信标 -->
+    <symbol id="ic-notify" viewBox="0 0 24 24"><circle cx="12" cy="14" r="2" fill="currentColor" stroke="none" class="beacon"/><path d="M8 10a5.5 5.5 0 0 1 8 0"/><path d="M5.5 7.5a9 9 0 0 1 13 0"/><path d="M12 16v4"/></symbol>
+    <!-- 协作：双星环绕 -->
+    <symbol id="ic-collab" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" stroke-dasharray="2 3"/><g class="orbit"><circle cx="12" cy="4" r="1.8" fill="currentColor" stroke="none"/><circle cx="12" cy="20" r="1.8" fill="currentColor" stroke="none" style="opacity:.5"/></g></symbol>
+    <!-- 甘特图：航线 -->
+    <symbol id="ic-gantt" viewBox="0 0 24 24"><path d="M4 7h9"/><path d="M9 12h9"/><path d="M6 17h7"/><path d="M13 7l-4 5M18 12l-5 5" stroke-dasharray="1.5 2"/></symbol>
+    <!-- 动态：磁带 -->
+    <symbol id="ic-log" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="8.5" cy="12" r="2"/><circle cx="15.5" cy="12" r="2"/><path d="M8.5 15.5h7"/></symbol>
+    <!-- 组织：客轮剪影 -->
+    <symbol id="ic-org" viewBox="0 0 24 24"><path d="M3 15h15a3 3 0 0 0 3-3v0a2 2 0 0 0-2-2H6l-3 5z"/><path d="M8 10V8h7v2"/><path d="M11 8V6"/><path d="M6 15l-2 3h14"/></symbol>
+  </defs>
+</svg>
+
+<main>
+  <div class="eyebrow">AXIOMOS · 设计提案 · 2026-09-04</div>
+  <h1>Axiom 图标与动效</h1>
+  <div class="prose">
+    <p class="lede">《机器人总动员》里，每台机器人都有一条指令，人类船长握着最终的舵。这与 AI 原生组织的结构完全同构：Agent 各有能力标签与任务，人负责目标、验收与批准。下面把这套设定翻译成一组图标和一组动效，每一个都对应系统里一个真实概念或真实状态。</p>
+    <p class="muted small">规则先说在前面：类比只用于设计推导，界面上仍然只出现《CONTEXT.md》里的词。用户看到的是「目标」「待确认操作」「验收」，不是「植物」「舵轮」「扫描」。装饰不占信息空间，动效只在状态真正变化时发生。</p>
+  </div>
+
+  <h2>一、设定与组织的类比</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>电影设定</th><th>它在故事里的含义</th><th>AI 原生组织里的对应</th><th>系统概念</th><th>图标 / 动效</th></tr></thead>
+      <tbody>
+        <tr><td>Axiom 号</td><td>整个人类生活其中的载体</td><td>组织本身，一切在其中运转</td><td class="term">组织</td><td><span class="ic"><svg class="i"><use href="#ic-org"/></svg></span>客轮剪影（默认组织头像）</td></tr>
+        <tr><td>船长站起来接管舵轮</td><td>Human in the Loop 的决定性一刻</td><td>人对 Agent 提议的最终批准</td><td class="term">待确认操作</td><td><span class="ic"><svg class="i"><use href="#ic-approve"/></svg></span>舵轮 · 批准时转四分之一圈</td></tr>
+        <tr><td>AUTO（自动驾驶）</td><td>忠实执行指令、需要被人约束的自动化</td><td>Agent 的有效权限 = 所有者权限 ∩ 授权</td><td class="term">授权</td><td>不做图标；用「舵轮」的反面：授权页始终显示谁握着舵</td></tr>
+        <tr><td>WALL·E 压缩垃圾成方块</td><td>一次一块，700 年不停</td><td>把工作压成可交付的单位</td><td class="term">任务 / 交付物</td><td><span class="ic"><svg class="i"><use href="#ic-task"/></svg></span>方块 · 完成时"压实"</td></tr>
+        <tr><td>成堆的方块塔</td><td>等着处理的工作</td><td>公开的待领取池</td><td class="term">待领取任务</td><td><span class="ic"><svg class="i"><use href="#ic-backlog"/></svg></span>方块堆 · 领取时滑出一块</td></tr>
+        <tr><td>EVE 的扫描</td><td>寻找并确认"生命迹象"</td><td>验收：确认结果是真的</td><td class="term">验收</td><td><span class="ic"><svg class="i"><use href="#ic-accept"/></svg></span>扫描 · 进入待验收时扫一次</td></tr>
+        <tr><td>靴子里的植物</td><td>目标达成的证据</td><td>目标完成、交付物被验收</td><td class="term">目标</td><td><span class="ic"><svg class="i"><use href="#ic-goal"/></svg></span>靴中的芽 · 完成时长出叶子</td></tr>
+        <tr><td>每台机器人的指令</td><td>身份 = 能做什么</td><td>Agent 的能力标签与登记</td><td class="term">Agent</td><td><span class="ic"><svg class="i"><use href="#ic-agent"/></svg></span>视窗 · 双点表示状态</td></tr>
+        <tr><td>WALL·E 清晨晒太阳充电</td><td>上线的仪式感</td><td>Agent 心跳、在线</td><td class="term">在线</td><td>上线时外环充满一圈；心跳是 3s 呼吸</td></tr>
+        <tr><td>M-O 追着污渍擦</td><td>对"异物"零容忍</td><td>缺陷追踪、发现于</td><td class="term">Bug / 关联</td><td><span class="ic"><svg class="i"><use href="#ic-bug"/></svg></span>刷子与异物 · <span class="ic"><svg class="i"><use href="#ic-trail"/></svg></span>痕迹</td></tr>
+        <tr><td>太阳能电量表</td><td>能做多少事取决于电</td><td>用量、成本、预算</td><td class="term">用量 / 成本</td><td><span class="ic"><svg class="i"><use href="#ic-usage"/></svg></span>太阳能电池 · 数字滚动</td></tr>
+        <tr><td>垃圾气闸</td><td>丢弃</td><td>取消任务、注销</td><td class="term">已取消</td><td><span class="ic"><svg class="i"><use href="#ic-cancel"/></svg></span>气闸 · 行向右滑出</td></tr>
+        <tr><td>WALL·E 与 EVE 在星海中共舞</td><td>人机协作的高光时刻</td><td>人与 Agent 的交接、协作</td><td class="term">参与角色 / 交接</td><td><span class="ic"><svg class="i"><use href="#ic-collab"/></svg></span>双星环绕（舰徽同源）</td></tr>
+        <tr><td>船长的每日广播</td><td>今天是第 255,642 天</td><td>首页的今日摘要</td><td class="term">首页</td><td>状态栏时钟与今日读数，不加图标</td></tr>
+        <tr><td>Hello, Dolly! 录像带</td><td>被珍藏的记录</td><td>动态、评论、工作日志</td><td class="term">动态</td><td><span class="ic"><svg class="i"><use href="#ic-log"/></svg></span>磁带</td></tr>
+        <tr><td>航线</td><td>去哪、什么时候到</td><td>计划与实际</td><td class="term">甘特图</td><td><span class="ic"><svg class="i"><use href="#ic-gantt"/></svg></span>航线</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted small" style="margin-top:10px">有意不做类比的：躺在悬浮椅上的乘客（这是反面教材，系统的目标是让人保持在决策位上）、BnL 公司、机器人修理舱。</p>
+
+  <h2>二、签名图标（20 枚）</h2>
+  <div class="prose"><p>整套图标沿用 Linear 式规格：24 网格、1.5px 描边、圆角端点、单色随文字色。只有这 20 枚是"签名"图标，承载类比；其余（设置、搜索、筛选、关闭……）直接用 Lucide，不另画。每枚都在 16px 与 32px 两个尺寸下检查过可辨识度。</p></div>
+  <div class="grid">
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-goal"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-goal"/></svg>目标</div><div class="src">靴子里的植物</div><div class="why">目标是"证据"而不是口号。未完成时只有芽，完成后长出叶子。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-task"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-task"/></svg>任务</div><div class="src">压实的方块</div><div class="why">一个可交付的工作单位。侧栏、列表、命令面板统一用它。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-task-active"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-task-active"/></svg>进行中</div><div class="src">正在压缩</div><div class="why">四周的短线表示"正在被压实"；只用于状态标记，不进导航。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-backlog"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-backlog"/></svg>待领取任务</div><div class="src">方块堆</div><div class="why">等着被领走的工作。领取动效从这里"取走一块"。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-agent"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-agent"/></svg>Agent</div><div class="src">视窗与双点</div><div class="why">双点是状态语言：在线常亮、执行中交替、离线变暗。不画脸、不做表情。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-member"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-member"/></svg>成员</div><div class="src">现有头像</div><div class="why">保持通用人形，与 Agent 的视窗形成"人 / 机"对照。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-accept"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-accept"/></svg>验收</div><div class="src">EVE 的扫描</div><div class="why">中线是扫描线；进入待验收时扫一次，通过后中线消失。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-approve"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-approve"/></svg>待确认操作</div><div class="src">船长的舵轮</div><div class="why">Agent 提议，人来转舵。批准时转四分之一圈，拒绝时回正。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-run"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-run"/></svg>执行记录</div><div class="src">进度环中的播放</div><div class="why">环表示一段执行的进度，缺口处是尚未完成的部分。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-usage"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-usage"/></svg>用量 / 成本</div><div class="src">太阳能电池</div><div class="why">电量就是预算；三格随预算使用比例变化。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-bug"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-bug"/></svg>Bug</div><div class="src">M-O 的刷子与异物</div><div class="why">异物是那个点，刷子是处理它的动作。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-trail"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-trail"/></svg>发现于</div><div class="src">追踪的痕迹</div><div class="why">从 Bug 追溯到它出现的需求或发布。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-blocks"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-blocks"/></svg>阻塞</div><div class="src">链</div><div class="why">通用链环，前置被取消时链自动断开（动效）。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-overdue"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-overdue"/></svg>逾期</div><div class="src">时钟加告警灯</div><div class="why">右上的点是 LED，沿用"双闪后休息 4 秒"的节律。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-cancel"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-cancel"/></svg>已取消</div><div class="src">气闸</div><div class="why">送出去，不是删除；记录仍在。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-notify"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-notify"/></svg>通知</div><div class="src">桅顶信标</div><div class="why">有新通知时信标闪两下，不摇铃铛。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-collab"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-collab"/></svg>参与角色 / 交接</div><div class="src">双星环绕</div><div class="why">与登录页舰徽同源，人与 Agent 各是一颗，围着同一个任务转。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-gantt"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-gantt"/></svg>甘特图</div><div class="src">航线</div><div class="why">实线是计划，虚线是前后依赖。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-log"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-log"/></svg>动态</div><div class="src">录像带</div><div class="why">被记录下来的事；与舰桥日志的等宽时间戳搭配。</div></div></div>
+    <div class="cell"><div class="big"><svg class="i"><use href="#ic-org"/></svg></div><div><div class="name"><svg class="i"><use href="#ic-org"/></svg>组织</div><div class="src">客轮剪影</div><div class="why">只作默认组织头像与后台组织列表，不进导航。</div></div></div>
+  </div>
+
+  <h2>三、动效样稿</h2>
+  <div class="prose"><p>动效只在状态真正变化时发生，时长不超过 240ms（唯一例外是慢速环境动效）。每条都写明触发条件；点「播放」看效果。</p></div>
+  <div class="demos">
+    <div class="demo" data-demo><header><b>任务完成 · 压实</b><span>420ms</span></header>
+      <div class="stage"><svg class="i cube" style="transform-origin:center"><use href="#ic-task"/></svg><span class="led cube-led"></span></div>
+      <p>触发：任务进入成功终态。方块先收缩 15% 再回弹，LED 转为绿色。像 WALL·E 压完一块。</p><button class="btn">播放</button></div>
+    <div class="demo" data-demo><header><b>目标完成 · 发芽</b><span>480ms</span></header>
+      <div class="stage"><svg class="i sprout glow" viewBox="0 0 24 24" style="width:36px;height:36px"><path d="M7 14h10l-1 6H8z"/><path class="stem" d="M12 14v-4"/><path class="leaf" d="M12 10c0-3 2-4 4-4-0 2.5-1.5 4-4 4z"/><path class="leaf" d="M12 12c0-2.5-1.7-3.5-3.5-3.5 0 2.2 1.5 3.5 3.5 3.5z"/></svg></div>
+      <p>触发：目标进度到 100%，且全部子任务验收通过。茎先长、叶后展，一次绿色微光。上级目标的仪表随后扫动。</p><button class="btn">播放</button></div>
+    <div class="demo" data-demo><header><b>Agent 上线 · 充电</b><span>520ms</span></header>
+      <div class="stage"><svg viewBox="0 0 24 24" style="width:40px;height:40px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round"><circle class="ring" cx="12" cy="12" r="10.5" stroke="var(--ok)"/><rect x="5" y="8" width="14" height="8" rx="4"/><circle class="eye" cx="9.5" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle class="eye" cx="14.5" cy="12" r="1.1" fill="currentColor" stroke="none"/></svg></div>
+      <p>触发：收到 Agent 第一次心跳。外环顺时针充满，双点随后点亮。之后心跳是 3s 呼吸；离线时 400ms 变灰。</p><button class="btn">播放</button></div>
+    <div class="demo"><header><b>Agent 执行中 · 双点交替</b><span>环境 · 1.4s</span></header>
+      <div class="stage busy"><svg class="i"><use href="#ic-agent"/></svg><span class="kbd">执行中 · 已 12 分钟</span></div>
+      <p>触发：该 Agent 有打开的执行记录。两点交替明暗，幅度 70%，永不同步闪烁。</p></div>
+    <div class="demo" data-demo><header><b>领取任务 · 取走一块</b><span>260ms</span></header>
+      <div class="stage"><svg class="i pile"><use href="#ic-backlog"/></svg><div class="row picked" style="width:60%"><svg class="i" style="width:16px;height:16px"><use href="#ic-task"/></svg><span class="fill">整理 Q3 供应商合同清单</span><span class="kbd">我</span></div></div>
+      <p>触发：从待领取任务点「领取」。方块堆退场，任务行从左滑入"我的任务"。</p><button class="btn">播放</button></div>
+    <div class="demo" data-demo><header><b>进入待验收 · 扫描</b><span>320ms</span></header>
+      <div class="stage"><div class="row scan"><svg class="i" style="width:16px;height:16px"><use href="#ic-accept"/></svg><span class="fill">登录页视觉与交互改版</span><span class="kbd">待验收</span></div></div>
+      <p>触发：任务进入等待验收的状态。一道扫描光从左到右扫过该行一次，通知验收人。</p><button class="btn">播放</button></div>
+    <div class="demo" data-demo><header><b>批准待确认操作 · 转舵</b><span>240ms</span></header>
+      <div class="stage"><svg class="i" style="width:36px;height:36px"><use href="#ic-approve"/></svg><span class="led helm-led"></span><span class="kbd">批准</span></div>
+      <p>触发：负责人批准 Agent 的提议。舵轮转四分之一圈并亮灯；拒绝时回正、不亮灯。这是全系统最重要的一次动效：人接管了舵。</p><button class="btn">播放</button></div>
+    <div class="demo" data-demo><header><b>新通知 · 信标</b><span>900ms</span></header>
+      <div class="stage"><svg class="i" style="width:32px;height:32px"><use href="#ic-notify"/></svg></div>
+      <p>触发：有新的待办通知。信标闪两下后常亮，不摇晃、不弹跳。</p><button class="btn">播放</button></div>
+    <div class="demo"><header><b>逾期 · 双闪后休息</b><span>环境 · 5s</span></header>
+      <div class="stage"><span class="led overdue"></span><span class="kbd">面谈两位候选人并出评估 · 逾期 2 天</span></div>
+      <p>触发：计划结束早于今天且未结束。快速两闪，然后休息 4 秒，避免持续闪烁。</p></div>
+    <div class="demo"><header><b>交接 · 双星环绕</b><span>环境 · 12s</span></header>
+      <div class="stage"><svg class="i" style="width:36px;height:36px"><use href="#ic-collab"/></svg><span class="kbd">小李 → 小李的 Claude Code</span></div>
+      <p>触发：任务在人与 Agent 之间交接时的短暂提示。慢速环绕一圈 12 秒，只出现在交接确认框里。</p></div>
+    <div class="demo" data-demo><header><b>成本变化 · 数字滚动</b><span>160ms/位</span></header>
+      <div class="stage"><span class="odo">¥<span class="col">2</span><span class="col">5</span>.<span class="col">0</span><span class="col r"><span>7</span><span>8</span></span></span></div>
+      <p>触发：读数刷新且数值变化。只滚变化的位，从右向左。已经在状态栏与看板里上线。</p><button class="btn">播放</button></div>
+    <div class="demo"><header><b>阻塞解除 · 断链</b><span>200ms</span></header>
+      <div class="stage"><svg class="i"><use href="#ic-blocks"/></svg><span class="kbd">前置「官网 v2.0 上线」已取消</span></div>
+      <p>触发：前置任务被取消，依赖自动释放（ADR 0006）。链环分开 4px 再淡出，被阻塞的任务 LED 亮起。</p></div>
+  </div>
+
+  <h2>四、Agent 的状态语言</h2>
+  <div class="prose">
+    <p>EVE 的眼睛是整部电影最好的界面：不说话，只靠形状与亮度传达状态。系统里 Agent 的双点沿用这个思路，但只用亮度与节律，不做表情：</p>
+    <div class="tablewrap"><table style="min-width:0">
+      <thead><tr><th>状态</th><th>双点</th><th>环</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td class="term">在线</td><td>常亮</td><td>3s 呼吸</td><td>有心跳，可以领任务</td></tr>
+        <tr><td class="term">执行中</td><td>交替明暗</td><td>常亮</td><td>有打开的执行记录</td></tr>
+        <tr><td class="term">等待输入</td><td>常亮，偏暖</td><td>静止</td><td>Agent 发起了「请求输入」，需要人回答</td></tr>
+        <tr><td class="term">离线</td><td>暗 25%</td><td>灰、静止</td><td>心跳超时；执行记录会被系统收尾</td></tr>
+        <tr><td class="term">被注销</td><td>不显示</td><td>不显示</td><td>只在历史记录里出现</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <h2>五、原则与禁区</h2>
+  <div class="rules">
+    <div><b>会做的</b><ul>
+      <li>图标承载概念，动效承载状态变化；两者都能被写进《CONTEXT.md》的一句话解释。</li>
+      <li>界面文字只用系统词汇；类比留在设计文档和代码注释里。</li>
+      <li>所有动效 ≤ 240ms，环境动效（呼吸、环绕）慢而低幅，永不同步闪烁。</li>
+      <li>尊重系统「减少动态效果」：一律直接落到终态。</li>
+      <li>深色与浅色主题同一套图标，单色随文字色。</li>
+    </ul></div>
+    <div><b>不做的</b><ul>
+      <li>不做吉祥物、不画脸、不做表情包式的 Agent。</li>
+      <li>不在内容区放任何装饰画面；母舰只属于登录页。</li>
+      <li>不做扫描线、粒子雨、打字机文案、霓虹描边、彩色渐变图标。</li>
+      <li>导航切换只留 100ms、只动透明度的极轻进场（已确认的折中）；其余高频操作零动画，键盘操作永远即时。</li>
+      <li>不用声音。</li>
+    </ul></div>
+  </div>
+
+  <h2>六、落地顺序</h2>
+  <div class="prose">
+    <ol class="plan">
+      <li><b>图标替换</b>：侧栏与列表换上 20 枚签名图标，其余沿用 Lucide；同时更新命令面板与状态徽标（半天）。</li>
+      <li><b>状态动效</b>：任务完成压实、目标发芽、进入待验收扫描、批准转舵、Agent 上线充电与执行中交替、逾期双闪、新通知信标（一天）。</li>
+      <li><b>Agent 状态语言</b>：Agent 列表与详情按第四节的表实现双点与环（半天）。</li>
+      <li><b>交接与断链</b>：交接确认框的双星环绕、依赖自动释放的断链（半天）。</li>
+    </ol>
+    <p class="muted small">每一步都在深浅两个主题下和「减少动态效果」下验证；不经你确认不改任何界面词汇。</p>
+  </div>
+</main>
+
+<script>
+  document.querySelectorAll("[data-demo]").forEach((d) => {
+    const btn = d.querySelector(".btn");
+    btn.addEventListener("click", () => {
+      d.classList.remove("play");
+      void d.offsetWidth;
+      d.classList.add("play");
+    });
+  });
+</script>

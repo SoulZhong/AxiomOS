@@ -1,0 +1,1973 @@
+@import "tailwindcss";
+@import "./instruments.css";
+@import "./gantt.css";
+@import "./board.css";
+
+/*
+ * AxiomOS 设计 token v2（web/DESIGN.md）。
+ * 近黑画布 + 四级表面阶梯 + 1px 细线分层 + 唯一的薰衣草蓝强调色；没有投影。
+ * 科幻层 = DESIGN.md「Axiom 科幻层（舰桥系统）」的 12 项：舰桥状态栏、坐标网格画布、HUD 面板角标、能量线、
+ * 状态指示灯、刻度进度条、遥测读数、雷达空状态、航线图甘特、接近母舰的登录页、舰徽、入场。
+ *
+ * 动效只有四种曲线（--ease-*）：入场用强 ease-out，屏上位移用强 ease-in-out，抽屉用 iOS 曲线，
+ * 恒速运动（雷达扫描、舰徽公转、星图平移）用 linear。UI 动效 120–200ms，退场永远比入场快；
+ * 只动 transform / opacity（折叠用 grid-template-rows）；
+ * 会被连续触发的东西（Toast、抽屉、折叠）用 transition 而不是 keyframes，中途可以被打断并回退；
+ * 键盘触发的动作不动画：快捷键 / Esc 会在 <html> 上打 600ms 的 data-kbd 标记，抽屉 / 对话框 / 页面入场据此跳过动画；
+ * prefers-reduced-motion 时去掉位移类动画，只保留 opacity 类的淡入淡出。
+ *
+ * 主题机制：
+ * - 所有颜色都是原始 CSS 变量 --c-<token>，深色是默认值（:root）；`[data-theme="dark"]` 同时把整套深色值
+ *   重设到任意子树上——品牌页（登录 / 邀请 / 后台登录）就靠它在浅色模式下仍然是"舱外的太空"。
+ * - 浅色只换值：`:root[data-theme="light"]`（用户显式选择）与 `@media (prefers-color-scheme: light)` 下的
+ *   `:root:not([data-theme="dark"])`（跟随系统）。两处的值必须一致。
+ * - Tailwind 的 --color-* 用 `@theme inline` 映射到 var(--c-*)，工具类在使用处才解析，所以 bg-surface-1
+ *   这类类名在任何主题 / 任何子树里都取最近的那套值。组件代码只用 token，不写任何硬编码颜色。
+ * - color-scheme 跟随主题，原生控件（下拉、日期、滚动条）随之变色。
+ */
+
+/* ---------- 深色（默认；也是品牌页的局部强制值） ---------- */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* 画布与表面阶梯 */
+  --c-canvas: #010102;
+  --c-surface-1: #0f1011;
+  --c-surface-2: #141516;
+  --c-surface-3: #18191a;
+  --c-surface-4: #1d1e20;
+  --c-hairline: #23252a;
+  --c-hairline-strong: #34343a;
+  --c-hairline-tertiary: #3e3e44;
+  --c-edge-highlight: rgba(255, 255, 255, 0.04);
+  --c-overlay: rgba(0, 0, 0, 0.6);
+  /* 代码块底：深色用画布，浅色用 surface-2 */
+  --c-code-bg: #010102;
+
+  /* 文字 */
+  --c-ink: #f7f8f8;
+  --c-ink-muted: #d0d6e0;
+  --c-ink-subtle: #8a8f98;
+  --c-ink-tertiary: #62666d;
+  /* 强调色底上的文字（主按钮、甘特图"今天"标记） */
+  --c-on-accent: #ffffff;
+
+  /* 唯一强调色 */
+  --c-accent: #5e6ad2;
+  --c-accent-hover: #828fff;
+  --c-accent-focus: #5e69d1;
+  --c-accent-bg: rgba(94, 106, 210, 0.14);
+  --c-accent-border: rgba(94, 106, 210, 0.4);
+  --c-accent-glow: rgba(94, 106, 210, 0.35);
+
+  /* 语义色三件套：文字 / 12% 底 / 35% 边 */
+  --c-success: #27a644;
+  --c-success-bg: rgba(39, 166, 68, 0.12);
+  --c-success-border: rgba(39, 166, 68, 0.35);
+  --c-warning: #d9a53b;
+  --c-warning-bg: rgba(217, 165, 59, 0.12);
+  --c-warning-border: rgba(217, 165, 59, 0.35);
+  --c-danger: #e5484d;
+  --c-danger-bg: rgba(229, 72, 77, 0.12);
+  --c-danger-border: rgba(229, 72, 77, 0.35);
+  --c-neutral: #8a8f98;
+  --c-neutral-bg: rgba(138, 143, 152, 0.12);
+  --c-neutral-border: rgba(138, 143, 152, 0.3);
+
+  /* Axiom 科幻层 */
+  --c-star: rgba(247, 248, 248, 0.55);
+  --c-star-faint: rgba(247, 248, 248, 0.18);
+  --c-grid-line: rgba(94, 106, 210, 0.08);
+  --c-telemetry: #9aa3ff;
+  /* 品牌页远处那颗太阳：全站唯一允许的暖色，只在品牌页出现（品牌页永远深色，浅色下值不变） */
+  --c-sun: #ffd9a0;
+  /* 侧边栏底部那层最淡的星点：浅色下不显示 */
+  --sidebar-stars: block;
+
+  /* 发光与接缝：整套系统只有两种"发光"（主按钮、进行中的指示灯），没有投影。
+     写在这里（而不是 @theme）是为了让它们在品牌页的局部深色子树里也按局部颜色解析。 */
+  --fx-primary: 0 0 0 1px var(--c-accent-border), 0 0 16px var(--c-accent-glow);
+  --fx-led: 0 0 6px var(--c-accent-glow);
+  /* 在线 Agent 的 success 灯：常亮微光（不呼吸） */
+  --fx-led-online: 0 0 6px color-mix(in srgb, var(--c-success) 45%, transparent);
+  --fx-panel: inset 0 1px 0 var(--c-edge-highlight);
+  --fx-brand-card: inset 0 1px 0 var(--c-edge-highlight), 0 0 48px var(--c-accent-bg);
+  --fx-focus: 0 0 0 2px var(--c-accent-bg);
+}
+
+/* ---------- 浅色（"日间舱室"）：同一套 token 名换值。下面两个块的值必须保持一致。 ---------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --c-canvas: #fbfbfc;
+  --c-surface-1: #ffffff;
+  --c-surface-2: #f7f8fa;
+  --c-surface-3: #eef0f4;
+  --c-surface-4: #e7e8eb;
+  --c-hairline: color-mix(in srgb, #5e6ad2 10%, #e3e6ee);
+  --c-hairline-strong: #d3d4d8;
+  --c-hairline-tertiary: #c4c5ca;
+  /* 舰内系统 v3：浅色下面板顶边是一条极淡的冷蓝分隔 */
+  --c-edge-highlight: rgba(94, 106, 210, 0.14);
+  --c-overlay: rgba(16, 17, 20, 0.35);
+  --c-code-bg: #f7f8fa;
+  --c-ink: #1c1d21;
+  --c-ink-muted: #3f414a;
+  --c-ink-subtle: #6b6f78;
+  --c-ink-tertiary: #9a9ea6;
+  --c-on-accent: #ffffff;
+  --c-accent: #5e6ad2;
+  --c-accent-hover: #4f5bc7;
+  --c-accent-focus: #5e69d1;
+  --c-accent-bg: rgba(94, 106, 210, 0.1);
+  --c-accent-border: rgba(94, 106, 210, 0.35);
+  --c-accent-glow: rgba(94, 106, 210, 0.18);
+  --c-success: #187a31;
+  --c-success-bg: rgba(24, 122, 49, 0.1);
+  --c-success-border: rgba(24, 122, 49, 0.3);
+  --c-warning: #8f5e08;
+  --c-warning-bg: rgba(143, 94, 8, 0.1);
+  --c-warning-border: rgba(143, 94, 8, 0.3);
+  --c-danger: #c9303a;
+  --c-danger-bg: rgba(201, 48, 58, 0.1);
+  --c-danger-border: rgba(201, 48, 58, 0.3);
+  --c-neutral: #6b6f78;
+  --c-neutral-bg: rgba(107, 111, 120, 0.1);
+  --c-neutral-border: rgba(107, 111, 120, 0.3);
+  --c-star: transparent;
+  --c-star-faint: transparent;
+  --c-sun: #ffd9a0;
+  /* 坐标网格在浅色下保留（6%），星图只在品牌页 */
+  --c-grid-line: rgba(94, 106, 210, 0.06);
+  --c-telemetry: #4f5bc7;
+  --sidebar-stars: none;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --c-canvas: #fbfbfc;
+    --c-surface-1: #ffffff;
+    --c-surface-2: #f7f8fa;
+    --c-surface-3: #eef0f4;
+    --c-surface-4: #e7e8eb;
+    --c-hairline: color-mix(in srgb, #5e6ad2 10%, #e3e6ee);
+    --c-hairline-strong: #d3d4d8;
+    --c-hairline-tertiary: #c4c5ca;
+    /* 舰内系统 v3：浅色下面板顶边是一条极淡的冷蓝分隔 */
+  --c-edge-highlight: rgba(94, 106, 210, 0.14);
+    --c-overlay: rgba(16, 17, 20, 0.35);
+    --c-code-bg: #f7f8fa;
+    --c-ink: #1c1d21;
+    --c-ink-muted: #3f414a;
+    --c-ink-subtle: #6b6f78;
+    --c-ink-tertiary: #9a9ea6;
+    --c-on-accent: #ffffff;
+    --c-accent: #5e6ad2;
+    --c-accent-hover: #4f5bc7;
+    --c-accent-focus: #5e69d1;
+    --c-accent-bg: rgba(94, 106, 210, 0.1);
+    --c-accent-border: rgba(94, 106, 210, 0.35);
+    --c-accent-glow: rgba(94, 106, 210, 0.18);
+    --c-success: #187a31;
+    --c-success-bg: rgba(24, 122, 49, 0.1);
+    --c-success-border: rgba(24, 122, 49, 0.3);
+    --c-warning: #8f5e08;
+    --c-warning-bg: rgba(143, 94, 8, 0.1);
+    --c-warning-border: rgba(143, 94, 8, 0.3);
+    --c-danger: #c9303a;
+    --c-danger-bg: rgba(201, 48, 58, 0.1);
+    --c-danger-border: rgba(201, 48, 58, 0.3);
+    --c-neutral: #6b6f78;
+    --c-neutral-bg: rgba(107, 111, 120, 0.1);
+    --c-neutral-border: rgba(107, 111, 120, 0.3);
+    --c-star: transparent;
+    --c-star-faint: transparent;
+    --c-sun: #ffd9a0;
+    --c-grid-line: rgba(94, 106, 210, 0.06);
+    --c-telemetry: #4f5bc7;
+    --sidebar-stars: none;
+  }
+}
+
+/* ---------- Tailwind 命名空间：颜色与发光 inline 映射到原始变量，工具类在使用处解析 ---------- */
+@theme inline {
+  --color-canvas: var(--c-canvas);
+  --color-surface-1: var(--c-surface-1);
+  --color-surface-2: var(--c-surface-2);
+  --color-surface-3: var(--c-surface-3);
+  --color-surface-4: var(--c-surface-4);
+  --color-hairline: var(--c-hairline);
+  --color-hairline-strong: var(--c-hairline-strong);
+  --color-hairline-tertiary: var(--c-hairline-tertiary);
+  --color-edge-highlight: var(--c-edge-highlight);
+  --color-overlay: var(--c-overlay);
+  --color-code-bg: var(--c-code-bg);
+  --color-ink: var(--c-ink);
+  --color-ink-muted: var(--c-ink-muted);
+  --color-ink-subtle: var(--c-ink-subtle);
+  --color-ink-tertiary: var(--c-ink-tertiary);
+  --color-on-accent: var(--c-on-accent);
+  --color-accent: var(--c-accent);
+  --color-accent-hover: var(--c-accent-hover);
+  --color-accent-focus: var(--c-accent-focus);
+  --color-accent-bg: var(--c-accent-bg);
+  --color-accent-border: var(--c-accent-border);
+  --color-accent-glow: var(--c-accent-glow);
+  --color-success: var(--c-success);
+  --color-success-bg: var(--c-success-bg);
+  --color-success-border: var(--c-success-border);
+  --color-warning: var(--c-warning);
+  --color-warning-bg: var(--c-warning-bg);
+  --color-warning-border: var(--c-warning-border);
+  --color-danger: var(--c-danger);
+  --color-danger-bg: var(--c-danger-bg);
+  --color-danger-border: var(--c-danger-border);
+  --color-neutral: var(--c-neutral);
+  --color-neutral-bg: var(--c-neutral-bg);
+  --color-neutral-border: var(--c-neutral-border);
+  --color-star: var(--c-star);
+  --color-star-faint: var(--c-star-faint);
+  --color-grid-line: var(--c-grid-line);
+  --color-telemetry: var(--c-telemetry);
+
+  --shadow-none: 0 0 #0000;
+  --shadow-primary: var(--fx-primary);
+  --shadow-led: var(--fx-led);
+  --shadow-led-online: var(--fx-led-online);
+  --shadow-panel: var(--fx-panel);
+  --shadow-brand-card: var(--fx-brand-card);
+  --shadow-focus: var(--fx-focus);
+}
+
+/* ---------- 与主题无关的 token：字体、字阶、圆角、间距、断点 ---------- */
+@theme {
+  /* ---- 字体 ---- */
+  --font-sans: var(--font-inter), "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), "SF Mono", Menlo, monospace;
+
+  /* ---- 字阶（typography.*） ---- */
+  --text-display: 40px;
+  --text-display--line-height: 1.15;
+  --text-display--font-weight: 600;
+  --text-display--letter-spacing: -1px;
+  --text-headline: 24px;
+  --text-headline--line-height: 1.2;
+  --text-headline--font-weight: 600;
+  --text-headline--letter-spacing: -0.5px;
+  --text-title-lg: 20px;
+  --text-title-lg--line-height: 1.2;
+  --text-title-lg--font-weight: 500;
+  --text-title-lg--letter-spacing: -0.3px;
+  --text-title: 16px;
+  --text-title--line-height: 1.25;
+  --text-title--font-weight: 500;
+  --text-title--letter-spacing: -0.2px;
+  --text-body: 14px;
+  --text-body--line-height: 1.5;
+  --text-caption: 12px;
+  --text-caption--line-height: 1.4;
+  --text-eyebrow: 11px;
+  --text-eyebrow--line-height: 1.3;
+  --text-eyebrow--font-weight: 500;
+  --text-eyebrow--letter-spacing: 0.6px;
+  --text-button: 14px;
+  --text-button--line-height: 1.2;
+  --text-button--font-weight: 500;
+  --text-mono: 12px;
+  --text-mono--line-height: 1.5;
+
+  /* ---- 圆角（rounded.*） ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* ---- 间距（spacing.*，命名档；数字档保留给细节） ---- */
+  --spacing-2xs: 2px;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+  --spacing-3xl: 48px;
+
+  /* ---- 断点（DESIGN.md 布局节） ---- */
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 992px;
+  --breakpoint-xl: 1200px;
+  /* 超宽屏（≥1920）：首页三列、看板四列 */
+  --breakpoint-3xl: 1920px;
+
+  /* ---- 动效曲线（只有这四种） ---- */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-linear: linear;
+}
+
+html {
+  background: var(--c-canvas);
+}
+
+body {
+  background: var(--c-canvas);
+  color: var(--c-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: var(--c-accent-border);
+  color: var(--c-ink);
+}
+
+code,
+kbd,
+pre,
+.font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 眉标：11px 等宽、+0.6px 正字距、大写。表头、侧边栏标识牌、表单分组标题、登录页眉标共用。 */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+/* 遥测读数：ID、时间戳、token、成本明细、快捷键。等宽 + 遥测色。 */
+.telemetry {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-telemetry);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 焦点环：输入框 1px accent-focus 边 + 2px accent-bg 外圈；按钮同款 */
+:where(input, select, textarea):focus-visible {
+  outline: none;
+  border-color: var(--c-accent-focus);
+  box-shadow: var(--fx-focus);
+}
+:where(button, a, [role="button"], summary):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--c-accent-focus), var(--fx-focus);
+}
+/* 主按钮的焦点环叠在微光之上 */
+.btn-primary:focus-visible {
+  box-shadow: 0 0 0 1px var(--c-accent-hover), var(--fx-primary);
+}
+
+/* 原生 dialog：对话框（居中，surface-2）与抽屉（右侧，surface-1）共用遮罩 */
+dialog::backdrop {
+  background: var(--c-overlay);
+}
+dialog.drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  margin: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  width: 480px;
+  max-width: 100vw;
+  border: 0;
+  border-left: 1px solid var(--c-hairline-strong);
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  background: var(--c-surface-1);
+  color: var(--c-ink);
+  padding: 0;
+  box-shadow: var(--fx-panel);
+}
+/*
+ * 抽屉 / 对话框的进出：transition + @starting-style（可打断：关到一半再打开会从当前位置回来）。
+ * 抽屉从右侧 32px 处滑入 160ms（iOS 抽屉曲线），退回同一侧 100ms；对话框居中 scale(0.98) 淡入 160ms、退场 100ms（模态不做 origin-aware）。
+ * 关闭时 useNativeDialog 先打 data-closing，等 opacity 过渡结束再 close()。遮罩同步淡入淡出。
+ * html[data-kbd]（快捷键 / Esc 触发）时全部 0ms。
+ */
+dialog.drawer[open] {
+  transform: none;
+  opacity: 1;
+  transition:
+    transform 160ms var(--ease-drawer),
+    opacity 160ms var(--ease-drawer);
+  @starting-style {
+    transform: translateX(32px);
+    opacity: 0;
+  }
+}
+dialog.drawer[data-closing] {
+  transform: translateX(32px);
+  opacity: 0;
+  transition-duration: 100ms;
+  transition-timing-function: var(--ease-out);
+}
+dialog.modal[open] {
+  transform-origin: center;
+  transform: none;
+  opacity: 1;
+  transition:
+    transform 160ms var(--ease-out),
+    opacity 160ms var(--ease-out);
+  @starting-style {
+    transform: scale(0.98);
+    opacity: 0;
+  }
+}
+dialog.modal[data-closing] {
+  transform: scale(0.98);
+  opacity: 0;
+  transition-duration: 100ms;
+}
+dialog[open]::backdrop {
+  opacity: 1;
+  transition: opacity 160ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+  }
+}
+dialog[data-closing]::backdrop {
+  opacity: 0;
+  transition-duration: 100ms;
+}
+html[data-kbd] dialog[open],
+html[data-kbd] dialog[open]::backdrop {
+  transition-duration: 0ms;
+}
+
+/* 12. 入场：页面切换 120ms 淡入 + 2px 上移，强 ease-out；键盘导航（g t / g g）不动画 */
+@keyframes page-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.page-enter {
+  /* 导航进场：≤100ms、只动透明度（用户 2026-09-04 确认的折中）；键盘切页同样适用，因为它轻到不会被感知为"等待" */
+  animation: page-in 100ms var(--ease-out);
+}
+/* 条件渲染出来的遮罩 / 覆盖层：挂载时 160ms 淡入（只动 opacity） */
+.fade-in {
+  opacity: 1;
+  transition: opacity 160ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+/* 按钮按下：scale(0.97) 即时反馈；键盘触发（:focus-visible）不缩放。悬停的颜色变化用 ease，按下的位移用强 ease-out。 */
+.pressable {
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 120ms;
+  transition-timing-function: ease, ease, ease, var(--ease-out);
+}
+.pressable:active:not(:disabled):not(:focus-visible) {
+  transform: scale(0.97);
+}
+
+/* 状态徽标：乐观更新时 60% 透明，确认后 200ms 回到不透明；状态名切换时新标签 160ms 淡入 + 2px 模糊过渡（遮住两种状态重叠的一瞬） */
+.state-badge {
+  transition: opacity 200ms ease;
+}
+.state-swap {
+  opacity: 1;
+  filter: blur(0);
+  transition:
+    opacity 160ms var(--ease-out),
+    filter 160ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    filter: blur(2px);
+  }
+}
+
+/* 折叠区（目标树子级）：grid-template-rows 1fr ↔ 0fr + 淡入淡出；展开 200ms、收起 150ms；连点可打断。reduced-motion 时只留淡入淡出。 */
+.fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows 200ms var(--ease-out),
+    opacity 200ms var(--ease-out);
+}
+.fold[data-closed] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition-duration: 150ms;
+}
+.fold > * {
+  min-height: 0;
+  overflow: hidden;
+}
+/* 折叠箭头：一枚向右的箭头，展开时转 90°（屏上变形 → 强 ease-in-out） */
+.chevron {
+  transition: transform 160ms var(--ease-in-out);
+}
+.chevron-open {
+  transform: rotate(90deg);
+}
+
+/* 7. 遥测读数变化：200ms 淡入（只动 opacity，reduced-motion 下保留） */
+@keyframes readout-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.readout {
+  display: inline-block;
+  animation: readout-in 200ms var(--ease-out);
+}
+
+/* 提示气泡：纯 CSS，surface-3 底 + 强细线 */
+.tip {
+  position: relative;
+  display: inline-flex;
+}
+/* 禁用按钮不接收指针事件，让外层 .tip 能收到 hover，原因气泡才会出现 */
+.tip > :disabled {
+  pointer-events: none;
+}
+/*
+ * 气泡常驻在 DOM 里（visibility: hidden），悬停时 125ms 从触发点那一侧 scale(0.97) → 1 淡入，离开 80ms 淡出（退场更快）。
+ * 进入延迟 150ms 防误触，离开不延迟；键盘聚焦（:focus-within）直接出现，不动画。缩放只在有精确指针的设备上做。
+ */
+.tip[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  transform-origin: 50% 100%;
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+  border: 1px solid var(--c-hairline-strong);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  white-space: pre-line;
+  max-width: 280px;
+  width: max-content;
+  text-align: left;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 80ms var(--ease-out),
+    transform 80ms var(--ease-out),
+    visibility 0s linear 80ms;
+}
+.tip[data-tip]:hover::after,
+.tip[data-tip]:focus-within::after {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 125ms var(--ease-out) 150ms,
+    transform 125ms var(--ease-out) 150ms,
+    visibility 0s linear 150ms;
+}
+.tip[data-tip]:focus-within:not(:hover)::after {
+  transition: none;
+}
+.tip-bottom[data-tip]::after {
+  bottom: auto;
+  top: calc(100% + 6px);
+  transform-origin: 50% 0;
+}
+@media (hover: hover) and (pointer: fine) {
+  .tip[data-tip]::after {
+    transform: translateX(-50%) scale(0.97);
+  }
+  .tip[data-tip]:hover::after,
+  .tip[data-tip]:focus-within::after {
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+/* 表格：表头 surface-2 + 等宽眉标、行悬停 surface-2、边线 hairline、行内动作悬停出现 */
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.tbl thead th {
+  background: var(--c-surface-2);
+  color: var(--c-ink-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.6px;
+  line-height: 1.3;
+  text-transform: uppercase;
+  text-align: left;
+  padding: 8px 12px;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--c-hairline);
+}
+.tbl tbody td {
+  padding: 10px 12px;
+  vertical-align: middle;
+  border-top: 1px solid var(--c-hairline);
+}
+/* 行内动作列：固定宽度、右对齐、上下 6px，让 28px 的小按钮不撑高 40px 的行 */
+.tbl th.actions,
+.tbl td.actions {
+  text-align: right;
+  padding: 6px 12px 6px 0;
+  white-space: nowrap;
+}
+.tbl tbody tr:first-child td {
+  border-top: 0;
+}
+.tbl tbody tr:hover {
+  background: var(--c-surface-2);
+}
+.tbl tfoot td {
+  padding: 10px 12px;
+  border-top: 1px solid var(--c-hairline);
+  background: var(--c-surface-2);
+}
+.tbl .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+tr:hover .row-actions,
+tr:focus-within .row-actions,
+li:hover .row-actions,
+li:focus-within .row-actions {
+  opacity: 1;
+}
+
+/* 新建后原地高亮：停 1.2s，再用强 ease-out 在 0.8s 内褪去（一次性，只在新建后播） */
+@keyframes row-new {
+  0%,
+  60% {
+    background: var(--c-accent-bg);
+  }
+  100% {
+    background: transparent;
+  }
+}
+.row-new,
+.row-new > td {
+  animation: row-new 2s var(--ease-out) forwards;
+}
+
+/* 骨架屏：0.55 ↔ 1 的匀速呼吸（恒速 → linear；只动 opacity，reduced-motion 下保留） */
+@keyframes skeleton {
+  0% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.55;
+  }
+}
+.skeleton {
+  background: var(--c-surface-3);
+  border-radius: var(--radius-xs);
+  animation: skeleton 1.2s linear infinite;
+}
+
+/*
+ * Toast：从顶边（自身高度）滑入 200ms 强 ease-out，退场沿同一条轴回去 120ms；连续弹出用 transition 而不是 keyframes，
+ * 新的一条不会让上一条重播。向上滑动可关闭（toast.tsx 直接写 transform，拖动中不过渡）。
+ */
+.toast {
+  opacity: 1;
+  transform: translateY(0);
+  touch-action: none;
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 200ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+}
+.toast[data-leaving] {
+  opacity: 0;
+  transform: translateY(-100%);
+  transition-duration: 120ms;
+  pointer-events: none;
+}
+.toast[data-dragging] {
+  transition: none;
+}
+
+/* ---------- Axiom 科幻层 ---------- */
+
+/* 侧边栏底部允许的那一层最淡的星点（主内容区不允许；浅色下不显示） */
+.starfield-sidebar {
+  display: var(--sidebar-stars);
+  background-image:
+    radial-gradient(circle at 19px 41px, var(--c-star-faint) 0.6px, transparent 1.1px),
+    radial-gradient(circle at 87px 13px, var(--c-star-faint) 0.5px, transparent 1px),
+    radial-gradient(circle at 131px 97px, var(--c-star-faint) 0.6px, transparent 1.1px),
+    radial-gradient(circle at 53px 121px, var(--c-star-faint) 0.5px, transparent 1px),
+    radial-gradient(circle at 167px 59px, var(--c-star-faint) 0.5px, transparent 1px);
+  background-size: 181px 149px;
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9), transparent);
+  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9), transparent);
+}
+
+/* 10. 品牌页 = 接近母舰（src/components/space/）。WebGL 场景在 SpaceScene；下面这些类只服务静帧 StaticSpace 里的 SVG 母舰：
+   窄屏时退到内容后面（45%）；≥1024px 时占画面右侧 42% → 96%、下半部，内容在左栏，两者不重叠 */
+.ax-ship-layer {
+  position: absolute;
+  top: 54%;
+  left: 50%;
+  width: max(72vw, 720px);
+  margin-left: calc(-1 * max(36vw, 360px));
+  opacity: 0.45;
+}
+@media (min-width: 1024px) {
+  .ax-ship-layer {
+    top: 50%;
+    left: 42%;
+    width: 54%;
+    margin-left: 0;
+    opacity: 1;
+  }
+}
+/* 船头朝右上抬 4° */
+.ax-ship {
+  display: block;
+  width: 100%;
+  height: auto;
+  transform: rotate(-4deg);
+  transform-origin: 50% 60%;
+}
+/* 船身材质：接近 WebGL 版被远日照亮的哑光白——顶边 ink-muted 72% → 底边 ink-subtle 30%（写在 SVG linearGradient 上），
+   这样场景淡入替换静帧时亮度不跳 */
+.ax-hull-0 {
+  stop-color: color-mix(in srgb, var(--c-ink-muted) 72%, var(--c-surface-2));
+}
+/* 上层建筑迎光更多，顶边再亮一点 */
+.ax-super-0 {
+  stop-color: color-mix(in srgb, var(--c-ink-muted) 82%, var(--c-surface-2));
+}
+.ax-hull-1 {
+  stop-color: color-mix(in srgb, var(--c-ink-subtle) 30%, var(--c-surface-2));
+}
+.ax-hull {
+  stroke: var(--c-hairline-strong);
+  stroke-width: 1;
+}
+/* 推进翼与穹顶：比船身再沉一档 */
+.ax-fin,
+.ax-dome {
+  fill: color-mix(in srgb, var(--c-ink-subtle) 45%, var(--c-surface-2));
+  stroke: var(--c-hairline-strong);
+  stroke-width: 1;
+}
+/* 迎光边缘：ink 35% 的 1px 轮廓光 */
+.ax-rim {
+  fill: none;
+  stroke: var(--c-ink);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+.ax-seam {
+  fill: none;
+  stroke: var(--c-hairline);
+  stroke-width: 1;
+}
+/* 舷窗：2px 暖白灯 */
+.ax-lights {
+  fill: var(--c-sun);
+  opacity: 0.85;
+}
+/* 船头全景舷窗带：accent 40% 的宽带 + 一层模糊的辉光 */
+.ax-bow-window {
+  fill: none;
+  stroke: var(--c-accent-hover);
+  stroke-width: 10;
+  stroke-linecap: round;
+  opacity: 0.4;
+}
+.ax-bow-glow {
+  fill: none;
+  stroke: var(--c-accent);
+  stroke-width: 18;
+  stroke-linecap: round;
+  opacity: 0.35;
+}
+/* 翼尖喷口与桅顶灯：accent 常亮 */
+.ax-nozzle {
+  fill: var(--c-accent-hover);
+  opacity: 0.8;
+}
+.ax-beacon {
+  fill: var(--c-accent-hover);
+}
+/* 引擎辉光：accent 径向，静帧里常亮 37% */
+.ax-eng-0 {
+  stop-color: var(--c-accent);
+  stop-opacity: 1;
+}
+.ax-eng-1 {
+  stop-color: var(--c-accent);
+  stop-opacity: 0.35;
+}
+.ax-eng-2 {
+  stop-color: var(--c-accent);
+  stop-opacity: 0;
+}
+.ax-engine {
+  opacity: 0.375;
+}
+/* 前景：舰徽 / 标题 / 登舰面板一起，挂载即从下方 8px 处 240ms 淡入，不等场景（船稍后驶入已经在场的页面）。
+   动画不带 forwards：结束后回到自然样式，登舰时的过渡才接得上 */
+@keyframes ax-fg-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.ax-fg {
+  animation: ax-fg-in 240ms var(--ease-out);
+}
+/* 登舰：成功后前景 300ms 内淡出并向下漂 12px；最后 350ms 一层暖白从舰首窗涌满画面（sceneBus 在根节点打 data-boarding） */
+[data-brand-root][data-boarding] .ax-fg {
+  opacity: 0;
+  transform: translate3d(0, 12px, 0);
+  transition:
+    opacity 300ms var(--ease-out),
+    transform 300ms var(--ease-out);
+}
+.ax-board-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--c-sun) 30%, white);
+  opacity: 0;
+}
+[data-brand-root][data-boarding] .ax-board-overlay {
+  opacity: 1;
+  transition: opacity 250ms ease-in 2300ms;
+}
+/* 抵达：登舰后进入应用，同一层暖白 600ms 退去，应用内容从 1.03 / 透明落到位（AppShell 读 sessionStorage 的 axiomos.boarding） */
+@keyframes ax-landing {
+  from {
+    opacity: 0;
+    transform: scale(1.03);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.ax-landing {
+  animation: ax-landing 600ms var(--ease-out) both;
+}
+@keyframes ax-arrive-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.ax-arrive {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--c-sun) 30%, white);
+  animation: ax-arrive-out 600ms ease-out forwards;
+}
+/* 登舰面板：surface-1 90%（隐约透出星空）+ accent-border 边 + 极淡外晕 */
+.brand-card {
+  background: color-mix(in srgb, var(--c-surface-1) 90%, transparent);
+  border: 1px solid var(--c-accent-border);
+  box-shadow: var(--fx-brand-card);
+  isolation: isolate;
+}
+/* 登舰面板随光标最多倾斜 4°（CardTilt 只写这四个变量；只在精确指针 + 允许动效时有值），
+   面板内一团跟着光标的 accent 8% 微光（z-index -1：在面板底色之上、内容之下） */
+.card-tilt {
+  --tilt-x: 0deg;
+  --tilt-y: 0deg;
+  --glow-x: 50%;
+  --glow-y: 50%;
+  --glow-o: 0;
+  transform: perspective(1400px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
+  transform-style: preserve-3d;
+}
+.card-tilt .brand-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(260px circle at var(--glow-x) var(--glow-y), color-mix(in srgb, var(--c-accent) 8%, transparent), transparent 70%);
+  opacity: var(--glow-o);
+}
+/* 拖拽环绕母舰：≥1024px、精确指针时，内容列之外的画面是可抓的 */
+@media (hover: hover) and (pointer: fine) and (min-width: 1024px) {
+  [data-brand-root] .ax-fg {
+    cursor: grab;
+  }
+  [data-brand-root] [data-brand-content] {
+    cursor: auto;
+  }
+  [data-brand-root][data-orbiting] .ax-fg,
+  [data-brand-root][data-orbiting] [data-brand-content] {
+    cursor: grabbing;
+  }
+  [data-brand-root][data-orbiting] {
+    user-select: none;
+  }
+}
+
+/* 11. 轨道舰徽：细线环 + 一颗沿环的圆点，12s 一周（恒速 → linear） */
+.ship-mark-orbit {
+  transform-origin: 50% 50%;
+  animation: orbit 12s linear infinite;
+}
+@keyframes orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 8. 雷达空状态：扇形微光 8s 一圈（恒速 → linear） */
+.radar-sweep {
+  transform-origin: 50% 50%;
+  animation: orbit 8s linear infinite;
+}
+
+/* 5. 状态指示灯：8px 圆点；进行中的那一颗带微光并以 3s 周期呼吸（只动 opacity，微光随之一起变暗）；在线的 success 灯常亮微光 */
+.led {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+.led-active {
+  box-shadow: var(--fx-led);
+  animation: led-breathe 3s ease-in-out infinite;
+}
+/* 舰内系统 v3 §5：逾期灯"快两下、停 4s"；等待中常亮暗色（不发光）。
+   StatusLED 的色类是 bg-danger / bg-warning（ui.tsx），这里顺带按色类匹配，StateBadge 另外挂了语义类。 */
+.led-overdue,
+.led.bg-danger {
+  animation: led-overdue 4.6s linear infinite;
+}
+.led-waiting,
+.led.bg-warning {
+  opacity: 0.7;
+  box-shadow: none;
+}
+@keyframes led-overdue {
+  0%,
+  3.2% {
+    opacity: 1;
+  }
+  3.3%,
+  6.4% {
+    opacity: 0.2;
+  }
+  6.5%,
+  9.7% {
+    opacity: 1;
+  }
+  9.8%,
+  12.9% {
+    opacity: 0.2;
+  }
+  13%,
+  100% {
+    opacity: 1;
+  }
+}
+.led-online {
+  box-shadow: var(--fx-led-online);
+}
+
+/* 2. 坐标网格画布：主内容区 24px 点阵，面板盖在网格之上 */
+.bridge-canvas {
+  background-color: var(--c-canvas);
+  background-image: radial-gradient(circle, var(--c-grid-line) 1px, transparent 1.6px);
+  background-size: 24px 24px;
+  background-position: 12px 12px;
+}
+
+/* 3. HUD 面板角标：四角 6px 细线，悬停 / 面板内有焦点时变 accent-border */
+.hud {
+  position: relative;
+  --hud: var(--c-hairline-strong);
+}
+.hud-c {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border: 0 solid var(--hud);
+  pointer-events: none;
+  /* 舰内系统 v3 §5：角标平时收起，面板 hover / 内有焦点时 120ms 浮现 */
+  opacity: 0;
+  transition:
+    border-color 120ms ease,
+    opacity 120ms ease;
+}
+.hud:focus-within .hud-c {
+  opacity: 1;
+}
+.hud-tl {
+  top: -2px;
+  left: -2px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+.hud-tr {
+  top: -2px;
+  right: -2px;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+.hud-bl {
+  bottom: -2px;
+  left: -2px;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+}
+.hud-br {
+  bottom: -2px;
+  right: -2px;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+}
+.hud:focus-within {
+  --hud: var(--c-accent-border);
+}
+@media (hover: hover) and (pointer: fine) {
+  .hud:hover {
+    --hud: var(--c-accent-border);
+  }
+  .hud:hover .hud-c {
+    opacity: 1;
+  }
+}
+
+/* 4. 能量线：页面标题下 160px × 1px，accent → 透明（整套系统里唯一允许的渐变） */
+.energy-line {
+  display: block;
+  width: 160px;
+  height: 1px;
+  background: linear-gradient(to right, var(--c-accent), transparent);
+}
+
+/* 6. 刻度进度条：每 10% 一道 1px 刻度（hairline-strong），压在条之上 */
+.progress-ticks {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(to right, var(--c-hairline-strong) 1px, transparent 1px);
+  background-size: 10% 100%;
+  background-position: -1px 0;
+  pointer-events: none;
+}
+
+/* 1. 舷窗带（舰内系统 v3 §1）：32px，深色画布底（浅色主题下也是深色，data-theme="dark" 在 BridgeBar 上）+ 底部细线；
+   背后一层 Canvas2D 星海（.star-band，上下渐隐让读数清楚），前景等宽 11px 读数 */
+.bridge-bar {
+  position: relative;
+  height: 32px;
+  overflow: hidden;
+  background: var(--c-canvas);
+  border-bottom: 1px solid var(--c-hairline);
+  color: var(--c-ink-subtle);
+}
+.star-band {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mask-image: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.9) 30%, rgba(0, 0, 0, 0.9) 70%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.9) 30%, rgba(0, 0, 0, 0.9) 70%, transparent);
+}
+.bridge-content {
+  position: relative;
+  /* 读数下面垫一层 55% 的画布色，星点经过文字时不抢 */
+  text-shadow: 0 0 6px var(--c-canvas);
+}
+/* 雷达式脉冲：在线灯外一圈 2.4s 扩散的细环（只动 transform / opacity） */
+.radar {
+  position: relative;
+  display: inline-flex;
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+}
+.radar-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1px solid var(--c-success);
+  opacity: 0;
+  animation: radar-ring 2.4s var(--ease-out) infinite;
+}
+@keyframes radar-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(3.2);
+    opacity: 0;
+  }
+}
+/* 滚动数字（odometer）：每位一列 0–9，变化时 160ms 强 ease-out 滚到位；首次渲染（data-still）不滚 */
+.odo {
+  display: inline-flex;
+  align-items: flex-start;
+  height: 1.3em;
+  overflow: hidden;
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+.odo-c,
+.odo-d {
+  display: inline-block;
+  height: 1.3em;
+  line-height: 1.3;
+}
+.odo-d {
+  position: relative;
+  width: 1ch;
+  overflow: hidden;
+}
+.odo-col {
+  display: flex;
+  flex-direction: column;
+  transition: transform 160ms var(--ease-out);
+}
+.odo-col > span {
+  display: block;
+  height: 1.3em;
+  line-height: 1.3;
+  text-align: center;
+}
+.odo[data-still] .odo-col {
+  transition: none;
+}
+.bridge-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--c-hairline-strong);
+  flex-shrink: 0;
+}
+@keyframes led-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 去掉位移 / 旋转 / 缩放类动画；只动 opacity 的（读数淡入、骨架呼吸、指示灯呼吸、淡入淡出）保留 */
+  .ship-mark-orbit,
+  .radar-sweep,
+  .radar-ring,
+  .page-enter {
+    animation: none;
+  }
+  .odo-col {
+    transition: none;
+  }
+  .ax-fg {
+    animation: none;
+  }
+  [data-brand-root][data-boarding] .ax-fg {
+    transform: none;
+    transition: none;
+  }
+  .ax-arrive,
+  .ax-landing {
+    animation: none;
+    opacity: 1;
+  }
+  .ax-arrive {
+    opacity: 0;
+  }
+  .card-tilt {
+    transform: none;
+  }
+  .pressable:active:not(:disabled):not(:focus-visible) {
+    transform: none;
+  }
+  dialog.drawer[open],
+  dialog.drawer[data-closing],
+  dialog.modal[open],
+  dialog.modal[data-closing],
+  .toast,
+  .toast[data-leaving] {
+    transform: none;
+    transition-property: opacity;
+  }
+  dialog.drawer[open],
+  dialog.modal[open],
+  .toast {
+    @starting-style {
+      transform: none;
+    }
+  }
+  .tip[data-tip]::after,
+  .tip[data-tip]:hover::after,
+  .tip[data-tip]:focus-within::after {
+    transform: translateX(-50%);
+  }
+  .state-swap {
+    filter: none;
+    @starting-style {
+      filter: none;
+    }
+  }
+  .fold,
+  .fold[data-closed] {
+    transition-property: opacity;
+  }
+  .chevron {
+    transition: none;
+  }
+}
+
+/* 甘特图内的拖拽区域禁止选中文字 */
+.gantt-drag {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 侧边栏导航：6px 圆角；当前项 surface-2 底 + 左侧 2px 强调色竖线 + 500 字重 */
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--c-ink-subtle);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+  transition: background-color 80ms, color 80ms;
+}
+.nav-item svg {
+  width: 16px;
+  height: 16px;
+}
+.nav-item:hover {
+  background: var(--c-surface-2);
+  color: var(--c-ink);
+}
+.nav-item[aria-current="page"] {
+  background: var(--c-surface-2);
+  color: var(--c-ink);
+  font-weight: 500;
+}
+.nav-item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 0 1px 1px 0;
+  background: var(--c-accent);
+}
+
+/* 侧栏「待确认操作」的条数徽标：等待中 = warning 三件套（文字 / 12% 底 / 35% 边）。
+   收起态（56px）里标签藏起来，改成图标右上角一枚 6px 的同色圆点（.nav-dot 靠 .sb-n 控制显隐）。 */
+.nav-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--c-warning-border);
+  border-radius: var(--radius-xs);
+  background: var(--c-warning-bg);
+  color: var(--c-warning);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.nav-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--c-warning);
+  box-shadow: 0 0 0 2px var(--c-canvas);
+}
+
+/* 竖向标签列表（组织设置） */
+.vtab {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--c-ink-subtle);
+  font-size: 14px;
+  position: relative;
+  transition-property: background-color, color, transform;
+  transition-duration: 80ms, 80ms, 120ms;
+  transition-timing-function: ease, ease, var(--ease-out);
+}
+.vtab:active:not(:focus-visible) {
+  transform: scale(0.98);
+}
+.vtab:hover {
+  background: var(--c-surface-2);
+  color: var(--c-ink);
+}
+.vtab[aria-current="true"] {
+  background: var(--c-surface-2);
+  color: var(--c-ink);
+  font-weight: 500;
+}
+.vtab[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 0 1px 1px 0;
+  background: var(--c-accent);
+}
+
+/* 原生日期输入：与文本框同高同边，配色跟随主题（color-scheme 由 html 继承）；空值时把 mm/dd/yyyy 淡成占位符色 */
+input[type="date"] {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  appearance: none;
+  -webkit-appearance: none;
+}
+input[type="date"]::-webkit-datetime-edit {
+  padding: 0;
+}
+input[type="date"]::-webkit-datetime-edit-fields-wrapper {
+  padding: 0;
+}
+input[type="date"][data-empty="true"]:not(:focus)::-webkit-datetime-edit {
+  color: var(--c-ink-tertiary);
+}
+input[type="date"]::-webkit-calendar-picker-indicator {
+  opacity: 0.5;
+  cursor: pointer;
+  margin-left: 4px;
+  transition: opacity 80ms ease;
+}
+input[type="date"]:hover::-webkit-calendar-picker-indicator {
+  opacity: 0.9;
+}
+select option {
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+}
+
+/* 原生复选框走强调色 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--c-accent);
+}
+
+/*
+ * 注意：@theme 里的 --spacing-{2xs…3xl} 会让 Tailwind 把 max-w-sm / w-lg 之类的"容器尺寸名"解析成间距 token，
+ * 所以宽度一律写具体像素（max-w-[400px]），间距才用命名档（p-lg、gap-sm）。
+ */
+
+/* ---------- 舰内系统 v3（DESIGN.md「舰内系统 v3」）：第一部分 ---------- */
+
+/* §5 路由切换时面板落定：main 里的一级面板按 12ms 交错（AppShell 写 --i）、160ms 从下方 4px 淡入；键盘导航 / reduced-motion 不动 */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* §4 指令台：顶部 12vh 居中的深色全息屏（data-theme="dark"），进场 120ms scale(0.98) 淡入、退场 80ms（复用 dialog.modal 的过渡） */
+dialog.palette {
+  margin: 12vh auto 0;
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  padding: 0;
+  border: 1px solid var(--c-hairline-strong);
+  border-radius: var(--radius-lg);
+  background: var(--c-surface-2);
+  color: var(--c-ink);
+  box-shadow: var(--fx-panel);
+}
+dialog.palette[open] {
+  transition-duration: 120ms;
+}
+dialog.palette[data-closing] {
+  transition-duration: 80ms;
+}
+.palette-item {
+  position: relative;
+  transition: background-color 80ms ease;
+}
+.palette-item.is-active {
+  background: var(--c-surface-3);
+}
+.palette-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 0 1px 1px 0;
+  background: var(--c-accent);
+}
+
+/* ---------- 签名图标与状态动效（DESIGN.md「舰内系统 v3」§7；提案「Axiom 图标与动效」） ----------
+   规则：动效只在状态真正变化时发生（触发方在元素上打 data-motion），一次性、≤240ms（压实 420 / 发芽 480 / 充电 520 是有意的例外），
+   环境动效（呼吸、环绕、双点交替、逾期双闪）慢而低幅；prefers-reduced-motion 与 html[data-kbd] 下一律直接落到终态。 */
+.sig {
+  flex-shrink: 0;
+}
+
+/* A. 任务完成 · 压实 420ms：方块缩到 84% × 86% 再回弹；LED 在 60% 处转绿并亮微光 */
+@keyframes sig-compact {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(0.84, 0.86);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes sig-ledon {
+  0%,
+  45% {
+    background: var(--c-neutral);
+    box-shadow: none;
+  }
+  60%,
+  100% {
+    background: var(--c-success);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--c-success) 70%, transparent);
+  }
+}
+[data-motion="compact"] .sig-task {
+  transform-origin: 50% 50%;
+  animation: sig-compact 420ms var(--ease-out);
+}
+[data-motion="compact"] .led {
+  animation: sig-ledon 420ms var(--ease-out);
+}
+
+/* B. 目标完成 · 发芽 480ms：茎先长（0–480）、叶后展（160–640），整枚一次 700ms 的绿色微光；上级目标的仪表随后扫动（ArcGauge delay） */
+@keyframes sig-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes sig-glow {
+  30% {
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--c-success) 80%, transparent));
+  }
+  100% {
+    filter: none;
+  }
+}
+[data-motion="sprout"] .sig-goal .ax-stem,
+[data-motion="sprout"] .sig-goal .ax-leaf {
+  stroke-dasharray: 40;
+  stroke-dashoffset: 40;
+  animation: sig-draw 480ms var(--ease-out) forwards;
+}
+[data-motion="sprout"] .sig-goal .ax-leaf {
+  animation-delay: 160ms;
+}
+[data-motion="sprout"] .sig-goal {
+  animation: sig-glow 700ms var(--ease-out);
+}
+
+/* C. Agent 状态语言（提案 §四）：视窗 + 双点 + 外环。
+   在线 = 双点常亮、环 success 3s 呼吸；执行中 = 双点交替（永不同步）、环 accent 常亮；等待输入 = 双点偏暖、环静止；
+   离线 = 双点 25%、环灰静止。上线时外环顺时针充满 520ms、双点随后 200ms 点亮；离线时 400ms 变灰（过渡）。 */
+.visor {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--c-ink-tertiary);
+  transition: color 400ms ease;
+}
+.visor svg {
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.visor .ax-eye {
+  fill: currentColor;
+  stroke: none;
+  transition:
+    opacity 400ms ease,
+    fill 400ms ease;
+}
+.visor-ring {
+  stroke: var(--c-hairline-strong);
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  transform: rotate(-90deg);
+  transition: stroke 400ms ease;
+}
+.visor[data-state="online"],
+.visor[data-state="busy"],
+.visor[data-state="waiting"] {
+  color: var(--c-ink);
+}
+.visor[data-state="online"] .visor-ring {
+  stroke: var(--c-success);
+  animation: led-breathe 3s ease-in-out infinite;
+}
+.visor[data-state="busy"] .visor-ring {
+  stroke: var(--c-accent);
+}
+@keyframes sig-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.visor[data-state="busy"] .ax-eye-l {
+  animation: sig-blink 1.4s ease-in-out infinite;
+}
+.visor[data-state="busy"] .ax-eye-r {
+  animation: sig-blink 1.4s ease-in-out 0.7s infinite;
+}
+.visor[data-state="waiting"] .ax-eye {
+  fill: var(--c-warning);
+}
+.visor[data-state="waiting"] .visor-ring {
+  stroke: var(--c-warning);
+}
+.visor[data-state="offline"] .ax-eye {
+  opacity: 0.25;
+}
+@keyframes sig-fillring {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes sig-eyeon {
+  to {
+    opacity: 1;
+  }
+}
+.visor[data-motion="charge"] .visor-ring {
+  stroke-dasharray: 66;
+  stroke-dashoffset: 66;
+  animation:
+    sig-fillring 520ms var(--ease-out) forwards,
+    led-breathe 3s ease-in-out 520ms infinite;
+}
+.visor[data-motion="charge"] .ax-eye {
+  opacity: 0.25;
+  animation: sig-eyeon 200ms linear 480ms forwards;
+}
+
+/* D. 领取任务 · 取走一块：待领取页的那一行 240ms 向右淡出（reload 前）；侧栏「待领取任务」图标最上面那块被取走 240ms；
+   之后在任务表里出现的这一行从左侧 24px 处 260ms 滑入（延迟 120ms） */
+tr[data-motion="pile"] > td {
+  opacity: 0;
+  transform: translateX(24px);
+  transition:
+    transform 240ms var(--ease-out),
+    opacity 240ms var(--ease-out);
+}
+@keyframes sig-pile-take {
+  0% {
+    transform: none;
+    opacity: 1;
+  }
+  55% {
+    transform: translateY(-4px);
+    opacity: 0;
+  }
+  70% {
+    transform: none;
+    opacity: 0;
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+[data-motion="pile"] .ax-pile-top {
+  transform-box: view-box;
+  animation: sig-pile-take 360ms var(--ease-out);
+}
+@keyframes sig-slidein {
+  from {
+    transform: translateX(-24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+tr[data-motion="picked"] > td {
+  animation: sig-slidein 260ms var(--ease-out) 120ms both;
+}
+
+/* E. 进入待验收 · 扫描 320ms：一道 accent 22% 的扫描光从左到右扫过该行；徽标里的扫描线同步上下扫一次 */
+@keyframes sig-sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes sig-scanline {
+  0% {
+    transform: translateY(-5px);
+  }
+  100% {
+    transform: translateY(5px);
+  }
+}
+[data-motion="scan"] {
+  position: relative;
+}
+[data-motion="scan"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--c-accent) 22%, transparent) 50%, transparent);
+  transform: translateX(-100%);
+  animation: sig-sweep 320ms var(--ease-in-out) forwards;
+}
+[data-motion="scan"] .ax-scanline {
+  animation: sig-scanline 320ms var(--ease-in-out);
+}
+
+/* F. 批准待确认操作 · 转舵 240ms：舵轮转四分之一圈；拒绝时回正。审批界面尚未建成，.helm-turn 先作为悬停 / 聚焦预览挂在 Agent 页的授权徽标上 */
+.ax-helm {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  transition: transform 240ms var(--ease-out);
+}
+[data-motion="helm"] .ax-helm,
+.helm-turn:focus-visible .ax-helm {
+  transform: rotate(90deg);
+}
+@media (hover: hover) and (pointer: fine) {
+  .helm-turn:hover .ax-helm {
+    transform: rotate(90deg);
+  }
+}
+
+/* G. 新通知 · 信标 900ms：闪两下后常亮，不摇晃不弹跳（Toast 出现时） */
+@keyframes sig-beacon {
+  0%,
+  24%,
+  48% {
+    opacity: 0.35;
+  }
+  12%,
+  36%,
+  70%,
+  100% {
+    opacity: 1;
+  }
+}
+.toast .ax-beacon {
+  animation: sig-beacon 900ms linear;
+}
+
+/* H. 逾期图标右上的告警灯：沿用"双闪后休息 4s"（led-overdue 只动 opacity） */
+.sig-overdue .ax-ov-led {
+  animation: led-overdue 4.6s linear infinite;
+}
+
+/* I. 交接 · 双星环绕：12s 一周，只在交接确认框里 */
+.orbit-slow .ax-orbit {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  animation: orbit 12s linear infinite;
+}
+
+/* J. 阻塞解除 · 断链 200ms：两个链环各自分开 2px 并淡出，整行停 100ms 后 200ms 淡出；被阻塞任务的 LED 亮一次 */
+@keyframes sig-unlink-a {
+  to {
+    transform: translate(-2px, 2px);
+    opacity: 0;
+  }
+}
+@keyframes sig-unlink-b {
+  to {
+    transform: translate(2px, -2px);
+    opacity: 0;
+  }
+}
+@keyframes sig-fade {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes sig-lit {
+  0% {
+    box-shadow: 0 0 0 0 var(--c-accent-glow);
+  }
+  40% {
+    box-shadow: 0 0 10px 3px var(--c-accent-glow);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+[data-motion="unlink"] .ax-link-a {
+  animation: sig-unlink-a 200ms var(--ease-out) forwards;
+}
+[data-motion="unlink"] .ax-link-b {
+  animation: sig-unlink-b 200ms var(--ease-out) forwards;
+}
+li[data-motion="unlink"] {
+  animation: sig-fade 200ms var(--ease-out) 300ms forwards;
+}
+[data-motion="lit"] .led {
+  animation: sig-lit 400ms var(--ease-out);
+}
+
+/* 状态徽标里的 12px 图标：与标签文字同色 */
+.tag-icon {
+  display: inline-flex;
+  margin-right: 4px;
+  margin-left: -1px;
+}
+
+/* 减少动态效果：签名动效一律直接落到终态；键盘触发（html[data-kbd]）同样即时 */
+@media (prefers-reduced-motion: reduce) {
+  [data-motion] .sig,
+  [data-motion] .sig *,
+  [data-motion]::after,
+  [data-motion] .led,
+  tr[data-motion] > td,
+  li[data-motion],
+  .visor,
+  .visor *,
+  .toast .ax-beacon,
+  .sig-overdue .ax-ov-led,
+  .orbit-slow .ax-orbit,
+  .ax-helm {
+    animation: none !important;
+    transition: none !important;
+  }
+  [data-motion="sprout"] .sig-goal .ax-stem,
+  [data-motion="sprout"] .sig-goal .ax-leaf,
+  .visor[data-motion="charge"] .visor-ring {
+    stroke-dashoffset: 0;
+  }
+  .visor[data-motion="charge"] .ax-eye {
+    opacity: 1;
+  }
+  .visor[data-state="offline"] .ax-eye {
+    opacity: 0.25;
+  }
+  [data-motion="scan"]::after {
+    display: none;
+  }
+  tr[data-motion="pile"] > td {
+    transform: none;
+  }
+  tr[data-motion="picked"] > td {
+    transform: none;
+    opacity: 1;
+  }
+  [data-motion="unlink"] .ax-link-a,
+  [data-motion="unlink"] .ax-link-b {
+    opacity: 0;
+  }
+}
+html[data-kbd] [data-motion] .sig,
+html[data-kbd] [data-motion] .sig *,
+html[data-kbd] [data-motion]::after,
+html[data-kbd] [data-motion] .led,
+html[data-kbd] tr[data-motion] > td {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* ---------- 侧栏收起 / 展开（lib/sidebar.ts；偏好 html[data-sidebar]，首屏由内联脚本写入） ----------
+   <768：抽屉导航，始终完整（transform 由 AppShell 的类切换）。
+   ≥768：宽度只过渡 width 200ms 强 ease-out，主内容区 flex-1 自适应；html[data-kbd]（按 `[`）与 reduced-motion 下即时。
+   收起态 = 显式 collapsed，或 768–1199 且没有显式 expanded：56px、只留图标、.sb-x 隐藏、.sb-n 出现、行居中、图标带右侧气泡。 */
+.sb-n {
+  display: none;
+}
+.sidebar .sb-tip[data-tip]::after {
+  display: none;
+}
+@media (min-width: 768px) {
+  .sidebar {
+    width: 220px;
+    transition: width 200ms var(--ease-out);
+  }
+  html[data-kbd] .sidebar {
+    transition: none;
+  }
+}
+@media (min-width: 768px) and (max-width: 1199.98px) {
+  html:not([data-sidebar="expanded"]) .sidebar {
+    width: 56px;
+  }
+  html:not([data-sidebar="expanded"]) .sidebar .sb-x {
+    display: none;
+  }
+  html:not([data-sidebar="expanded"]) .sidebar .sb-n {
+    display: flex;
+  }
+  html:not([data-sidebar="expanded"]) .sidebar .sb-row {
+    justify-content: center;
+  }
+  html:not([data-sidebar="expanded"]) .sidebar .sb-head,
+  html:not([data-sidebar="expanded"]) .sidebar .sb-foot {
+    padding-left: 8px;
+    padding-right: 8px;
+    justify-content: center;
+  }
+  html:not([data-sidebar="expanded"]) .sidebar .sb-nav {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  html:not([data-sidebar="expanded"]) .sidebar .sb-brand {
+    align-items: center;
+  }
+  html:not([data-sidebar="expanded"]) .sidebar .sb-tip[data-tip]::after {
+    display: block;
+  }
+}
+@media (min-width: 1200px) {
+  html[data-sidebar="collapsed"] .sidebar {
+    width: 56px;
+  }
+  html[data-sidebar="collapsed"] .sidebar .sb-x {
+    display: none;
+  }
+  html[data-sidebar="collapsed"] .sidebar .sb-n {
+    display: flex;
+  }
+  html[data-sidebar="collapsed"] .sidebar .sb-row {
+    justify-content: center;
+  }
+  html[data-sidebar="collapsed"] .sidebar .sb-head,
+  html[data-sidebar="collapsed"] .sidebar .sb-foot {
+    padding-left: 8px;
+    padding-right: 8px;
+    justify-content: center;
+  }
+  html[data-sidebar="collapsed"] .sidebar .sb-nav {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  html[data-sidebar="collapsed"] .sidebar .sb-brand {
+    align-items: center;
+  }
+  html[data-sidebar="collapsed"] .sidebar .sb-tip[data-tip]::after {
+    display: block;
+  }
+}
+/* 侧栏里的气泡：贴在图标右侧，与提示气泡同一套样式；侧栏 overflow hidden 会裁掉它，所以 .sb-tip 用 fixed 定位不可行——改为让侧栏在收起态允许溢出可见 */
+.tip-right[data-tip]::after {
+  left: calc(100% + 10px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  transform-origin: 0 50%;
+}
+@media (hover: hover) and (pointer: fine) {
+  .tip-right[data-tip]::after {
+    transform: translateY(-50%) scale(0.97);
+  }
+  .tip-right[data-tip]:hover::after,
+  .tip-right[data-tip]:focus-within::after {
+    transform: translateY(-50%) scale(1);
+  }
+}
+.sb-tip {
+  display: inline-flex;
+}
+/* 收起态的侧栏要让气泡溢出到内容区之上：去掉 overflow hidden（星点层用 mask 限制在自身内） */
+@media (min-width: 768px) and (max-width: 1199.98px) {
+  html:not([data-sidebar="expanded"]) .sidebar {
+    overflow: visible;
+  }
+}
+@media (min-width: 1200px) {
+  html[data-sidebar="collapsed"] .sidebar {
+    overflow: visible;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none !important;
+  }
+}

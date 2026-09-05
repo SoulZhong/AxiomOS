@@ -1,0 +1,347 @@
+/*
+ * 甘特图 v2（DESIGN.md §8「宏观到微观」）。所有甘特图专属样式都在这里；globals.css 只 @import。
+ * 颜色一律用 token（--c-*），深浅主题下都成立。
+ */
+
+/* ---------- 页面与外壳 ---------- */
+.gantt-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.gantt-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  min-height: 32px;
+}
+.gantt-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid var(--c-hairline-strong);
+  color: var(--c-ink-subtle);
+  font: 500 11px/1 var(--font-jetbrains), "SF Mono", Menlo, monospace;
+  background: var(--c-surface-1);
+}
+.gantt-help:hover {
+  color: var(--c-ink);
+  border-color: var(--c-hairline-tertiary);
+}
+
+/* 外壳 = 工具栏 + 图区 + 图例；高度由页面算成"视口剩余"，图区吃掉全部剩余 */
+.gantt-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 360px;
+  gap: 8px;
+}
+.gantt-frame {
+  flex: 1 1 0%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* 应用内全屏：盖过侧栏（z-50）与状态栏 */
+.gantt-shell-fs {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  height: auto !important;
+  min-height: 0;
+  padding: 12px 16px 12px;
+  background: var(--c-canvas);
+}
+/* 浏览器全屏：图区独占屏幕，底色仍是画布色 */
+.gantt-shell:fullscreen {
+  height: 100vh !important;
+  padding: 12px 16px;
+  background: var(--c-canvas);
+  overflow: hidden;
+}
+
+/* ---------- 工具栏 ---------- */
+.gantt-toolbar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-height: 28px;
+}
+.gantt-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.gantt-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--c-hairline-strong);
+}
+
+/* ---------- 滚动容器：两个方向都在内部滚 ---------- */
+.gantt-panel {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg, 12px);
+}
+.gantt-scroll {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: inherit;
+}
+.gantt-drag {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 表头：固定顶部；左上角同时固定左侧 */
+.gantt-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  background: var(--c-surface-2);
+}
+.gantt-head-svg {
+  display: block;
+  flex: none;
+}
+.gantt-corner {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 0 6px 8px 12px;
+  border-right: 1px solid var(--c-hairline);
+  border-bottom: 1px solid var(--c-hairline);
+  background: var(--c-surface-2);
+  overflow: visible;
+}
+.gantt-narrow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-bottom: -3px;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--c-ink-subtle);
+}
+.gantt-narrow-btn:hover {
+  color: var(--c-ink);
+  background: var(--c-surface-3);
+}
+.gantt-label-narrow ~ .gantt-narrow-btn,
+.gantt-corner:has(.gantt-narrow-btn:only-child) {
+  justify-content: center;
+  padding: 0 0 8px;
+}
+/* 左列拖宽把手：贴在角格右缘，向下延伸到整个视口高度 */
+.gantt-resize {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none;
+}
+.gantt-resize::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+  transition: background-color 120ms var(--ease-out);
+}
+.gantt-resize:hover::after,
+.gantt-resize:active::after {
+  background: var(--c-accent-border);
+}
+
+/* ---------- 图区 ---------- */
+.gantt-body {
+  position: relative;
+}
+.gantt-grid,
+.gantt-deps {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+.gantt-grid {
+  z-index: 0;
+}
+.gantt-deps {
+  z-index: 2;
+  transition: opacity 120ms var(--ease-out);
+}
+.gantt-group {
+  position: relative;
+  z-index: 1;
+}
+/* 折叠区的 overflow: hidden 会变成 sticky 的参照容器，让左列标签跟着横向滚走；clip 只裁不滚 */
+.gantt-group > .fold > * {
+  overflow: clip;
+}
+.gantt-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--c-hairline);
+  box-sizing: content-box;
+}
+.gantt-row-group {
+  border-bottom-color: var(--c-hairline-strong);
+}
+.gantt-bars {
+  display: block;
+  flex: none;
+}
+.gantt-label {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  border-right: 1px solid var(--c-hairline);
+  background: var(--c-surface-1);
+  font-size: 14px;
+  color: var(--c-ink-muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.gantt-scroll[data-density="compact"] .gantt-label {
+  font-size: 13px;
+}
+.gantt-row-task .gantt-label {
+  padding-left: 30px;
+}
+.gantt-label-group {
+  padding-left: 6px;
+  background: var(--c-surface-2);
+  font-weight: 500;
+  color: var(--c-ink);
+}
+.gantt-row:hover .gantt-label {
+  background: var(--c-surface-2);
+}
+.gantt-row-group:hover .gantt-label {
+  background: var(--c-surface-3);
+}
+.gantt-count {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--font-jetbrains), "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--c-ink-subtle);
+}
+.gantt-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--c-ink-subtle);
+}
+.gantt-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+button.gantt-chevron:hover {
+  color: var(--c-ink);
+  background: var(--c-surface-3);
+}
+.gantt-chevron-off {
+  color: var(--c-ink-tertiary);
+  cursor: default;
+}
+/* 键盘触发（Enter / Space）的折叠：只让高度过渡，箭头直接落到终态 */
+.gantt-kbd .chevron {
+  transition: none;
+}
+.gantt-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+.gantt-avatar-empty {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px dashed var(--c-hairline-tertiary);
+}
+/* 窄列（56px）：只留状态点与头像；组行只留箭头与数量 */
+.gantt-label-narrow {
+  justify-content: center;
+  gap: 6px;
+  padding: 0 4px !important;
+}
+.gantt-label-narrow .gantt-count {
+  margin-left: 0;
+}
+
+/* ---------- 图例：底部一行，可折叠 ---------- */
+.gantt-legend {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 24px;
+  font-size: 12px;
+  color: var(--c-ink-subtle);
+}
+.gantt-legend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--c-ink-subtle);
+}
+.gantt-legend-toggle:hover {
+  color: var(--c-ink);
+  background: var(--c-surface-2);
+}
+.gantt-legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  min-height: 24px;
+  padding-top: 1px;
+}
+
+/* 减少动态效果：只保留淡入淡出（箭头层的 opacity），其余即时 */
+@media (prefers-reduced-motion: reduce) {
+  .gantt-resize::after {
+    transition: none;
+  }
+}

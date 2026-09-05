@@ -1,0 +1,177 @@
+"use client";
+import { useState } from "react";
+import { api, type BlockKey, type RoleWorkspace } from "@/lib/api";
+import { errorMessage, useAction, useLoad } from "@/lib/hooks";
+import { t } from "@/lib/i18n";
+import { WorkspaceEditor } from "@/components/blocks/WorkspaceEditor";
+import { IconEdit } from "@/components/icons";
+import { useToast } from "@/components/toast";
+import { Button, ConfirmDialog, Empty, ErrorBox, Panel, Select, Table, TableSkeleton, Tag } from "@/components/ui";
+
+/*
+ * 组织设置 → 工作台（ADR 0015）：每个角色进来先看到什么。
+ * 一行一个角色：角色名、成员数、当前预设（或「自定义」）、区块清单；行内换预设（PUT {preset}）、逐块编辑（PUT {blocks}）、恢复默认（DELETE）。
+ * 下面把系统发的预设按接口给的标题和说明列出来，不写死预设名。
+ */
+export function WorkspaceTab() {
+  const toast = useToast();
+  const rows = useLoad(() => api.workspace.org(), []);
+  const catalog = useLoad(() => api.workspace.catalog(), []);
+  const { busy, run } = useAction();
+  const [editing, setEditing] = useState<RoleWorkspace | null>(null);
+  const [resetting, setResetting] = useState<RoleWorkspace | null>(null);
+  const [saving, setSaving] = useState(false);
+  const presets = catalog.data?.presets ?? [];
+  const blockTitle = (k: BlockKey) => catalog.data?.blocks.find((b) => b.key === k)?.title ?? t(`block.${k}`);
+  const presetTitle = (k: string | null) => (k ? (presets.find((p) => p.key === k)?.title ?? k) : t("settings.workspace.custom"));
+  // 后端清除布局后给的是 preset: null + 默认区块；区块恰好等于某个预设时按那个预设显示，不叫「自定义」
+  const presetOf = (r: RoleWorkspace) => r.preset ?? presets.find((p) => p.blocks.length === r.blocks.length && p.blocks.every((k, i) => k === r.blocks[i]))?.key ?? null;
+
+  const applyPreset = async (r: RoleWorkspace, preset: string) => {
+    if (!preset) return;
+    if (await run(r.role, () => api.workspace.saveRole(r.role, { preset }), t("settings.workspace.presetApplied", { title: presetTitle(preset), role: r.role_title }))) rows.reload();
+  };
+  const saveBlocks = async (blocks: BlockKey[]) => {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      await api.workspace.saveRole(editing.role, { blocks });
+      toast.ok(t("toast.saved"));
+      setEditing(null);
+      rows.reload();
+    } catch (e) {
+      toast.fail(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const reset = async (r: RoleWorkspace) => {
+    if (await run(r.role, () => api.workspace.resetRole(r.role), t("settings.workspace.resetDone", { role: r.role_title }))) {
+      setResetting(null);
+      setEditing(null);
+      rows.reload();
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Panel index={1} title={t("settings.tab.workspace")} padded={false} telemetry={rows.data ? t("settings.workspace.roleCount", { n: rows.data.length }) : undefined}>
+        <p className="border-b border-hairline px-4 py-3 text-caption text-ink-muted">{t("settings.workspace.description")}</p>
+        {rows.loading && !rows.data ? (
+          <TableSkeleton rows={5} cols={5} />
+        ) : rows.error ? (
+          <div className="p-4">
+            <ErrorBox message={rows.error} onRetry={rows.reload} />
+          </div>
+        ) : !rows.data?.length ? (
+          <Empty text={t("settings.roles.empty")} illustration={false} />
+        ) : (
+          <Table>
+            <thead>
+              <tr>
+                <th className="w-[140px]">{t("settings.workspace.role")}</th>
+                <th className="num w-[72px]">{t("settings.workspace.members")}</th>
+                <th className="w-[168px]">{t("settings.workspace.preset")}</th>
+                <th>{t("settings.workspace.blocks")}</th>
+                <th className="w-0" aria-label={t("common.actions")} />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.data.map((r) => (
+                <tr key={r.role}>
+                  <td>
+                    <Tag>{r.role_title}</Tag>
+                  </td>
+                  <td className="num tabular-nums">{r.member_count}</td>
+                  <td className="!py-1.5">
+                    <Select value={presetOf(r) ?? ""} onChange={(e) => void applyPreset(r, e.target.value)} disabled={busy === r.role || presets.length === 0} aria-label={t("settings.workspace.pickPreset")} className="w-full">
+                      <option value="" disabled>
+                        {t("settings.workspace.custom")}
+                      </option>
+                      {presets.map((p) => (
+                        <option key={p.key} value={p.key}>
+                          {p.title}
+                        </option>
+                      ))}
+                    </Select>
+                  </td>
+                  <td>
+                    <span className="flex flex-wrap gap-1">
+                      {r.blocks.map((k, i) => (
+                        <Tag key={k} title={`${i + 1}. ${blockTitle(k)}`}>
+                          {blockTitle(k)}
+                        </Tag>
+                      ))}
+                      {r.blocks.length === 0 && <span className="text-ink-subtle">—</span>}
+                    </span>
+                  </td>
+                  <td className="whitespace-nowrap !py-1.5 align-middle">
+                    <span className="row-actions inline-flex gap-1">
+                      <Button size="sm" variant="ghost" icon={<IconEdit />} onClick={() => setEditing(r)}>
+                        {t("common.edit")}
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={busy === r.role} onClick={() => setResetting(r)}>
+                        {t("settings.workspace.resetDefault")}
+                      </Button>
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+      </Panel>
+
+      <Panel index={2} title={t("settings.workspace.presetsTitle")} padded={false} telemetry={catalog.data ? t("panel.rows", { n: presets.length }) : undefined}>
+        {catalog.loading && !catalog.data ? (
+          <TableSkeleton rows={5} cols={3} />
+        ) : catalog.error ? (
+          <div className="p-4">
+            <ErrorBox message={catalog.error} onRetry={catalog.reload} />
+          </div>
+        ) : presets.length === 0 ? (
+          <Empty text={t("settings.workspace.noPresets")} illustration={false} />
+        ) : (
+          <ul className="divide-y divide-hairline">
+            {presets.map((p) => (
+              <li key={p.key} className="grid gap-x-4 gap-y-1 px-4 py-2.5 md:grid-cols-[200px_minmax(0,1fr)]">
+                <span className="min-w-0">
+                  <span className="block text-body text-ink">{p.title}</span>
+                  <span className="block text-caption text-ink-subtle">{p.description}</span>
+                </span>
+                <span className="flex flex-wrap items-center gap-1 self-center">
+                  {p.blocks.map((k) => (
+                    <Tag key={k}>{blockTitle(k)}</Tag>
+                  ))}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+
+      <WorkspaceEditor
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title={editing ? t("settings.workspace.editTitle", { role: editing.role_title }) : ""}
+        description={t("settings.workspace.editHint")}
+        catalog={catalog.data}
+        value={editing?.blocks ?? []}
+        onSave={saveBlocks}
+        onReset={editing ? () => setResetting(editing) : undefined}
+        resetLabel={t("settings.workspace.resetDefault")}
+        busy={saving}
+        withPresets
+      />
+      <ConfirmDialog
+        open={!!resetting}
+        title={t("settings.workspace.resetDefault")}
+        message={resetting ? t("settings.workspace.resetConfirm", { role: resetting.role_title }) : null}
+        confirmLabel={t("settings.workspace.resetDefault")}
+        busy={!!busy}
+        onConfirm={() => resetting && void reset(resetting)}
+        onClose={() => setResetting(null)}
+      />
+    </div>
+  );
+}

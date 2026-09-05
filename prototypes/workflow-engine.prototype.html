@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AxiomOS Workflow 原型</title>
+<style>
+  :root { --accent:#2563eb; --bg:#fafafa; --fg:#1a1a1a; --muted:#6b7280; --line:#e5e7eb; --ok:#059669; --bad:#dc2626; --card:#fff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.6 -apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:32px 24px 80px; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  h2 { font-size:15px; margin:28px 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  h3 { font-size:14px; margin:14px 0 6px; }
+  p { margin:6px 0; }
+  .intro { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px 18px; }
+  .banner { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; padding:8px 12px; border-radius:6px; margin:10px 0; font-size:13px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+  @media (max-width:900px){ .grid{grid-template-columns:1fr;} }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; }
+  .tag { display:inline-block; padding:0 6px; border-radius:4px; font-size:12px; border:1px solid var(--line); background:#f3f4f6; margin-right:3px; }
+  .tag.active { background:#dbeafe; border-color:#bfdbfe; color:#1e40af; }
+  .tag.waiting { background:#fef3c7; border-color:#fde68a; color:#92400e; }
+  .tag.pending { background:#f3f4f6; }
+  .tag.terminal_success { background:#d1fae5; border-color:#a7f3d0; color:#065f46; }
+  .tag.terminal_failure { background:#fee2e2; border-color:#fecaca; color:#991b1b; }
+  button { font:inherit; font-size:13px; padding:4px 10px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; margin:2px 4px 2px 0; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.4; cursor:default; }
+  button.done { background:#d1fae5; border-color:#a7f3d0; color:#065f46; }
+  select, input { font:inherit; font-size:13px; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:#fff; }
+  .tabs { display:flex; flex-wrap:wrap; gap:4px; border-bottom:1px solid var(--line); margin-bottom:12px; }
+  .tabs button { border:none; border-bottom:2px solid transparent; border-radius:0; margin:0; padding:8px 12px; }
+  .tabs button.on { border-bottom-color:var(--accent); color:var(--accent); font-weight:600; }
+  .steps { list-style:none; padding:0; margin:8px 0; }
+  .steps li { display:flex; gap:10px; align-items:flex-start; padding:5px 0; border-bottom:1px dashed var(--line); }
+  .steps li .n { color:var(--muted); width:22px; flex:none; }
+  .steps li .note { color:var(--muted); font-size:12px; }
+  .msg { padding:6px 10px; border-radius:6px; font-size:13px; margin-top:6px; }
+  .msg.ok { background:#ecfdf5; color:#065f46; }
+  .msg.bad { background:#fef2f2; color:#991b1b; }
+  .log { max-height:280px; overflow:auto; font-size:12px; font-family:ui-monospace,Menlo,monospace; }
+  .log div { padding:2px 0; border-bottom:1px solid #f3f4f6; }
+  .muted { color:var(--muted); }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:6px 0; }
+  .findings li { margin:4px 0; }
+  details summary { cursor:pointer; color:var(--muted); }
+  pre { font-size:12px; background:#f9fafb; padding:8px; border-radius:6px; overflow:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AxiomOS Workflow 原型 <span class="tag">原型 · 可丢弃</span></h1>
+  <div class="intro">
+    <p><b>这个原型回答的问题：</b>用「状态类型 + 参与角色 + 每一步的前提条件」来描述流程，能不能把通用任务、需求、Bug、发布四种内置任务类型表达出来？同时验证三条规则：① 执行记录什么时候开始、什么时候结束；② 流程走到某一步时任务负责人自动换成对应参与角色的人，位置空着就进入待领取任务；③ 需求上还有没关的 Bug 时，「测试通过」这一步被挡住。</p>
+    <p class="muted">所有数据都在内存里，刷新即清空。可以随便点；出现"这不应该被允许"或"我以为会不一样"的时刻，就是设计的问题所在。</p>
+  </div>
+
+  <div class="banner" id="findings-banner"></div>
+
+  <h2>按场景走一遍</h2>
+  <div class="card">
+    <div class="tabs" id="tabs"></div>
+    <div id="scenario"></div>
+  </div>
+
+  <h2>当前状态</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>任务</h3>
+      <div id="tasks"></div>
+    </div>
+    <div class="card">
+      <h3>执行记录</h3>
+      <div id="runs"></div>
+      <h3>进度</h3>
+      <div id="progress"></div>
+    </div>
+  </div>
+
+  <h2>自己试试</h2>
+  <div class="card">
+    <p class="muted">这里是不按剧本、自己动手试的地方。先选"我是谁"和"哪个任务"，下面会用一句话说明这个任务现在的情况，再列出你现在能做和不能做的事。想看有引导的例子，请用上面的六个场景。</p>
+    <div class="row">
+      <label>我是：<select id="actor"></select></label>
+      <label>哪个任务：<select id="task"></select></label>
+      <button onclick="resetWorld()">清空重来</button>
+    </div>
+    <div id="freeplay"></div>
+    <div id="freemsg"></div>
+    <details style="margin-top:10px"><summary>新建任务</summary>
+      <div class="row">
+        <select id="new-type"></select>
+        <input id="new-title" placeholder="任务标题" style="width:220px">
+        <span class="muted">参与角色：</span><span id="new-slots"></span>
+        <button class="primary" onclick="uiCreate()">创建</button>
+      </div>
+    </details>
+  </div>
+
+  <h2>动态</h2>
+  <div class="card log" id="log"></div>
+
+  <h2>流程定义（原样）</h2>
+  <div class="card"><details><summary>展开查看四种内置任务类型的流程声明</summary><pre id="defs"></pre></details></div>
+</main>
+
+<!-- ============================================================
+     纯逻辑模块：不碰 DOM。验证通过后可直接搬进真实代码。
+     ============================================================ -->
+<script>
+const Engine = (() => {
+  // ---------- 语义标签 ----------
+  // 发现：原设计的 initial 不够用——draft 和 todo 都是"没人在做"，但只有 todo 可领取。
+  // 因此把 initial 改名为 pending，并在状态上加 claimable 标记。
+  const LABELS = ['pending', 'active', 'waiting', 'terminal_success', 'terminal_failure'];
+
+  // ---------- 条件 ----------
+  const CONDITIONS = {
+    assignee_or_claimable: (w, t, def) => {
+      const st = def.states[t.state]; // 目标状态在调用处传入
+      return t.assignee ? null : '没有受理人，且目标状态不可领取';
+    },
+    deps_done: (w, t) => {
+      const open = t.relations.filter(r => r.type === 'blocks_me').map(r => w.tasks[r.other]).filter(o => !isTerminalSuccess(w, o));
+      return open.length ? `前置任务未完成：${open.map(o => o.title).join('、')}` : null;
+    },
+    no_open_bugs: (w, t) => {
+      const bugs = Object.values(w.tasks).filter(b => b.type === 'bug' && b.relations.some(r => r.type === 'found_in' && r.other === t.id));
+      const open = bugs.filter(b => !isTerminal(w, b));
+      return open.length ? `仍有未关闭的 Bug：${open.map(b => b.title).join('、')}` : null;
+    },
+    comment: (w, t, def, payload) => payload && payload.comment ? null : '必须附带评论说明原因',
+  };
+  const artifactCond = type => (w, t) => t.artifacts.some(a => a.type === type) ? null : `缺少产出物：${ARTIFACT_NAMES[type] || type}`;
+  const GRANT_NAMES = { execute: '执行任务', review: '验收', claim_backlog: '领取任务', comment: '评论' };
+  const ARTIFACT_NAMES = { prd: '需求文档', pr: '代码 PR', test_report: '测试报告', release_note: '发布记录', result: '结果摘要' };
+
+  // ---------- 四个内置 TaskType ----------
+  const S = (label, title, extra = {}) => ({ label, title, ...extra });
+  const T = (name, title, from, to, by, extra = {}) => ({ name, title, from: [].concat(from), to, by: [].concat(by), requires: [], ...extra });
+
+  const COMMON_TAIL = (activeStates) => [
+    T('block', '标记阻塞', activeStates, 'blocked', ['assignee', 'creator']),
+    T('cancel', '取消', '*', 'cancelled', ['creator', 'role:admin']),
+  ];
+
+  const TASK_TYPES = {
+    generic: {
+      title: '通用任务',
+      participants: {},
+      workflow: {
+        initial: 'draft',
+        states: {
+          draft: S('pending', '草稿'),
+          todo: S('pending', '待办', { claimable: true }),
+          in_progress: S('active', '进行中'),
+          waiting: S('waiting', '等待答复'),
+          blocked: S('waiting', '已阻塞'),
+          submitted: S('waiting', '待验收'),
+          done: S('terminal_success', '已完成'),
+          cancelled: S('terminal_failure', '已取消'),
+        },
+        transitions: [
+          T('ready', '就绪', 'draft', 'todo', 'creator'),
+          T('start', '开始', 'todo', 'in_progress', 'assignee', { requires: ['deps_done'] }),
+          T('ask_for_input', '提问等待', 'in_progress', 'waiting', 'assignee', { requires: ['comment'] }),
+          T('resume', '答复并恢复', 'waiting', 'in_progress', ['creator', 'reviewer'], { requires: ['comment'] }),
+          T('submit', '提交结果', 'in_progress', 'submitted', 'assignee', { requires: ['artifact:result'] }),
+          T('accept', '验收通过', 'submitted', 'done', 'reviewer', { grant: 'review' }),
+          T('reject', '验收打回', 'submitted', 'todo', 'reviewer', { requires: ['comment'], grant: 'review' }),
+          T('reopen', '重新打开', 'done', 'todo', ['reviewer', 'creator']),
+          T('unblock', '解除阻塞', 'blocked', 'todo', ['assignee', 'creator']),
+          ...COMMON_TAIL(['todo', 'in_progress', 'waiting']),
+        ],
+      },
+    },
+
+    requirement: {
+      title: '需求',
+      participants: { designer: { title: '设计', role: 'designer' }, developer: { title: '开发', role: 'developer' }, tester: { title: '测试', role: 'tester' }, releaser: { title: '发布', role: 'releaser' } },
+      workflow: {
+        initial: 'draft',
+        states: {
+          draft: S('pending', '草稿'),
+          designing: S('active', '设计中', { weight: 10 }),
+          developing: S('active', '开发中', { weight: 30 }),
+          testing: S('active', '测试中', { weight: 70 }),
+          releasing: S('active', '发布中', { weight: 90 }),
+          awaiting_acceptance: S('waiting', '待验收', { weight: 95 }),
+          waiting: S('waiting', '等待答复'),
+          blocked: S('waiting', '已阻塞'),
+          done: S('terminal_success', '已上线'),
+          cancelled: S('terminal_failure', '已取消'),
+        },
+        transitions: [
+          T('start_design', '开始设计', 'draft', 'designing', 'creator', { assignTo: 'participant:designer' }),
+          T('design_done', '设计完成', 'designing', 'developing', 'assignee', { requires: ['artifact:prd'], assignTo: 'participant:developer' }),
+          T('dev_done', '开发完成', 'developing', 'testing', 'assignee', { requires: ['artifact:pr'], assignTo: 'participant:tester' }),
+          T('test_fail', '测试不通过', 'testing', 'developing', 'assignee', { requires: ['comment'], assignTo: 'participant:developer' }),
+          T('test_pass', '测试通过', 'testing', 'releasing', 'assignee', { requires: ['artifact:test_report', 'no_open_bugs'], assignTo: 'participant:releaser' }),
+          T('release_done', '发布完成', 'releasing', 'awaiting_acceptance', 'assignee', { requires: ['artifact:release_note'] }),
+          T('accept', '验收通过', 'awaiting_acceptance', 'done', 'reviewer', { grant: 'review' }),
+          T('reject', '验收打回', 'awaiting_acceptance', 'developing', 'reviewer', { requires: ['comment'], grant: 'review', assignTo: 'participant:developer' }),
+          T('ask_for_input', '提问等待', ['designing', 'developing', 'testing', 'releasing'], 'waiting', 'assignee', { requires: ['comment'] }),
+          T('resume', '答复并恢复', 'waiting', '$previous', ['creator', 'reviewer'], { requires: ['comment'] }),
+          ...COMMON_TAIL(['designing', 'developing', 'testing', 'releasing']),
+          T('unblock', '解除阻塞', 'blocked', '$previous', ['assignee', 'creator']),
+        ],
+      },
+    },
+
+    bug: {
+      title: 'Bug',
+      participants: { developer: { title: '修复', role: 'developer' }, tester: { title: '验证', role: 'tester' } },
+      workflow: {
+        initial: 'new',
+        states: {
+          new: S('pending', '新建'),
+          confirmed: S('pending', '已确认', { claimable: true }),
+          fixing: S('active', '修复中', { weight: 40 }),
+          fixed: S('waiting', '待验证', { weight: 80 }),
+          verified: S('terminal_success', '已验证'),
+          rejected: S('terminal_failure', '不是 Bug'),
+          duplicate: S('terminal_failure', '重复'),
+          wont_fix: S('terminal_failure', '不修复'),
+        },
+        transitions: [
+          T('confirm', '确认', 'new', 'confirmed', ['creator', 'role:tester'], { assignTo: 'participant:developer' }),
+          T('reject', '判定非 Bug', ['new', 'confirmed'], 'rejected', ['creator', 'role:tester', 'role:developer'], { requires: ['comment'] }),
+          T('duplicate', '判定重复', ['new', 'confirmed'], 'duplicate', ['creator', 'role:tester', 'role:developer'], { requires: ['comment'] }),
+          T('wont_fix', '不修复', ['new', 'confirmed', 'fixing'], 'wont_fix', ['creator', 'role:admin'], { requires: ['comment'] }),
+          T('start_fix', '开始修复', 'confirmed', 'fixing', 'assignee'),
+          T('fixed', '修复完成', 'fixing', 'fixed', 'assignee', { requires: ['artifact:pr'], assignTo: 'participant:tester' }),
+          T('verify', '验证通过', 'fixed', 'verified', ['assignee', 'reviewer'], { grant: 'review' }),
+          T('reopen', '重新打开', ['fixed', 'verified'], 'fixing', ['assignee', 'reviewer', 'creator'], { requires: ['comment'], assignTo: 'participant:developer' }),
+        ],
+      },
+    },
+
+    release: {
+      title: '发布',
+      participants: { releaser: { title: '发布', role: 'releaser' } },
+      workflow: {
+        initial: 'draft',
+        states: {
+          draft: S('pending', '草稿'),
+          ready: S('pending', '就绪', { claimable: true }),
+          preparing: S('active', '发布中', { weight: 50 }),
+          awaiting_acceptance: S('waiting', '待验收', { weight: 90 }),
+          done: S('terminal_success', '已发布'),
+          cancelled: S('terminal_failure', '已取消'),
+        },
+        transitions: [
+          T('ready', '就绪', 'draft', 'ready', 'creator', { assignTo: 'participant:releaser' }),
+          T('start', '开始发布', 'ready', 'preparing', 'assignee', { requires: ['deps_done'] }),
+          T('release_done', '发布完成', 'preparing', 'awaiting_acceptance', 'assignee', { requires: ['artifact:release_note'] }),
+          T('accept', '验收通过', 'awaiting_acceptance', 'done', 'reviewer', { grant: 'review' }),
+          T('reject', '验收打回', 'awaiting_acceptance', 'ready', 'reviewer', { requires: ['comment'], grant: 'review' }),
+          T('cancel', '取消', '*', 'cancelled', ['creator', 'role:admin']),
+        ],
+      },
+    },
+  };
+
+  // ---------- 校验 Workflow 定义（内核对配置的最低要求） ----------
+  function validateWorkflow(name, wf) {
+    const errs = [];
+    for (const [s, def] of Object.entries(wf.states)) if (!LABELS.includes(def.label)) errs.push(`${name}.${s}: 非法标签 ${def.label}`);
+    if (!wf.states[wf.initial]) errs.push(`${name}: initial 状态不存在`);
+    if (!Object.values(wf.states).some(s => s.label === 'terminal_success')) errs.push(`${name}: 缺少 terminal_success 状态`);
+    for (const t of wf.transitions) {
+      if (t.to !== '$previous' && !wf.states[t.to]) errs.push(`${name}.${t.name}: 目标状态 ${t.to} 不存在`);
+      for (const f of t.from) if (f !== '*' && !wf.states[f]) errs.push(`${name}.${t.name}: 来源状态 ${f} 不存在`);
+    }
+    return errs;
+  }
+
+  // ---------- 世界状态 ----------
+  function newWorld() {
+    return { tick: 0, seq: {}, tasks: {}, runs: [], events: [], actors: {} };
+  }
+  const nextId = (w, p) => `${p}${w.seq[p] = (w.seq[p] || 0) + 1}`;
+  const emit = (w, type, data) => w.events.push({ t: ++w.tick, type, ...data });
+
+  function registerActor(w, a) { w.actors[a.id] = a; return a; }
+
+  // ---------- 身份判定 ----------
+  // Agent 以 Owner 的身份参与任务相对角色判定；组织角色继承 Owner。
+  const principals = (w, actor) => actor.kind === 'agent' ? [actor.id, actor.owner] : [actor.id];
+  const orgRoles = (w, actor) => actor.kind === 'agent' ? (w.actors[actor.owner].roles || []) : (actor.roles || []);
+  function hasGrant(actor, g) { return actor.kind !== 'agent' || (actor.grants || []).includes(g); }
+
+  function matchesBy(w, t, actor, by) {
+    const ps = principals(w, actor), roles = orgRoles(w, actor);
+    return by.some(rule => {
+      if (rule === 'anyone') return true;
+      if (rule === 'creator') return ps.includes(t.creator);
+      if (rule === 'assignee') return t.assignee && ps.includes(t.assignee);
+      if (rule === 'reviewer') return ps.includes(t.reviewer);
+      if (rule.startsWith('participant:')) return ps.includes(t.participants[rule.slice(12)]);
+      if (rule.startsWith('role:')) return roles.includes(rule.slice(5));
+      return false;
+    });
+  }
+
+  // ---------- 查询 ----------
+  const defOf = (w, t) => TASK_TYPES[t.type];
+  const wfOf = (w, t) => defOf(w, t).workflow;
+  const stateOf = (w, t) => wfOf(w, t).states[t.state];
+  const isTerminal = (w, t) => ['terminal_success', 'terminal_failure'].includes(stateOf(w, t).label);
+  const isTerminalSuccess = (w, t) => stateOf(w, t).label === 'terminal_success';
+  const activeRun = (w, t) => w.runs.find(r => r.task === t.id && !r.endedAt);
+
+  function progress(w, t) {
+    const st = stateOf(w, t);
+    if (st.label === 'terminal_success') return 100;
+    if (st.label === 'terminal_failure') return 0;
+    if (st.weight != null) return st.weight;
+    // waiting/blocked 等无权重状态沿用进入前的权重
+    return t.lastWeight || 0;
+  }
+
+  function resolveTo(t, tr) { return tr.to === '$previous' ? t.previousState : tr.to; }
+
+  // 某个执行者在某任务上现在能触发哪些迁移，以及被挡住的原因
+  function availableTransitions(w, t, actor, payload) {
+    const wf = wfOf(w, t);
+    return wf.transitions.filter(tr => tr.from.includes('*') ? !isTerminal(w, t) : tr.from.includes(t.state)).map(tr => {
+      const reasons = [];
+      if (!matchesBy(w, t, actor, tr.by)) reasons.push(`你不是：${tr.by.map(describeRule).join(' / ')}`);
+      const grant = tr.grant || 'execute';
+      if (!hasGrant(actor, grant)) reasons.push(`Agent 没有「${GRANT_NAMES[grant] || grant}」授权`);
+      for (const c of tr.requires) {
+        const fn = c.startsWith('artifact:') ? artifactCond(c.slice(9)) : CONDITIONS[c];
+        const r = fn(w, t, wf, payload);
+        if (r) reasons.push(r);
+      }
+      if (tr.to === '$previous' && !t.previousState) reasons.push('没有可以回到的上一个状态');
+      return { transition: tr, ok: reasons.length === 0, reasons };
+    });
+  }
+  const ROLE_NAMES = { pm: '产品', designer: '设计', developer: '开发', tester: '测试', releaser: '发布', admin: '管理员' };
+  const describeRule = r => ({ creator: '创建者', assignee: '负责人', reviewer: '验收人', anyone: '任何人' })[r] || (r.startsWith('participant:') ? `参与角色·${ROLE_NAMES[r.slice(12)] || r.slice(12)}` : r.startsWith('role:') ? `角色·${ROLE_NAMES[r.slice(5)] || r.slice(5)}` : r);
+
+  // ---------- 命令 ----------
+  function createTask(w, { type, title, creator, participants = {}, reviewer, requiredCapabilities = [] }) {
+    const def = TASK_TYPES[type];
+    const t = { id: nextId(w, 'T'), type, title, creator, reviewer: reviewer || creator, assignee: null, requiredRole: null, requiredCapabilities,
+      state: def.workflow.initial, previousState: null, lastWeight: 0, participants: { ...participants }, artifacts: [], comments: [], relations: [] };
+    w.tasks[t.id] = t;
+    emit(w, 'TaskCreated', { task: t.id, by: creator });
+    return t;
+  }
+
+  function assign(w, taskId, actor, executorId) {
+    const t = w.tasks[taskId];
+    t.assignee = executorId; t.requiredRole = null;
+    emit(w, 'TaskAssigned', { task: t.id, by: actor.id, to: executorId });
+  }
+
+  function link(w, fromId, type, toId, actor) {
+    const a = w.tasks[fromId], b = w.tasks[toId];
+    if (type === 'blocks') {
+      if (wouldCycle(w, fromId, toId)) throw new Error('前置关系会绕成圈，拒绝');
+      a.relations.push({ type: 'blocks', other: toId });
+      b.relations.push({ type: 'blocks_me', other: fromId });
+    } else {
+      a.relations.push({ type, other: toId });
+    }
+    emit(w, 'TasksLinked', { from: fromId, type, to: toId, by: actor.id });
+  }
+  function wouldCycle(w, fromId, toId) {
+    // 若 toId 已经（传递地）阻塞 fromId，则 from blocks to 会成环
+    const seen = new Set(); const stack = [toId];
+    while (stack.length) { const cur = stack.pop(); if (cur === fromId) return true; if (seen.has(cur)) continue; seen.add(cur);
+      for (const r of w.tasks[cur].relations) if (r.type === 'blocks') stack.push(r.other); }
+    return false;
+  }
+
+  function addArtifact(w, taskId, actor, type, ref) {
+    const t = w.tasks[taskId]; t.artifacts.push({ type, ref, by: actor.id });
+    emit(w, 'ArtifactAttached', { task: t.id, type, by: actor.id });
+  }
+  function addComment(w, taskId, actor, text) {
+    const t = w.tasks[taskId]; t.comments.push({ by: actor.id, text });
+    emit(w, 'CommentAdded', { task: t.id, by: actor.id, text });
+  }
+  function reportUsage(w, taskId, actor, tokens, model = 'claude-sonnet-5') {
+    const t = w.tasks[taskId]; const r = activeRun(w, t);
+    if (!r) throw new Error('没有进行中的执行记录，无法上报消耗');
+    if (!principals(w, actor).includes(r.executor) && r.executor !== actor.id) throw new Error('只有这段执行记录的执行者能上报消耗');
+    r.usage[model] = Math.max(r.usage[model] || 0, tokens); // 累计值，幂等取最大
+    emit(w, 'UsageReported', { run: r.id, task: t.id, by: actor.id, model, tokens });
+  }
+
+  function claim(w, taskId, actor) {
+    const t = w.tasks[taskId];
+    const st = stateOf(w, t);
+    if (t.assignee) throw new Error('任务已有负责人');
+    if (!st.claimable && st.label !== 'active') throw new Error(`状态「${st.title}」不可领取`);
+    if (!hasGrant(actor, 'claim_backlog')) throw new Error('Agent 没有「领取任务」授权');
+    if (t.requiredRole && !orgRoles(w, actor).includes(t.requiredRole)) throw new Error(`需要「${ROLE_NAMES[t.requiredRole] || t.requiredRole}」角色`);
+    const caps = actor.capabilities || [];
+    const missing = t.requiredCapabilities.filter(c => !caps.includes(c));
+    if (actor.kind === 'agent' && missing.length) throw new Error(`Agent 缺少能力标签：${missing.join('、')}`);
+    if (actor.kind === 'agent' && (actor.maxConcurrent || 1) <= w.runs.filter(r => r.executor === actor.id && !r.endedAt).length) throw new Error('Agent 已达并发上限');
+    t.assignee = actor.id;
+    if (t.pendingSlot) { t.participants[t.pendingSlot] = actor.id; t.pendingSlot = null; }
+    t.requiredRole = null;
+    emit(w, 'TaskClaimed', { task: t.id, by: actor.id });
+    if (st.label === 'active') openRun(w, t, t.state, actor.id);
+  }
+
+  function transition(w, taskId, name, actor, payload = {}) {
+    const t = w.tasks[taskId];
+    const wf = wfOf(w, t);
+    const found = availableTransitions(w, t, actor, payload).find(x => x.transition.name === name);
+    if (!found) throw new Error(`当前状态没有「${name}」这一步`);
+    if (!found.ok) throw new Error(found.reasons.join('；'));
+    const tr = found.transition;
+    const from = t.state, to = resolveTo(t, tr);
+    const fromDef = wf.states[from], toDef = wf.states[to];
+
+    if (payload.comment) addComment(w, taskId, actor, payload.comment);
+
+    // 离开 active：关闭 Run
+    if (fromDef.label === 'active') {
+      const r = activeRun(w, t);
+      if (r) { r.endedAt = ++w.tick; r.outcome = toDef.label === 'terminal_failure' ? 'cancelled' : 'completed'; emit(w, 'RunEnded', { run: r.id, task: t.id, outcome: r.outcome }); }
+    }
+    if (fromDef.weight != null) t.lastWeight = fromDef.weight;
+    t.previousState = fromDef.label === 'active' ? from : t.previousState;
+    t.state = to;
+    emit(w, 'TaskTransitioned', { task: t.id, transition: tr.name, from, to, by: actor.id });
+
+    // 前置任务被终止：自动解除它对后续任务的前置关系（留下动态，可追溯）
+    if (toDef.label === 'terminal_failure') {
+      for (const rel of t.relations.filter(r => r.type === 'blocks')) {
+        const other = w.tasks[rel.other];
+        other.relations = other.relations.filter(r => !(r.type === 'blocks_me' && r.other === t.id));
+        emit(w, 'RelationRemoved', { from: t.id, type: 'blocks', to: other.id, reason: '前置任务已终止' });
+      }
+      t.relations = t.relations.filter(r => r.type !== 'blocks');
+    }
+
+    // 受理人切换
+    if (tr.assignTo) {
+      if (tr.assignTo.startsWith('participant:')) {
+        const slot = tr.assignTo.slice(12);
+        const who = t.participants[slot];
+        if (who) { t.assignee = who; t.requiredRole = null; t.pendingSlot = null; emit(w, 'TaskAssigned', { task: t.id, to: who, via: `槽位 ${slot}` }); }
+        else { t.assignee = null; t.requiredRole = defOf(w, t).participants[slot].role; t.pendingSlot = slot; emit(w, 'TaskSentToBacklog', { task: t.id, requiredRole: t.requiredRole, slot }); }
+      } else if (tr.assignTo === 'creator') { t.assignee = t.creator; }
+    }
+
+    // 进入 active：只有当触发者本人就是（或代表）新受理人时才开 Run。
+    // 由别人交接过来（design_done 把受理人切给开发）不开 Run，受理人要自己 begin。
+    // 受理人为空时任务停在该阶段等人领取，Run 在领取时开启。
+    if (toDef.label === 'active' && t.assignee && principals(w, actor).includes(t.assignee)) {
+      openRun(w, t, to, actor.id);
+    }
+    return t;
+  }
+
+  // 受理人（或其 Agent）在一个 active 阶段上显式开始工作
+  function begin(w, taskId, actor) {
+    const t = w.tasks[taskId]; const st = stateOf(w, t);
+    if (st.label !== 'active') throw new Error(`状态「${st.title}」不是进行中的阶段`);
+    if (!t.assignee || !principals(w, actor).includes(t.assignee)) throw new Error('只有负责人或他的 Agent 可以开始执行');
+    if (activeRun(w, t)) throw new Error('已经有一段执行记录在进行');
+    if (!hasGrant(actor, 'execute')) throw new Error('Agent 没有「执行任务」授权');
+    if (actor.kind === 'agent' && (actor.maxConcurrent || 1) <= w.runs.filter(r => r.executor === actor.id && !r.endedAt).length) throw new Error('Agent 已达并发上限');
+    return openRun(w, t, t.state, actor.id);
+  }
+  function openRun(w, t, state, executor) {
+    const r = { id: nextId(w, 'R'), task: t.id, state, executor, startedAt: ++w.tick, endedAt: null, outcome: null, usage: {} };
+    w.runs.push(r);
+    emit(w, 'RunStarted', { run: r.id, task: t.id, state, executor });
+    return r;
+  }
+
+  function backlog(w) {
+    return Object.values(w.tasks).filter(t => !t.assignee && (stateOf(w, t).claimable || stateOf(w, t).label === 'active'));
+  }
+
+  return { LABELS, TASK_TYPES, ARTIFACT_NAMES, validateWorkflow, newWorld, registerActor, createTask, assign, link, addArtifact, addComment, reportUsage, claim, begin, transition,
+    availableTransitions, backlog, stateOf, isTerminal, progress, activeRun, describeRule, ROLE_NAMES };
+})();
+</script>
+
+<!-- ============================================================
+     页面外壳：可丢弃
+     ============================================================ -->
+<script>
+let W;
+const ACTORS = [
+  { id: 'wang', name: '小王（产品经理）', kind: 'member', roles: ['pm', 'designer'] },
+  { id: 'li', name: '小李（开发）', kind: 'member', roles: ['developer'] },
+  { id: 'zhang', name: '小张（测试）', kind: 'member', roles: ['tester'] },
+  { id: 'zhao', name: '小赵（运维 · 管理员）', kind: 'member', roles: ['releaser', 'admin'] },
+  { id: 'li-agent', name: '小李的 Agent', kind: 'agent', owner: 'li', grants: ['execute', 'claim_backlog', 'comment'], capabilities: ['coding'], maxConcurrent: 1 },
+  { id: 'zhang-agent', name: '小张的 Agent', kind: 'agent', owner: 'zhang', grants: ['execute', 'claim_backlog', 'review'], capabilities: ['testing'], maxConcurrent: 2 },
+  { id: 'wang-agent', name: '小王的 Agent（没有领取授权）', kind: 'agent', owner: 'wang', grants: ['execute', 'comment'], capabilities: ['writing'] },
+];
+const A = Object.fromEntries(ACTORS.map(a => [a.id, a]));
+const EVENT_NAMES = { TaskCreated: '创建任务', TaskAssigned: '指派负责人', TasksLinked: '建立关联', ArtifactAttached: '附上交付物', CommentAdded: '评论', UsageReported: '上报消耗', TaskClaimed: '领取任务', RunStarted: '开始执行', RunEnded: '执行结束', TaskTransitioned: '状态变化', TaskSentToBacklog: '进入待领取', RelationRemoved: '自动解除前置' };
+const LABEL_NAMES = { pending: '未开始', active: '进行中', waiting: '等待中', terminal_success: '已完成', terminal_failure: '已终止' };
+const nameOf = id => id ? (A[id] ? A[id].name.split('（')[0] : id) : '—';
+
+function resetWorld() { W = Engine.newWorld(); ACTORS.forEach(a => Engine.registerActor(W, a)); render(); }
+
+// ---------- 场景 ----------
+// 每个 step: { label, note, run: () => ... }。run 抛错即为"被挡住"，这在某些场景里正是要看的结果。
+const SCENARIOS = [
+  {
+    title: 'A · 通用任务全程',
+    desc: '小王建一个通用任务给小李，小李的 Agent 替他执行：中途提问、被答复、提交、被打回、再提交、验收。看：提问等待时执行记录结束、恢复后是新的一段；成本按段累计。',
+    steps: () => [
+      { label: '小王创建「写周报」并分配给小李', run: () => { const t = Engine.createTask(W, { type: 'generic', title: '写周报', creator: 'wang' }); Engine.assign(W, t.id, A.wang, 'li'); Engine.transition(W, t.id, 'ready', A.wang); return t.id; } },
+      { label: '小李的 Agent 开始', note: '负责人是小李，他的 Agent 自动可以替他做；执行记录上的执行者是 Agent。', run: () => Engine.transition(W, 'T1', 'start', A['li-agent']) },
+      { label: 'Agent 上报消耗 1200 tokens', run: () => Engine.reportUsage(W, 'T1', A['li-agent'], 1200) },
+      { label: 'Agent 提问：周报要含哪几个项目？', note: '离开进行中 → 这段执行记录结束。', run: () => Engine.transition(W, 'T1', 'ask_for_input', A['li-agent'], { comment: '周报要含哪几个项目？' }) },
+      { label: '小李（本人）试图自己答复', note: '应被挡：答复只允许创建者或验收人。', run: () => Engine.transition(W, 'T1', 'resume', A.li, { comment: '我自己答' }), expectFail: true },
+      { label: '小王答复并恢复', note: '回到进行中，但小王不是负责人，所以没有开始新的执行记录。', run: () => Engine.transition(W, 'T1', 'resume', A.wang, { comment: '含 A、B 两个项目' }) },
+      { label: 'Agent 直接上报消耗', note: '应被挡：没有进行中的执行记录。Agent 得先「开始执行」。', run: () => Engine.reportUsage(W, 'T1', A['li-agent'], 100), expectFail: true },
+      { label: 'Agent 开始执行（第二段记录）', run: () => Engine.begin(W, 'T1', A['li-agent']) },
+      { label: 'Agent 没附产出物就提交', note: '应被挡：提交要求附上「结果摘要」。', run: () => Engine.transition(W, 'T1', 'submit', A['li-agent']), expectFail: true },
+      { label: 'Agent 附上结果摘要并提交', run: () => { Engine.addArtifact(W, 'T1', A['li-agent'], 'result', 'doc://weekly'); Engine.reportUsage(W, 'T1', A['li-agent'], 800); return Engine.transition(W, 'T1', 'submit', A['li-agent']); } },
+      { label: '小李试图自己验收', note: '应被挡：验收人是创建者小王。', run: () => Engine.transition(W, 'T1', 'accept', A.li), expectFail: true },
+      { label: '小王打回：少了项目 B', note: '回到待办，负责人仍是小李。', run: () => Engine.transition(W, 'T1', 'reject', A.wang, { comment: '少了项目 B' }) },
+      { label: 'Agent 再开始、再提交', run: () => { Engine.transition(W, 'T1', 'start', A['li-agent']); Engine.reportUsage(W, 'T1', A['li-agent'], 500); return Engine.transition(W, 'T1', 'submit', A['li-agent']); } },
+      { label: '小王验收通过', run: () => Engine.transition(W, 'T1', 'accept', A.wang) },
+    ],
+  },
+  {
+    title: 'B · 需求跨角色流转',
+    desc: '一个需求，四个参与角色都填好：设计 → 开发 → 测试 → 发布 → 验收。看：每进一个阶段负责人自动切换、每阶段各自的执行记录、进度随阶段走。',
+    steps: () => [
+      { label: '小王创建需求「登录页改版」，参与角色：设计=小王、开发=小李、测试=小张、发布=小赵', run: () => Engine.createTask(W, { type: 'requirement', title: '登录页改版', creator: 'wang', participants: { designer: 'wang', developer: 'li', tester: 'zhang', releaser: 'zhao' } }).id },
+      { label: '小王开始设计', note: '负责人切到设计角色（小王本人），第一段执行记录的执行者是小王。', run: () => Engine.transition(W, 'T1', 'start_design', A.wang) },
+      { label: '小王附 PRD，设计完成', note: '负责人切到开发（小李）。', run: () => { Engine.addArtifact(W, 'T1', A.wang, 'prd', 'doc://prd'); return Engine.transition(W, 'T1', 'design_done', A.wang); } },
+      { label: '小李的 Agent 直接上报消耗', note: '应被挡：交接过来的阶段没有自动开始执行记录，Agent 必须先「开始执行」。', run: () => Engine.reportUsage(W, 'T1', A['li-agent'], 100), expectFail: true },
+      { label: '小李的 Agent 开始执行、提问、被答复、再开始、附 PR、开发完成', note: '看执行记录表：开发阶段有两段（提问前后各一段），执行者都是小李的 Agent；负责人切到测试（小张）。', run: () => { Engine.begin(W, 'T1', A['li-agent']); Engine.reportUsage(W, 'T1', A['li-agent'], 12000); Engine.transition(W, 'T1', 'ask_for_input', A['li-agent'], { comment: '按钮颜色？' }); Engine.transition(W, 'T1', 'resume', A.wang, { comment: '品牌蓝' }); Engine.begin(W, 'T1', A['li-agent']); Engine.reportUsage(W, 'T1', A['li-agent'], 18000); Engine.addArtifact(W, 'T1', A['li-agent'], 'pr', 'gh://pr/1'); return Engine.transition(W, 'T1', 'dev_done', A['li-agent']); } },
+      { label: '小张的 Agent 开始执行、附测试报告、测试通过', note: '负责人切到发布（小赵）。', run: () => { Engine.begin(W, 'T1', A['zhang-agent']); Engine.reportUsage(W, 'T1', A['zhang-agent'], 9000); Engine.addArtifact(W, 'T1', A['zhang-agent'], 'test_report', 'doc://tr'); return Engine.transition(W, 'T1', 'test_pass', A['zhang-agent']); } },
+      { label: '小赵不点开始、直接附发布记录、发布完成', note: '允许：人可以不留执行记录就完成一个阶段，代价是这个阶段没有周期和成本记录。进入待验收。', run: () => { Engine.addArtifact(W, 'T1', A.zhao, 'release_note', 'doc://rn'); return Engine.transition(W, 'T1', 'release_done', A.zhao); } },
+      { label: '小王验收通过', note: '看执行记录表：设计/开发/测试/发布各阶段的记录与消耗分开。', run: () => Engine.transition(W, 'T1', 'accept', A.wang) },
+    ],
+  },
+  {
+    title: 'C · Bug 阻塞上线',
+    desc: '测试阶段发现 Bug，用「发现于」关联到需求。看：Bug 没关时「测试通过」被挡住；Bug 走完自己的流程后才放行。',
+    steps: () => [
+      { label: '快进：需求已到测试阶段（负责人小张）', run: () => { const t = Engine.createTask(W, { type: 'requirement', title: '支付页优化', creator: 'wang', participants: { designer: 'wang', developer: 'li', tester: 'zhang', releaser: 'zhao' } }); Engine.transition(W, t.id, 'start_design', A.wang); Engine.addArtifact(W, t.id, A.wang, 'prd', 'doc://prd'); Engine.transition(W, t.id, 'design_done', A.wang); Engine.addArtifact(W, t.id, A.li, 'pr', 'gh://pr/2'); Engine.transition(W, t.id, 'dev_done', A.li); return t.id; } },
+      { label: '小张创建 Bug「金额显示错位」，发现于需求 T1，修复=小李、验证=小张', run: () => { const b = Engine.createTask(W, { type: 'bug', title: '金额显示错位', creator: 'zhang', participants: { developer: 'li', tester: 'zhang' } }); Engine.link(W, b.id, 'found_in', 'T1', A.zhang); return b.id; } },
+      { label: '小张附测试报告，试图「测试通过」', note: '应被挡：仍有未关闭的 Bug。', run: () => { Engine.addArtifact(W, 'T1', A.zhang, 'test_report', 'doc://tr'); return Engine.transition(W, 'T1', 'test_pass', A.zhang); }, expectFail: true },
+      { label: '小张确认 Bug', note: 'Bug 负责人切到修复角色（小李）。需求 T1 仍在测试中，两个任务并行。', run: () => Engine.transition(W, 'T2', 'confirm', A.zhang) },
+      { label: '小李的 Agent 开始修复、附 PR、修复完成', note: 'Bug 负责人切到验证角色（小张）。', run: () => { Engine.transition(W, 'T2', 'start_fix', A['li-agent']); Engine.reportUsage(W, 'T2', A['li-agent'], 4000); Engine.addArtifact(W, 'T2', A['li-agent'], 'pr', 'gh://pr/3'); return Engine.transition(W, 'T2', 'fixed', A['li-agent']); } },
+      { label: '小张的 Agent 验证通过', note: '验证通过需要「验收」授权，小张的 Agent 有。', run: () => Engine.transition(W, 'T2', 'verify', A['zhang-agent']) },
+      { label: '小张再试「测试通过」', note: '现在放行，负责人切到小赵。', run: () => Engine.transition(W, 'T1', 'test_pass', A.zhang) },
+    ],
+  },
+  {
+    title: 'D · 角色空缺进待领取',
+    desc: '需求创建时没填测试角色。开发完成后任务进入待领取任务，要求「测试」角色。看：谁能领、谁不能领，以及领取后角色位置被回填。',
+    steps: () => [
+      { label: '快进：需求（测试角色空缺）到开发完成', note: '负责人清空，进入待领取任务，要求测试角色。', run: () => { const t = Engine.createTask(W, { type: 'requirement', title: '导出报表', creator: 'wang', participants: { designer: 'wang', developer: 'li', releaser: 'zhao' }, requiredCapabilities: ['testing'] }); Engine.transition(W, t.id, 'start_design', A.wang); Engine.addArtifact(W, t.id, A.wang, 'prd', 'doc://prd'); Engine.transition(W, t.id, 'design_done', A.wang); Engine.addArtifact(W, t.id, A.li, 'pr', 'gh://pr/4'); Engine.transition(W, t.id, 'dev_done', A.li); return t.id; } },
+      { label: '小李的 Agent 试图领取', note: '应被挡：他不是测试。', run: () => Engine.claim(W, 'T1', A['li-agent']), expectFail: true },
+      { label: '小张（本人）看一眼待领取任务', note: '待领取任务是个视图：负责人为空、且状态可领取或正处在某个进行中阶段的任务。', run: () => Engine.backlog(W).map(t => t.title).join('、') || (() => { throw new Error('待领池是空的'); })() },
+      { label: '小王的 Agent 试图领取', note: '应被挡：没有 claim_backlog 授权（且角色不符）。', run: () => Engine.claim(W, 'T1', A['wang-agent']), expectFail: true },
+      { label: '小张的 Agent 领取', note: '角色是测试 ✓、有测试能力 ✓、有领取授权 ✓。领取后测试角色回填为该 Agent。', run: () => Engine.claim(W, 'T1', A['zhang-agent']) },
+      { label: '检查：领取后执行记录已开始，执行者是小张的 Agent', note: '进入「测试中」时负责人为空，没有开始执行记录；领取那一刻才开始。', run: () => { const r = Engine.activeRun(W, W.tasks.T1); if (!r) throw new Error('T1 处于进行中状态但没有执行记录'); return r.id + ' by ' + r.executor; } },
+    ],
+  },
+  {
+    title: 'E · 发布依赖与循环检测',
+    desc: '一个发布任务以两个需求为前置。看：需求没完成时不能开始发布；反过来再加前置会绕成圈、被拒绝；取消一个需求后它的前置关系自动解除。',
+    steps: () => [
+      { label: '创建两个需求 + 一个发布任务（发布=小赵）', run: () => { Engine.createTask(W, { type: 'requirement', title: '需求甲', creator: 'wang', participants: { designer: 'wang', developer: 'li', tester: 'zhang', releaser: 'zhao' } }); Engine.createTask(W, { type: 'requirement', title: '需求乙', creator: 'wang', participants: { designer: 'wang', developer: 'li', tester: 'zhang', releaser: 'zhao' } }); return Engine.createTask(W, { type: 'release', title: 'v2.0 发布', creator: 'zhao', participants: { releaser: 'zhao' } }).id; } },
+      { label: '需求甲、乙设为发布的前置', run: () => { Engine.link(W, 'T1', 'blocks', 'T3', A.zhao); Engine.link(W, 'T2', 'blocks', 'T3', A.zhao); } },
+      { label: '试图让「发布」成为需求甲的前置', note: '应被拒：绕成圈了。', run: () => Engine.link(W, 'T3', 'blocks', 'T1', A.zhao), expectFail: true },
+      { label: '小赵把发布置为就绪，试图开始发布', note: '应被挡：两个前置需求都没完成。', run: () => { Engine.transition(W, 'T3', 'ready', A.zhao); return Engine.transition(W, 'T3', 'start', A.zhao); }, expectFail: true },
+      { label: '小赵取消需求乙', note: '需求乙终止，它对发布的前置关系自动解除，动态里留一条记录。', run: () => Engine.transition(W, 'T2', 'cancel', A.zhao) },
+      { label: '再试开始发布', note: '应被挡：还剩需求甲没完成（需求乙已不再是前置）。', run: () => Engine.transition(W, 'T3', 'start', A.zhao), expectFail: true },
+      { label: '快进：需求甲全程走完上线', run: () => { const id = 'T1'; Engine.transition(W, id, 'start_design', A.wang); Engine.addArtifact(W, id, A.wang, 'prd', 'x'); Engine.transition(W, id, 'design_done', A.wang); Engine.addArtifact(W, id, A.li, 'pr', 'x'); Engine.transition(W, id, 'dev_done', A.li); Engine.addArtifact(W, id, A.zhang, 'test_report', 'x'); Engine.transition(W, id, 'test_pass', A.zhang); Engine.addArtifact(W, id, A.zhao, 'release_note', 'x'); Engine.transition(W, id, 'release_done', A.zhao); return Engine.transition(W, id, 'accept', A.wang); } },
+      { label: '开始发布', note: '放行：前置只剩需求甲，且已上线。', run: () => Engine.transition(W, 'T3', 'start', A.zhao) },
+    ],
+  },
+  {
+    title: 'F · 越权与授权项',
+    desc: '把各种不该成功的操作都试一遍：非验收人验收、Agent 越过所有者权限、缺授权、结束后再操作。',
+    steps: () => [
+      { label: '小王建通用任务给小李并就绪', run: () => { const t = Engine.createTask(W, { type: 'generic', title: '整理客户名单', creator: 'wang' }); Engine.assign(W, t.id, A.wang, 'li'); Engine.transition(W, t.id, 'ready', A.wang); return t.id; } },
+      { label: '小张的 Agent 试图开始', note: '应被挡：负责人是小李，小张的 Agent 不是他的。', run: () => Engine.transition(W, 'T1', 'start', A['zhang-agent']), expectFail: true },
+      { label: '小李试图取消', note: '应被挡：取消只允许创建者或管理员。', run: () => Engine.transition(W, 'T1', 'cancel', A.li), expectFail: true },
+      { label: '小赵（管理员）取消', run: () => Engine.transition(W, 'T1', 'cancel', A.zhao) },
+      { label: '终态后小王试图就绪', note: '应被挡：已取消的任务没有下一步。', run: () => Engine.transition(W, 'T1', 'ready', A.wang), expectFail: true },
+      { label: '小王建第二个任务并自己受理、自己验收', note: '允许：创建者自己做的任务可以自己验收。', run: () => { const t = Engine.createTask(W, { type: 'generic', title: '写月度总结', creator: 'wang' }); Engine.assign(W, t.id, A.wang, 'wang'); Engine.transition(W, t.id, 'ready', A.wang); Engine.transition(W, t.id, 'start', A['wang-agent']); Engine.addArtifact(W, t.id, A['wang-agent'], 'result', 'x'); Engine.transition(W, t.id, 'submit', A['wang-agent']); return Engine.transition(W, t.id, 'accept', A.wang); } },
+      { label: '小王的 Agent 试图替他验收', note: '应被挡：该 Agent 没有「验收」授权，即便所有者本人可以。', run: () => { const t = Engine.createTask(W, { type: 'generic', title: '再一个', creator: 'wang' }); Engine.assign(W, t.id, A.wang, 'wang'); Engine.transition(W, t.id, 'ready', A.wang); Engine.transition(W, t.id, 'start', A.wang); Engine.addArtifact(W, t.id, A.wang, 'result', 'x'); Engine.transition(W, t.id, 'submit', A.wang); return Engine.transition(W, t.id, 'accept', A['wang-agent']); }, expectFail: true },
+    ],
+  },
+];
+
+let curTab = 0, stepIdx = 0, stepResults = [];
+function openTab(i) { curTab = i; stepIdx = 0; stepResults = []; resetWorld(); renderScenario(); }
+function runStep(i) {
+  const sc = SCENARIOS[curTab]; const st = sc.steps()[i];
+  try { const r = st.run(); stepResults[i] = { ok: true, text: r ? `完成 → ${r.id || r}` : '完成', unexpected: !!st.expectFail }; }
+  catch (e) { stepResults[i] = { ok: false, text: `被挡住：${e.message}`, unexpected: !st.expectFail }; }
+  stepIdx = i + 1; render(); renderScenario();
+}
+function renderScenario() {
+  const sc = SCENARIOS[curTab]; const steps = sc.steps();
+  document.getElementById('tabs').innerHTML = SCENARIOS.map((s, i) => `<button class="${i === curTab ? 'on' : ''}" onclick="openTab(${i})">${s.title}</button>`).join('');
+  document.getElementById('scenario').innerHTML = `<p>${sc.desc}</p><ul class="steps">` + steps.map((st, i) => {
+    const r = stepResults[i];
+    const btn = `<button class="${r ? (r.ok ? 'done' : '') : (i === stepIdx ? 'primary' : '')}" ${i === stepIdx ? '' : 'disabled'} onclick="runStep(${i})">${st.label}</button>`;
+    const res = r ? `<div class="msg ${r.ok === !st.expectFail ? 'ok' : 'bad'}">${r.text}${st.expectFail ? (r.ok ? '　⚠️ 预期被挡但成功了' : '　✓ 符合预期') : (r.ok ? '' : '　⚠️ 预期成功但被挡')}</div>` : '';
+    return `<li><span class="n">${i + 1}.</span><div>${btn}${st.note ? `<div class="note">${st.note}</div>` : ''}${res}</div></li>`;
+  }).join('') + `</ul><div class="row"><button onclick="openTab(${curTab})">重置本场景</button></div>`;
+}
+
+// ---------- 状态面板 ----------
+function render() {
+  const tasks = Object.values(W.tasks);
+  document.getElementById('tasks').innerHTML = tasks.length ? `<table><tr><th>ID</th><th>类型 / 标题</th><th>状态</th><th>负责人</th><th>参与角色</th><th>关联 / 交付物</th></tr>` + tasks.map(t => {
+    const st = Engine.stateOf(W, t); const def = Engine.TASK_TYPES[t.type];
+    const parts = Object.entries(def.participants).map(([k, p]) => `${p.title}=${nameOf(t.participants[k])}`).join('，');
+    const rels = t.relations.filter(r => r.type !== 'blocks_me').map(r => `${({ blocks: '前置于', found_in: '发现于', relates_to: '相关' })[r.type]} ${r.other}`).join('，');
+    const arts = t.artifacts.map(a => Engine.ARTIFACT_NAMES[a.type]).join('，');
+    return `<tr><td>${t.id}</td><td>${def.title}<br><b>${t.title}</b></td><td><span class="tag ${st.label}">${st.title}</span><br><span class="muted">${LABEL_NAMES[st.label]}${st.claimable ? ' · 可领取' : ''}</span></td><td>${t.assignee ? nameOf(t.assignee) : (t.requiredRole ? `<span class="tag waiting">待领取 · 需要${Engine.ROLE_NAMES[t.requiredRole] || t.requiredRole}</span>` : '—')}<br><span class="muted">验收人 ${nameOf(t.reviewer)}</span></td><td class="muted">${parts || '—'}</td><td class="muted">${rels}${rels && arts ? '<br>' : ''}${arts}</td></tr>`;
+  }).join('') + '</table>' : '<p class="muted">还没有任务。</p>';
+
+  document.getElementById('runs').innerHTML = W.runs.length ? `<table><tr><th>编号</th><th>任务</th><th>阶段</th><th>执行者</th><th>结果</th><th>消耗</th></tr>` + W.runs.map(r => {
+    const t = W.tasks[r.task]; const st = Engine.TASK_TYPES[t.type].workflow.states[r.state];
+    const usage = Object.entries(r.usage).map(([m, n]) => `${n} tok`).join(', ') || '—';
+    return `<tr><td>${r.id}</td><td>${t.title}</td><td>${st.title}</td><td>${nameOf(r.executor)}${A[r.executor] && A[r.executor].kind === 'agent' ? ` <span class="muted">(Owner ${nameOf(A[r.executor].owner)})</span>` : ''}</td><td>${r.endedAt ? ({ completed: '已结束', cancelled: '已取消' })[r.outcome] : '<span class="tag active">进行中</span>'}</td><td>${usage}</td></tr>`;
+  }).join('') + '</table>' : '<p class="muted">还没有执行记录。</p>';
+
+  document.getElementById('progress').innerHTML = tasks.length ? tasks.map(t => `<div class="row"><span style="width:160px">${t.title}</span><div style="flex:1;height:8px;background:#e5e7eb;border-radius:4px"><div style="width:${Engine.progress(W, t)}%;height:8px;background:var(--accent);border-radius:4px"></div></div><span class="muted" style="width:40px">${Engine.progress(W, t)}%</span></div>`).join('') : '';
+
+  document.getElementById('log').innerHTML = W.events.slice().reverse().map(e => { const { t, type, ...rest } = e; return `<div><span class="muted">#${t}</span> <b>${EVENT_NAMES[type] || type}</b> ${Object.entries(rest).map(([k, v]) => `${k}=${['by', 'to', 'executor'].includes(k) ? nameOf(v) : v}`).join(' ')}</div>`; }).join('');
+
+  renderFreeplay();
+}
+
+// ---------- 自由操作 ----------
+function renderFreeplay() {
+  const actorSel = document.getElementById('actor'), taskSel = document.getElementById('task');
+  if (!actorSel.options.length) actorSel.innerHTML = ACTORS.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+  const prevTask = taskSel.value;
+  taskSel.innerHTML = Object.values(W.tasks).map(t => `<option value="${t.id}" ${t.id === prevTask ? 'selected' : ''}>${t.id} ${t.title}</option>`).join('');
+  const typeSel = document.getElementById('new-type');
+  if (!typeSel.options.length) { typeSel.innerHTML = Object.entries(Engine.TASK_TYPES).map(([k, v]) => `<option value="${k}">${v.title}</option>`).join(''); typeSel.onchange = renderSlots; renderSlots(); }
+  const actor = A[actorSel.value]; const t = W.tasks[taskSel.value];
+  const box = document.getElementById('freeplay');
+  if (!t) { box.innerHTML = '<p class="muted">先在下面新建一个任务，或跑一个场景。</p>'; return; }
+  const avail = Engine.availableTransitions(W, t, actor, { comment: '（自由操作附带的评论）' });
+  const st = Engine.stateOf(W, t); const def = Engine.TASK_TYPES[t.type];
+  const ps = actor.kind === 'agent' ? [actor.id, actor.owner] : [actor.id];
+  const me = [ps.includes(t.creator) && '创建者', t.assignee && ps.includes(t.assignee) && '负责人', ps.includes(t.reviewer) && '验收人'].filter(Boolean);
+  const run = Engine.activeRun(W, t);
+  const others = Object.values(W.tasks).filter(o => o.id !== t.id);
+  const summary = `任务「${t.title}」是一个<b>${def.title}</b>，现在处于「<b>${st.title}</b>」（${LABEL_NAMES[st.label]}）。`
+    + (t.assignee ? `负责人是 <b>${nameOf(t.assignee)}</b>。` : (t.requiredRole ? `没有负责人，在待领取任务里，需要「${Engine.ROLE_NAMES[t.requiredRole] || t.requiredRole}」角色的人来领。` : '还没有负责人。'))
+    + (run ? `${nameOf(run.executor)} 正在执行中。` : (st.label === 'active' ? '还没有人开始执行。' : ''))
+    + ` 你（${actor.name}）在这个任务上${me.length ? '是：' + me.join('、') : '没有任何身份'}。`;
+  const btn = (label, fn, disabledReason) => `<button ${disabledReason ? `disabled title="${disabledReason}"` : ''} onclick="uiDo(()=>${fn})">${label}</button>`;
+  const ok = avail.filter(x => x.ok), no = avail.filter(x => !x.ok);
+  box.innerHTML = `<p>${summary}</p>
+    <h3>推进流程</h3>
+    <div class="row">${ok.length ? ok.map(x => btn(x.transition.title, `Engine.transition(W,'${t.id}','${x.transition.name}',A['${actor.id}'],{comment:'（自由操作附带的评论）'})`)).join('') : '<span class="muted">你现在推不动这个任务。</span>'}</div>
+    ${no.length ? `<div class="row"><span class="muted">这些步骤你现在做不了：</span></div><ul class="muted" style="margin:0 0 6px 18px">${no.map(x => `<li>${x.transition.title}：${x.reasons.join('；')}</li>`).join('')}</ul>` : ''}
+    <h3>执行</h3>
+    <div class="row">
+      ${btn('领取这个任务', `Engine.claim(W,'${t.id}',A['${actor.id}'])`)}
+      ${btn('开始执行', `Engine.begin(W,'${t.id}',A['${actor.id}'])`)}
+      ${btn('上报消耗（token）', `Engine.reportUsage(W,'${t.id}',A['${actor.id}'],Number(prompt('到目前为止一共用了多少 tokens？','1000')))`)}
+      <span class="muted">领取：从待领取任务里把它接过来。开始执行：负责人或他的 Agent 开始干活，从这一刻起记录时间和消耗。</span>
+    </div>
+    <h3>补充信息</h3>
+    <div class="row">
+      <span>附上交付物：</span><select id="art">${Object.entries(Engine.ARTIFACT_NAMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+      ${btn('附上', `Engine.addArtifact(W,'${t.id}',A['${actor.id}'],document.getElementById('art').value,'ref')`)}
+      ${btn('写一条评论', `Engine.addComment(W,'${t.id}',A['${actor.id}'],prompt('评论内容','（评论）')||'（评论）')`)}
+    </div>
+    <h3>指派与关联</h3>
+    <div class="row">
+      <span>把任务指派给：</span><select id="assignee">${ACTORS.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}</select>
+      ${btn('指派', `Engine.assign(W,'${t.id}',A['${actor.id}'],document.getElementById('assignee').value)`)}
+    </div>
+    <div class="row">${others.length ? `<span>这个任务</span><select id="rel"><option value="blocks">是它的前置（它要等本任务完成）</option><option value="found_in">是在它里面发现的 Bug</option><option value="relates_to">和它相关</option></select><select id="other">${others.map(o => `<option value="${o.id}">${o.id} ${o.title}</option>`).join('')}</select>${btn('建立关联', `Engine.link(W,'${t.id}',document.getElementById('rel').value,document.getElementById('other').value,A['${actor.id}'])`)}` : '<span class="muted">只有一个任务，还没法建立关联。</span>'}</div>`;
+}
+function renderSlots() {
+  const def = Engine.TASK_TYPES[document.getElementById('new-type').value] || Engine.TASK_TYPES.generic;
+  document.getElementById('new-slots').innerHTML = Object.entries(def.participants).map(([k, p]) => `${p.title} <select data-slot="${k}"><option value="">（空）</option>${ACTORS.filter(a => a.kind === 'member').map(a => `<option value="${a.id}">${a.name}</option>`).join('')}</select>`).join(' ') || '<span class="muted">无</span>';
+}
+function uiCreate() {
+  const type = document.getElementById('new-type').value; const title = document.getElementById('new-title').value || '未命名';
+  const participants = {}; document.querySelectorAll('#new-slots select').forEach(s => { if (s.value) participants[s.dataset.slot] = s.value; });
+  uiDo(() => Engine.createTask(W, { type, title, creator: document.getElementById('actor').value, participants }));
+}
+function uiDo(fn) {
+  const m = document.getElementById('freemsg');
+  try { const r = fn(); m.innerHTML = `<div class="msg ok">完成${r && r.id ? ' → ' + r.id : ''}</div>`; }
+  catch (e) { m.innerHTML = `<div class="msg bad">被挡住：${e.message}</div>`; }
+  render();
+}
+document.getElementById('actor').addEventListener('change', renderFreeplay);
+document.getElementById('task').addEventListener('change', renderFreeplay);
+
+// ---------- 启动 ----------
+const errs = Object.entries(Engine.TASK_TYPES).flatMap(([k, v]) => Engine.validateWorkflow(k, v.workflow));
+document.getElementById('findings-banner').innerHTML = `<b>做原型时暴露出来、已带回设计的问题：</b><ol class="findings" style="margin:4px 0 0 18px">
+  <li>状态类型里原来的「初始」不够用：草稿和待办都是"没人在做"，区别只在能否领取。改成「未开始」并给状态加"可领取"标记。</li>
+  <li><b>执行记录不能绑在"进入进行中状态"上。</b>第一版原型在进入状态时自动开一段执行记录，结果设计完成交接给开发时，执行者被记成了负责人小李，而真正干活并上报消耗的是小李的 Agent。修正后：<b>只有负责人（或他的 Agent）自己进入阶段、领取任务、或点「开始执行」时才开始一段执行记录</b>；别人交接过来不算开始。代价：Agent 必须先「开始执行」才能上报消耗（场景 B 第 4 步演示被挡）。</li>
+  <li>离开进行中状态就结束执行记录，意味着 Agent 每次提问等待前后各是一段记录，一个开发阶段会有多段（场景 B）。统计按段求和即可，但"一个阶段 = 一段记录"的直觉不成立。</li>
+  <li>流程走到某一步、对应参与角色位置空着时，任务停在该阶段、负责人为空、出现在待领取任务里；<b>领取那一刻才开始执行记录</b>（场景 D）。所以「进行中」只表示阶段在进行，"有人在干"看有没有进行中的执行记录；人也可以不留执行记录就完成一个阶段（场景 B 的发布阶段）。</li>
+  <li>「前置」关联只认"已完成"，被取消的前置任务会永远挡住后面的任务。已定：前置任务终止时自动解除它对后续任务的前置关系，并留下一条动态（场景 E）。</li>
+  <li>等待中的任务"恢复"要回到之前那个进行中的状态，原型用了 <code>$previous</code> 这个特殊目标；这意味着任务要记住上一个状态。</li>
+</ol>${errs.length ? `<p class="bad">流程定义校验失败：${errs.join('；')}</p>` : '<p class="muted">四种内置流程通过系统校验（状态类型合法、初始状态存在、有已完成状态、每一步的起点终点都存在）。</p>'}`;
+document.getElementById('defs').textContent = JSON.stringify(Engine.TASK_TYPES, (k, v) => typeof v === 'function' ? undefined : v, 2);
+openTab(0);
+</script>
+</body>
+</html>

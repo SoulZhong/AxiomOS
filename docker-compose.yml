@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: axiomos
+      POSTGRES_PASSWORD: axiomos
+      POSTGRES_DB: axiomos
+    ports:
+      - "5439:5432"
+    volumes:
+      - axiomos-db:/var/lib/postgresql/data
+volumes:
+  axiomos-db:

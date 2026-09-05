@@ -1,0 +1,1383 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/teemo/axiomos/internal/app"
+	"github.com/teemo/axiomos/internal/domain"
+	"github.com/teemo/axiomos/internal/i18n"
+	"github.com/teemo/axiomos/internal/store"
+)
+
+// 本文件把领域对象转换成网页需要的形状（web/src/lib/api.ts 里的类型）。
+
+// Date 接受 "2006-01-02" 或 RFC3339，输出 "2006-01-02"。
+type Date struct{ T *time.Time }
+
+func (d *Date) UnmarshalJSON(b []byte) error {
+	var s *string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if s == nil || *s == "" {
+		d.T = nil
+		return nil
+	}
+	if t, err := time.ParseInLocation("2006-01-02", *s, time.Local); err == nil {
+		d.T = &t
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, *s)
+	if err != nil {
+		return fmt.Errorf("日期格式应为 YYYY-MM-DD：%s", *s)
+	}
+	d.T = &t
+	return nil
+}
+
+func dateStr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Local().Format("2006-01-02")
+	return &s
+}
+
+func timeStr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Format(time.RFC3339)
+	return &s
+}
+
+// ---------- 通用 ----------
+
+type ExecutorRef struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Name    string `json:"name"`
+	OwnerID string `json:"owner_id,omitempty"`
+}
+
+// refs 是执行者索引。
+type refs map[string]ExecutorRef
+
+func (r refs) get(id string) *ExecutorRef {
+	if id == "" {
+		return nil
+	}
+	if x, ok := r[id]; ok {
+		return &x
+	}
+	return &ExecutorRef{ID: id, Kind: "member", Name: id}
+}
+
+func (r refs) must(id string) ExecutorRef {
+	if x := r.get(id); x != nil {
+		return *x
+	}
+	return ExecutorRef{ID: id, Kind: "member", Name: "未知"}
+}
+
+func buildRefs(idx map[string]app.ExecutorInfo) refs {
+	out := refs{}
+	for id, e := range idx {
+		out[id] = ExecutorRef{ID: id, Kind: string(e.Kind), Name: e.Name, OwnerID: e.OwnerID}
+	}
+	return out
+}
+
+// roleTitle 用组织角色表翻译角色名，缺失时回退内置。
+func roleTitle(roles map[string]i18n.Text, r string, loc i18n.Locale) string {
+	if t, ok := roles[r]; ok && !t.IsZero() {
+		return t.In(loc)
+	}
+	return domain.RoleTitle(r).In(loc)
+}
+
+var priorityNames = map[int]string{0: "urgent", 1: "high", 2: "normal", 3: "low"}
+var priorityValues = map[string]int{"urgent": 0, "high": 1, "normal": 2, "low": 3}
+
+func priorityName(p int) string {
+	if n, ok := priorityNames[p]; ok {
+		return n
+	}
+	return "normal"
+}
+
+func stateView(tt *domain.TaskType, name string, loc i18n.Locale) TaskState {
+	if tt != nil {
+		if s := tt.Workflow.State(name); s != nil {
+			return TaskState{Name: s.Name, Title: s.Title.In(loc), Label: s.Label, Weight: s.Weight, Claimable: s.Claimable}
+		}
+	}
+	return TaskState{Name: name, Title: name, Label: domain.LabelPending}
+}
+
+type TaskState struct {
+	Name      string       `json:"name"`
+	Title     string       `json:"title"`
+	Label     domain.Label `json:"label"`
+	Weight    *int         `json:"weight,omitempty"`
+	Claimable bool         `json:"claimable,omitempty"`
+}
+
+// ---------- 会话 ----------
+
+type OrganizationV struct {
+	ID            string    `json:"id"`
+	Slug          string    `json:"slug"`
+	Name          string    `json:"name"`
+	OwnerID       string    `json:"owner_id"`
+	Currency      string    `json:"currency"`
+	DefaultLocale string    `json:"default_locale"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type MemberV struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Email     string    `json:"email"`
+	Roles     []string  `json:"roles"`
+	TeamID    *string   `json:"team_id"`
+	Locale    string    `json:"locale"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type RoleV struct {
+	Name  string `json:"name"`
+	Title string `json:"title"`
+}
+
+type TeamV struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	LeadID     *string `json:"lead_id"`
+	ParentID   *string `json:"parent_id"`
+	IsBoundary bool    `json:"is_boundary"`
+}
+
+// ScopeV 是范围选择器里的一档（ADR 0013）。
+type ScopeV struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Depth     int    `json:"depth"`
+	Financial bool   `json:"financial"`
+}
+
+type VisibilityV struct {
+	CollaborationVisibility string `json:"collaboration_visibility"`
+	FinanceVisibility       string `json:"finance_visibility"`
+}
+
+type SessionV struct {
+	Member        MemberV           `json:"member"`
+	Organization  OrganizationV     `json:"organization"`
+	Roles         []RoleV           `json:"roles"`
+	Teams         []TeamV           `json:"teams"`
+	ArtifactTypes map[string]string `json:"artifact_types"`
+	Capabilities  []string          `json:"capabilities"`
+	CapabilityMap map[string]string `json:"capability_titles"`
+	Permissions   []string          `json:"permissions"`
+	IsOwner       bool              `json:"is_owner"`
+	Scopes        []ScopeV          `json:"scopes"`
+	DefaultScope  string            `json:"default_scope"`
+	// 组织的两项可见性策略（ADR 0013），前端据此措辞"为什么看不到成本"
+	Settings *VisibilityV `json:"settings,omitempty"`
+}
+
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func memberView(m *domain.Member, email string, teamOf map[string]string) MemberV {
+	v := MemberV{ID: m.ID, Name: m.Name, Email: email, Roles: m.Roles, CreatedAt: m.CreatedAt}
+	if v.Roles == nil {
+		v.Roles = []string{}
+	}
+	v.TeamID = nullable(teamOf[m.ID])
+	return v
+}
+
+func sessionView(me *app.Me, email string, teams []*domain.Team, teamOf map[string]string, caps map[string]i18n.Text, orgRoles []*domain.Role, loc i18n.Locale) SessionV {
+	roles := []RoleV{}
+	seen := map[string]bool{}
+	for _, r := range orgRoles {
+		roles = append(roles, RoleV{Name: r.Name, Title: r.Title.In(loc)})
+		seen[r.Name] = true
+	}
+	for _, r := range me.Member.Roles {
+		if !seen[r] {
+			roles = append(roles, RoleV{Name: r, Title: domain.RoleTitle(r).In(loc)})
+		}
+	}
+	tv := []TeamV{}
+	for _, t := range teams {
+		tv = append(tv, TeamV{ID: t.ID, Name: t.Name, LeadID: nullable(t.LeadMemberID), ParentID: nullable(t.ParentID), IsBoundary: t.IsBoundary})
+	}
+	capNames := make([]string, 0, len(caps))
+	capTitles := map[string]string{}
+	for n, t := range caps {
+		capNames = append(capNames, n)
+		capTitles[n] = t.In(loc)
+	}
+	sort.Strings(capNames)
+	arts := map[string]string{}
+	for k, t := range domain.BuiltinArtifactTitles {
+		arts[k] = t.In(loc)
+	}
+	m := memberView(me.Member, email, teamOf)
+	m.Locale = string(loc)
+	perms := me.Permissions
+	if perms == nil {
+		perms = []string{}
+	}
+	sort.Strings(perms)
+	scopes := []ScopeV{}
+	for _, sc := range me.Scopes {
+		scopes = append(scopes, ScopeV{ID: sc.ID, Title: sc.Title, Depth: sc.Depth, Financial: sc.Financial})
+	}
+	return SessionV{
+		Scopes:        scopes,
+		DefaultScope:  me.DefaultScope,
+		Settings:      &VisibilityV{CollaborationVisibility: string(me.Organization.CollaborationVisibility), FinanceVisibility: string(me.Organization.FinanceVisibility)},
+		Member:        m,
+		Organization:  OrganizationV{ID: me.Organization.ID, Slug: me.Organization.Slug, Name: me.Organization.Name, OwnerID: me.Organization.OwnerMemberID, Currency: me.Organization.Currency, DefaultLocale: me.Organization.DefaultLocale, CreatedAt: me.Organization.CreatedAt},
+		Roles:         roles,
+		Teams:         tv,
+		ArtifactTypes: arts,
+		Capabilities:  capNames,
+		CapabilityMap: capTitles,
+		Permissions:   perms,
+		IsOwner:       me.IsOrgOwner,
+	}
+}
+
+// ---------- Agent ----------
+
+type GrantV struct {
+	Name domain.Grant     `json:"name"`
+	Mode domain.GrantMode `json:"mode"`
+}
+
+type AgentV struct {
+	ID             string      `json:"id"`
+	Name           string      `json:"name"`
+	Owner          ExecutorRef `json:"owner"`
+	Shared         bool        `json:"shared"`
+	Capabilities   []string    `json:"capabilities"`
+	Grants         []GrantV    `json:"grants"`
+	Online         bool        `json:"online"`
+	LastSeenAt     *string     `json:"last_seen_at"`
+	MaxConcurrency int         `json:"max_concurrency"`
+	Runtime        string      `json:"runtime"`
+	CreatedAt      time.Time   `json:"created_at"`
+}
+
+func agentView(a *domain.Agent, r refs, now time.Time) AgentV {
+	grants := []GrantV{}
+	for g, m := range a.Grants {
+		grants = append(grants, GrantV{Name: g, Mode: m})
+	}
+	sort.Slice(grants, func(i, j int) bool { return grants[i].Name < grants[j].Name })
+	return AgentV{ID: a.ID, Name: a.Name, Owner: r.must(a.OwnerMemberID), Shared: a.Shared, Capabilities: a.Capabilities, Grants: grants, Online: a.Online(now), LastSeenAt: timeStr(a.LastSeenAt), MaxConcurrency: a.MaxConcurrent, Runtime: a.Runtime, CreatedAt: a.CreatedAt}
+}
+
+type AgentInputV struct {
+	Name           string   `json:"name"`
+	Runtime        string   `json:"runtime"`
+	Capabilities   []string `json:"capabilities"`
+	Grants         []GrantV `json:"grants"`
+	Shared         bool     `json:"shared"`
+	MaxConcurrency int      `json:"max_concurrency"`
+}
+
+func (in AgentInputV) toApp() app.RegisterAgentInput {
+	out := app.RegisterAgentInput{Name: in.Name, Runtime: in.Runtime, Capabilities: in.Capabilities, Shared: in.Shared, MaxConcurrent: in.MaxConcurrency}
+	if in.Grants != nil {
+		out.Grants = map[domain.Grant]domain.GrantMode{}
+		for _, g := range in.Grants {
+			mode := g.Mode
+			if mode == "" {
+				mode = domain.GrantDirect
+			}
+			out.Grants[g.Name] = mode
+		}
+	}
+	return out
+}
+
+// ---------- 目标 ----------
+
+type GoalV struct {
+	ID            string      `json:"id"`
+	Title         string      `json:"title"`
+	Description   string      `json:"description"`
+	Owner         ExecutorRef `json:"owner"`
+	ParentID      *string     `json:"parent_id"`
+	TeamID        *string     `json:"team_id"`
+	Progress      int         `json:"progress"`
+	Achieved      bool        `json:"achieved"`
+	Status        string      `json:"status"`
+	Budget        *float64    `json:"budget"`
+	Cost          float64     `json:"cost"`
+	OverBudget    bool        `json:"over_budget"`
+	PlannedStart  *string     `json:"planned_start"`
+	PlannedEnd    *string     `json:"planned_end"`
+	ActualStart   *string     `json:"actual_start"`
+	ActualEnd     *string     `json:"actual_end"`
+	Deadline      *string     `json:"deadline"`
+	TaskCount     int         `json:"task_count"`
+	DoneTaskCount int         `json:"done_task_count"`
+	Children      []GoalV     `json:"children"`
+	CreatedAt     time.Time   `json:"created_at"`
+}
+
+// goalView 递归转换；actual 从任务实际时间聚合。
+func goalView(g *app.GoalView, r refs, actual map[string][2]*time.Time) GoalV {
+	v := GoalV{ID: g.ID, Title: g.Title, Description: g.Description, Owner: r.must(g.OwnerMemberID), ParentID: nullable(g.ParentID), TeamID: nullable(g.TeamID),
+		Progress: g.Progress, Achieved: g.Status == domain.GoalAchieved, Status: string(g.Status), Budget: g.Budget, Cost: g.Cost, OverBudget: g.OverBudget,
+		PlannedStart: dateStr(g.Start), PlannedEnd: dateStr(g.End), Deadline: dateStr(g.Deadline), TaskCount: g.TaskCount, DoneTaskCount: g.DoneCount, Children: []GoalV{}, CreatedAt: g.CreatedAt}
+	if g.PlannedStart != nil {
+		v.PlannedStart = dateStr(g.PlannedStart)
+	}
+	if g.PlannedEnd != nil {
+		v.PlannedEnd = dateStr(g.PlannedEnd)
+	}
+	if a, ok := actual[g.ID]; ok {
+		v.ActualStart, v.ActualEnd = dateStr(a[0]), dateStr(a[1])
+	}
+	for _, c := range g.Children {
+		v.Children = append(v.Children, goalView(c, r, actual))
+	}
+	return v
+}
+
+// actualSpans 计算每个目标（含子树）任务的实际起止。
+func actualSpans(tree []*app.GoalView, tasks []app.TaskSummary) map[string][2]*time.Time {
+	byGoal := map[string][2]*time.Time{}
+	for _, t := range tasks {
+		if t.GoalID == "" {
+			continue
+		}
+		cur := byGoal[t.GoalID]
+		cur[0] = minT(cur[0], t.ActualStart)
+		cur[1] = maxT(cur[1], t.ActualEnd)
+		byGoal[t.GoalID] = cur
+	}
+	var up func(v *app.GoalView) [2]*time.Time
+	up = func(v *app.GoalView) [2]*time.Time {
+		cur := byGoal[v.ID]
+		for _, c := range v.Children {
+			cc := up(c)
+			cur[0] = minT(cur[0], cc[0])
+			cur[1] = maxT(cur[1], cc[1])
+		}
+		byGoal[v.ID] = cur
+		return cur
+	}
+	for _, v := range tree {
+		up(v)
+	}
+	return byGoal
+}
+
+func minT(a, b *time.Time) *time.Time {
+	if a == nil {
+		return b
+	}
+	if b == nil || a.Before(*b) {
+		return a
+	}
+	return b
+}
+func maxT(a, b *time.Time) *time.Time {
+	if a == nil {
+		return b
+	}
+	if b == nil || a.After(*b) {
+		return a
+	}
+	return b
+}
+
+type GoalInputV struct {
+	Title        *string  `json:"title"`
+	Description  *string  `json:"description"`
+	OwnerID      *string  `json:"owner_id"`
+	ParentID     *string  `json:"parent_id"`
+	TeamID       *string  `json:"team_id"`
+	Budget       *float64 `json:"budget"`
+	PlannedStart *Date    `json:"planned_start"`
+	PlannedEnd   *Date    `json:"planned_end"`
+	Deadline     *Date    `json:"deadline"`
+	Achieved     *bool    `json:"achieved"`
+	// "active" | "abandoned"：放弃目标 / 重新开始（"achieved" 请用 achieved 字段）
+	Status *string `json:"status"`
+}
+
+// ---------- 任务 ----------
+
+type TaskRefV struct {
+	ID    string    `json:"id"`
+	Title string    `json:"title"`
+	Type  string    `json:"type"`
+	State TaskState `json:"state"`
+}
+
+type RelationV struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	From      TaskRefV  `json:"from"`
+	To        TaskRefV  `json:"to"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ArtifactV struct {
+	ID         string      `json:"id"`
+	Type       string      `json:"type"`
+	Title      string      `json:"title"`
+	URL        string      `json:"url"`
+	AttachedBy ExecutorRef `json:"attached_by"`
+	CreatedAt  time.Time   `json:"created_at"`
+}
+
+type CommentV struct {
+	ID        string      `json:"id"`
+	Kind      string      `json:"kind"`
+	Author    ExecutorRef `json:"author"`
+	Body      string      `json:"body"`
+	CreatedAt time.Time   `json:"created_at"`
+}
+
+type UsageV struct {
+	Model        string `json:"model"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	TotalTokens  int64  `json:"total_tokens"`
+	DurationMs   int64  `json:"duration_ms"`
+	ToolCalls    int64  `json:"tool_calls"`
+}
+
+type RunV struct {
+	ID          string      `json:"id"`
+	TaskID      string      `json:"task_id"`
+	State       string      `json:"state"`
+	StateTitle  string      `json:"state_title"`
+	Executor    ExecutorRef `json:"executor"`
+	StartedAt   time.Time   `json:"started_at"`
+	EndedAt     *time.Time  `json:"ended_at"`
+	Outcome     string      `json:"outcome"`
+	Usage       []UsageV    `json:"usage"`
+	TotalTokens int64       `json:"total_tokens"`
+	Cost        float64     `json:"cost"`
+}
+
+func runView(rr *store.RunRow, tt *domain.TaskType, r refs, loc i18n.Locale) RunV {
+	v := RunV{ID: rr.ID, TaskID: rr.TaskID, State: rr.State, StateTitle: rr.State, Executor: r.must(rr.ExecutorID), StartedAt: rr.StartedAt, EndedAt: rr.EndedAt, Cost: rr.Cost, Usage: []UsageV{}}
+	if tt != nil {
+		if s := tt.Workflow.State(rr.State); s != nil {
+			v.StateTitle = s.Title.In(loc)
+		}
+	}
+	switch {
+	case rr.EndedAt == nil:
+		v.Outcome = "running"
+	case rr.Outcome == domain.RunCompleted:
+		v.Outcome = "ended"
+	default:
+		v.Outcome = "cancelled"
+	}
+	end := time.Now()
+	if rr.EndedAt != nil {
+		end = *rr.EndedAt
+	}
+	dur := end.Sub(rr.StartedAt).Milliseconds()
+	for _, u := range rr.Usage {
+		v.Usage = append(v.Usage, UsageV{Model: u.ModelID, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens(), DurationMs: dur, ToolCalls: u.ToolCalls})
+		v.TotalTokens += u.TotalTokens()
+	}
+	return v
+}
+
+type ParticipantV struct {
+	Title    string       `json:"title"`
+	Role     string       `json:"role"`
+	Executor *ExecutorRef `json:"executor"`
+}
+
+type TaskV struct {
+	ID                   string                  `json:"id"`
+	GoalID               *string                 `json:"goal_id"`
+	Goal                 *GoalRefV               `json:"goal"`
+	ParentID             *string                 `json:"parent_id"`
+	Type                 string                  `json:"type"`
+	TypeTitle            string                  `json:"type_title"`
+	TypeVersion          int                     `json:"type_version"`
+	Title                string                  `json:"title"`
+	Description          string                  `json:"description"`
+	State                TaskState               `json:"state"`
+	PreviousState        *string                 `json:"previous_state"`
+	Creator              ExecutorRef             `json:"creator"`
+	Assignee             *ExecutorRef            `json:"assignee"`
+	Reviewer             ExecutorRef             `json:"reviewer"`
+	Participants         map[string]ParticipantV `json:"participants"`
+	RequiredRole         *string                 `json:"required_role"`
+	PendingParticipant   *string                 `json:"pending_participant"`
+	RequiredCapabilities []string                `json:"required_capabilities"`
+	HumanOnly            bool                    `json:"human_only"`
+	Relations            []RelationV             `json:"relations"`
+	Artifacts            []ArtifactV             `json:"artifacts"`
+	Comments             []CommentV              `json:"comments"`
+	Runs                 []RunV                  `json:"runs"`
+	Subtasks             []TaskRefV              `json:"subtasks"`
+	PlannedStart         *string                 `json:"planned_start"`
+	PlannedEnd           *string                 `json:"planned_end"`
+	ActualStart          *string                 `json:"actual_start"`
+	ActualEnd            *string                 `json:"actual_end"`
+	Estimate             *float64                `json:"estimate"`
+	Priority             string                  `json:"priority"`
+	Progress             int                     `json:"progress"`
+	Overdue              bool                    `json:"overdue"`
+	TotalTokens          int64                   `json:"total_tokens"`
+	Cost                 float64                 `json:"cost"`
+	Fields               map[string]any          `json:"fields"`
+	Points               *int                    `json:"points"`
+	Sprint               *SprintRefV             `json:"sprint"`
+	CreatedAt            time.Time               `json:"created_at"`
+	UpdatedAt            time.Time               `json:"updated_at"`
+}
+
+// GoalRefV 是任务上的目标引用。
+type GoalRefV struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type goalTitleFn func(id string) string
+type sprintTitleFn func(id string) string
+
+func sprintRef(id string, st sprintTitleFn) *SprintRefV {
+	if id == "" {
+		return nil
+	}
+	name := ""
+	if st != nil {
+		name = st(id)
+	}
+	return &SprintRefV{ID: id, Name: name}
+}
+
+func taskRef(t *domain.Task, tt *domain.TaskType, loc i18n.Locale) TaskRefV {
+	return TaskRefV{ID: t.ID, Title: t.Title, Type: t.TypeName, State: stateView(tt, t.State, loc)}
+}
+
+func relationTypeOut(t domain.RelationType) string {
+	if t == domain.RelationRelatesTo {
+		return "related"
+	}
+	return string(t)
+}
+
+func relationTypeIn(s string) domain.RelationType {
+	if s == "related" {
+		return domain.RelationRelatesTo
+	}
+	return domain.RelationType(s)
+}
+
+// taskView 从详情组装任务视图。
+func taskView(d *app.TaskDetail, incoming []app.IncomingRelation, related map[string]*domain.Task, types map[string]*domain.TaskType, r refs, goalTitle goalTitleFn, sprintTitle sprintTitleFn, loc i18n.Locale) TaskV {
+	t, tt := d.Task, d.Type
+	v := TaskV{ID: t.ID, GoalID: nullable(t.GoalID), ParentID: nullable(t.ParentID), Type: t.TypeName, TypeTitle: tt.Title.In(loc), TypeVersion: t.TypeVersion, Title: t.Title, Description: t.Description,
+		State: stateView(tt, t.State, loc), PreviousState: nullable(t.PreviousState), Creator: r.must(t.CreatorID), Assignee: r.get(t.AssigneeID), Reviewer: r.must(t.ReviewerID),
+		Participants: map[string]ParticipantV{}, RequiredRole: nullable(t.RequiredRole), PendingParticipant: nullable(t.PendingSlot), RequiredCapabilities: t.RequiredCapabilities, HumanOnly: t.HumanOnly,
+		Relations: []RelationV{}, Artifacts: []ArtifactV{}, Comments: []CommentV{}, Runs: []RunV{}, Subtasks: []TaskRefV{},
+		PlannedStart: dateStr(t.PlannedStart), PlannedEnd: dateStr(t.PlannedEnd), ActualStart: dateStr(t.ActualStart), ActualEnd: dateStr(t.ActualEnd),
+		Estimate: t.EstimateHours, Priority: priorityName(t.Priority), Progress: d.Progress, Overdue: d.Overdue, Cost: d.Cost, Fields: t.Fields, Points: t.Points, Sprint: sprintRef(t.SprintID, sprintTitle), CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
+	if v.RequiredCapabilities == nil {
+		v.RequiredCapabilities = []string{}
+	}
+	if v.Fields == nil {
+		v.Fields = map[string]any{}
+	}
+	if t.GoalID != "" {
+		v.Goal = &GoalRefV{ID: t.GoalID, Title: goalTitle(t.GoalID)}
+	}
+	for _, p := range tt.Participants {
+		v.Participants[p.Slot] = ParticipantV{Title: p.Title.In(loc), Role: p.Role, Executor: r.get(t.Participants[p.Slot])}
+	}
+	self := taskRef(t, tt, loc)
+	for i, rel := range t.Relations {
+		o := related[rel.OtherID]
+		if o == nil {
+			continue
+		}
+		v.Relations = append(v.Relations, RelationV{ID: fmt.Sprintf("%s:%s:%s", t.ID, rel.Type, rel.OtherID), Type: relationTypeOut(rel.Type), From: self, To: taskRef(o, types[o.TypeName], loc), CreatedAt: t.CreatedAt.Add(time.Duration(i) * time.Second)})
+	}
+	for _, in := range incoming {
+		v.Relations = append(v.Relations, RelationV{ID: fmt.Sprintf("%s:%s:%s", in.Task.ID, in.Type, t.ID), Type: relationTypeOut(in.Type), From: taskRef(in.Task, types[in.Task.TypeName], loc), To: self, CreatedAt: in.Task.CreatedAt})
+	}
+	for _, a := range t.Artifacts {
+		v.Artifacts = append(v.Artifacts, ArtifactV{ID: a.ID, Type: a.Type, Title: a.Title, URL: a.Ref, AttachedBy: r.must(a.ByID), CreatedAt: a.CreatedAt})
+	}
+	for _, c := range t.Comments {
+		kind := "comment"
+		if c.IsNote {
+			kind = "note"
+		}
+		v.Comments = append(v.Comments, CommentV{ID: c.ID, Kind: kind, Author: r.must(c.ByID), Body: c.Text, CreatedAt: c.CreatedAt})
+	}
+	for _, rr := range d.Runs {
+		rv := runView(rr, tt, r, loc)
+		v.TotalTokens += rv.TotalTokens
+		v.Runs = append(v.Runs, rv)
+	}
+	for _, s := range d.Subtasks {
+		v.Subtasks = append(v.Subtasks, TaskRefV{ID: s.ID, Title: s.Title, Type: s.TypeName, State: TaskState{Name: s.State.Name, Title: s.State.Title, Label: s.State.Label}})
+	}
+	return v
+}
+
+// taskListView 把摘要转成列表用的（精简）任务视图。
+func taskListView(s app.TaskSummary, r refs, goalTitle goalTitleFn, sprintTitle sprintTitleFn) TaskV {
+	v := TaskV{ID: s.ID, GoalID: nullable(s.GoalID), ParentID: nullable(s.ParentID), Type: s.TypeName, TypeTitle: s.TypeTitle, Title: s.Title,
+		State: TaskState{Name: s.State.Name, Title: s.State.Title, Label: s.State.Label}, Assignee: r.get(s.AssigneeID), Creator: ExecutorRef{}, Reviewer: ExecutorRef{},
+		Participants: map[string]ParticipantV{}, RequiredRole: nullable(s.RequiredRole), RequiredCapabilities: []string{}, HumanOnly: s.HumanOnly,
+		Relations: []RelationV{}, Artifacts: []ArtifactV{}, Comments: []CommentV{}, Runs: []RunV{}, Subtasks: []TaskRefV{},
+		PlannedStart: dateStr(s.PlannedStart), PlannedEnd: dateStr(s.PlannedEnd), ActualStart: dateStr(s.ActualStart), ActualEnd: dateStr(s.ActualEnd),
+		Priority: priorityName(s.Priority), Progress: s.Progress, Overdue: s.Overdue, Cost: s.Cost, Fields: map[string]any{}, Points: s.Points, Sprint: sprintRef(s.SprintID, sprintTitle), CreatedAt: s.CreatedAt, UpdatedAt: s.CreatedAt}
+	if s.GoalID != "" {
+		v.Goal = &GoalRefV{ID: s.GoalID, Title: goalTitle(s.GoalID)}
+	}
+	return v
+}
+
+type TaskInputV struct {
+	Title                *string           `json:"title"`
+	Type                 *string           `json:"type"`
+	GoalID               *string           `json:"goal_id"`
+	ParentID             *string           `json:"parent_id"`
+	Description          *string           `json:"description"`
+	AssigneeID           *string           `json:"assignee_id"`
+	ReviewerID           *string           `json:"reviewer_id"`
+	Participants         map[string]string `json:"participants"`
+	RequiredCapabilities []string          `json:"required_capabilities"`
+	HumanOnly            *bool             `json:"human_only"`
+	PlannedStart         *Date             `json:"planned_start"`
+	PlannedEnd           *Date             `json:"planned_end"`
+	Estimate             *float64          `json:"estimate"`
+	Priority             *string           `json:"priority"`
+	Fields               map[string]any    `json:"fields"`
+	Points               OptInt            `json:"points"`
+	SprintID             *string           `json:"sprint_id"`
+	Ready                *bool             `json:"ready"`
+}
+
+func str(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func (in TaskInputV) toCreate() app.CreateTaskInput {
+	out := app.CreateTaskInput{GoalID: str(in.GoalID), ParentID: str(in.ParentID), TypeName: str(in.Type), Title: str(in.Title), Description: str(in.Description), AssigneeID: str(in.AssigneeID), ReviewerID: str(in.ReviewerID),
+		Participants: in.Participants, RequiredCapabilities: in.RequiredCapabilities, EstimateHours: in.Estimate, Fields: in.Fields, Ready: true, Points: in.Points.V, SprintID: str(in.SprintID)}
+	if in.HumanOnly != nil {
+		out.HumanOnly = *in.HumanOnly
+	}
+	if in.Ready != nil {
+		out.Ready = *in.Ready
+	}
+	if in.Priority != nil {
+		if p, ok := priorityValues[*in.Priority]; ok {
+			out.Priority = &p
+		}
+	}
+	if in.PlannedStart != nil {
+		out.PlannedStart = in.PlannedStart.T
+	}
+	if in.PlannedEnd != nil {
+		out.PlannedEnd = in.PlannedEnd.T
+	}
+	return out
+}
+
+func (in TaskInputV) toUpdate() app.UpdateTaskInput {
+	out := app.UpdateTaskInput{Title: in.Title, Description: in.Description, ReviewerID: in.ReviewerID, EstimateHours: in.Estimate, HumanOnly: in.HumanOnly, GoalID: in.GoalID, Participants: in.Participants, Fields: in.Fields, Points: in.Points.V, SetPoints: in.Points.Set, SprintID: in.SprintID}
+	if in.Priority != nil {
+		if p, ok := priorityValues[*in.Priority]; ok {
+			out.Priority = &p
+		}
+	}
+	if in.PlannedStart != nil {
+		out.PlannedStart = in.PlannedStart.T
+	}
+	if in.PlannedEnd != nil {
+		out.PlannedEnd = in.PlannedEnd.T
+	}
+	return out
+}
+
+// ---------- 流程可用性 ----------
+
+type TransitionAvailabilityV struct {
+	Name      string `json:"name"`
+	Title     string `json:"title"`
+	To        string `json:"to"`
+	Available bool   `json:"available"`
+	// NeedsApproval 为真时这一步可以走，但会先记成待确认操作，等人确认（ADR 0003）
+	NeedsApproval bool         `json:"needs_approval,omitempty"`
+	Reasons       []string     `json:"reasons"`
+	Requires      []string     `json:"requires"`
+	LabelTo       domain.Label `json:"label_to"`
+}
+
+type WorkflowAvailabilityV struct {
+	TaskID       string                    `json:"task_id"`
+	State        TaskState                 `json:"state"`
+	ActiveRun    *ActiveRunV               `json:"active_run"`
+	Transitions  []TransitionAvailabilityV `json:"transitions"`
+	CanBegin     bool                      `json:"can_begin"`
+	CanClaim     bool                      `json:"can_claim"`
+	BeginReasons []string                  `json:"begin_reasons"`
+	ClaimReasons []string                  `json:"claim_reasons"`
+	Progress     int                       `json:"progress"`
+}
+
+// ActiveRunV 是进行中的执行记录引用。
+type ActiveRunV struct {
+	ID         string `json:"id"`
+	ExecutorID string `json:"executor_id"`
+}
+
+func workflowView(w *app.WorkflowView, tt *domain.TaskType, loc i18n.Locale) WorkflowAvailabilityV {
+	v := WorkflowAvailabilityV{TaskID: w.TaskID, State: stateView(tt, w.State.Name, loc), Transitions: []TransitionAvailabilityV{}, CanBegin: w.CanBegin, CanClaim: w.CanClaim, BeginReasons: orEmpty(w.BeginWhyNot), ClaimReasons: orEmpty(w.ClaimWhyNot), Progress: w.Progress}
+	if w.ActiveRun != nil {
+		v.ActiveRun = &ActiveRunV{ID: w.ActiveRun.ID, ExecutorID: w.ActiveRun.ExecutorID}
+	}
+	for _, a := range w.Transitions {
+		labelTo := domain.LabelPending
+		if s := tt.Workflow.State(a.To); s != nil {
+			labelTo = s.Label
+		}
+		v.Transitions = append(v.Transitions, TransitionAvailabilityV{Name: a.Name, Title: a.Title, To: a.To, Available: a.Available, NeedsApproval: a.NeedsApproval, Reasons: orEmpty(a.Reasons), Requires: orEmpty(a.Requires), LabelTo: labelTo})
+	}
+	return v
+}
+
+func orEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// ---------- 任务类型 ----------
+
+type ParticipantDefV struct {
+	Title string `json:"title"`
+	Role  string `json:"role"`
+}
+
+type TransitionDefV struct {
+	Name     string       `json:"name"`
+	Title    string       `json:"title"`
+	From     []string     `json:"from"`
+	To       string       `json:"to"`
+	By       []string     `json:"by"`
+	Requires []string     `json:"requires"`
+	Grant    domain.Grant `json:"grant,omitempty"`
+	AssignTo *string      `json:"assign_to"`
+}
+
+type WorkflowDefV struct {
+	Version     int                  `json:"version"`
+	Initial     string               `json:"initial"`
+	States      map[string]TaskState `json:"states"`
+	StateOrder  []string             `json:"state_order"`
+	Transitions []TransitionDefV     `json:"transitions"`
+}
+
+type TaskTypeV struct {
+	Name              string                     `json:"name"`
+	Title             string                     `json:"title"`
+	Builtin           bool                       `json:"builtin"`
+	Participants      map[string]ParticipantDefV `json:"participants"`
+	ParticipantOrder  []string                   `json:"participant_order"`
+	TaskSchema        map[string]any             `json:"task_schema"`
+	ResultSchema      map[string]any             `json:"result_schema"`
+	AgentInstructions string                     `json:"agent_instructions"`
+	Workflow          WorkflowDefV               `json:"workflow"`
+}
+
+func taskTypeView(tt *domain.TaskType, loc i18n.Locale) TaskTypeV {
+	v := TaskTypeV{Name: tt.Name, Title: tt.Title.In(loc), Builtin: tt.BuiltIn, Participants: map[string]ParticipantDefV{}, ParticipantOrder: []string{}, TaskSchema: tt.TaskSchema, ResultSchema: tt.ResultSchema, AgentInstructions: tt.AgentInstructions,
+		Workflow: WorkflowDefV{Version: tt.Workflow.Version, Initial: tt.Workflow.Initial, States: map[string]TaskState{}, StateOrder: []string{}, Transitions: []TransitionDefV{}}}
+	for _, p := range tt.Participants {
+		v.Participants[p.Slot] = ParticipantDefV{Title: p.Title.In(loc), Role: p.Role}
+		v.ParticipantOrder = append(v.ParticipantOrder, p.Slot)
+	}
+	for _, s := range tt.Workflow.States {
+		v.Workflow.States[s.Name] = TaskState{Name: s.Name, Title: s.Title.In(loc), Label: s.Label, Weight: s.Weight, Claimable: s.Claimable}
+		v.Workflow.StateOrder = append(v.Workflow.StateOrder, s.Name)
+	}
+	for _, t := range tt.Workflow.Transitions {
+		d := TransitionDefV{Name: t.Name, Title: t.Title.In(loc), From: t.From, To: t.To, By: t.By, Requires: orEmpty(t.Requires), Grant: t.Grant}
+		if t.AssignTo != "" {
+			a := t.AssignTo
+			d.AssignTo = &a
+		}
+		v.Workflow.Transitions = append(v.Workflow.Transitions, d)
+	}
+	return v
+}
+
+// ---------- 待领取 ----------
+
+type BacklogItemV struct {
+	Task                 TaskV    `json:"task"`
+	RequiredRole         *string  `json:"required_role"`
+	RequiredCapabilities []string `json:"required_capabilities"`
+	CanClaim             bool     `json:"can_claim"`
+	Reasons              []string `json:"reasons"`
+}
+
+// ---------- 甘特图 ----------
+
+type GanttTaskV struct {
+	ID           string       `json:"id"`
+	Title        string       `json:"title"`
+	Type         string       `json:"type"`
+	TypeTitle    string       `json:"type_title"`
+	State        TaskState    `json:"state"`
+	Assignee     *ExecutorRef `json:"assignee"`
+	GoalID       *string      `json:"goal_id"`
+	PlannedStart *string      `json:"planned_start"`
+	PlannedEnd   *string      `json:"planned_end"`
+	ActualStart  *string      `json:"actual_start"`
+	ActualEnd    *string      `json:"actual_end"`
+	Progress     int          `json:"progress"`
+	Cost         float64      `json:"cost"`
+	Overdue      bool         `json:"overdue"`
+}
+
+type GanttRowV struct {
+	Key   string `json:"key"`
+	Title string `json:"title"`
+	Depth int    `json:"depth"`
+	Goal  *struct {
+		ID           string  `json:"id"`
+		PlannedStart *string `json:"planned_start"`
+		PlannedEnd   *string `json:"planned_end"`
+		Deadline     *string `json:"deadline"`
+		Progress     int     `json:"progress"`
+	} `json:"goal"`
+	Tasks []GanttTaskV `json:"tasks"`
+}
+
+type GanttDependencyV struct {
+	FromTaskID string `json:"from_task_id"`
+	ToTaskID   string `json:"to_task_id"`
+}
+
+type GanttDataV struct {
+	Group        string             `json:"group"`
+	From         string             `json:"from"`
+	To           string             `json:"to"`
+	Rows         []GanttRowV        `json:"rows"`
+	Dependencies []GanttDependencyV `json:"dependencies"`
+}
+
+func ganttView(group string, rows []*app.GanttRow, r refs, from, to string) GanttDataV {
+	out := GanttDataV{Group: group, From: from, To: to, Rows: []GanttRowV{}, Dependencies: []GanttDependencyV{}}
+	seenDep := map[string]bool{}
+	var walk func(row *app.GanttRow, depth int, prefix string)
+	walk = func(row *app.GanttRow, depth int, prefix string) {
+		key := row.Key
+		if key == "" {
+			key = "_"
+		}
+		v := GanttRowV{Key: key, Title: row.Title, Depth: depth, Tasks: []GanttTaskV{}}
+		if row.Kind == "goal" && row.Key != "" {
+			v.Goal = &struct {
+				ID           string  `json:"id"`
+				PlannedStart *string `json:"planned_start"`
+				PlannedEnd   *string `json:"planned_end"`
+				Deadline     *string `json:"deadline"`
+				Progress     int     `json:"progress"`
+			}{row.Key, dateStr(row.Start), dateStr(row.End), dateStr(row.Deadline), row.Progress}
+		}
+		for _, t := range row.Tasks {
+			v.Tasks = append(v.Tasks, GanttTaskV{ID: t.ID, Title: t.Title, Type: t.TypeName, TypeTitle: t.TypeTitle, State: TaskState{Name: t.State.Name, Title: t.State.Title, Label: t.State.Label}, Assignee: r.get(t.AssigneeID), GoalID: nullable(t.GoalID),
+				PlannedStart: dateStr(t.PlannedStart), PlannedEnd: dateStr(t.PlannedEnd), ActualStart: dateStr(t.ActualStart), ActualEnd: dateStr(t.ActualEnd), Progress: t.Progress, Cost: t.Cost, Overdue: t.Overdue})
+			for _, b := range t.Blockers {
+				k := b + ">" + t.ID
+				if !seenDep[k] {
+					seenDep[k] = true
+					out.Dependencies = append(out.Dependencies, GanttDependencyV{FromTaskID: b, ToTaskID: t.ID})
+				}
+			}
+		}
+		out.Rows = append(out.Rows, v)
+		for _, c := range row.Children {
+			walk(c, depth+1, prefix+row.Title+" › ")
+		}
+	}
+	for _, row := range rows {
+		walk(row, 0, "")
+	}
+	return out
+}
+
+// ---------- 待确认操作 ----------
+
+type ProposalTargetV struct {
+	Kind  string `json:"kind"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type ProposalV struct {
+	ID          string           `json:"id"`
+	Agent       ExecutorRef      `json:"agent"`
+	Owner       ExecutorRef      `json:"owner"`
+	Action      string           `json:"action"`
+	ActionTitle string           `json:"action_title"`
+	Grant       *string          `json:"grant"`
+	Target      *ProposalTargetV `json:"target"`
+	Summary     string           `json:"summary"`
+	Payload     map[string]any   `json:"payload"`
+	Status      string           `json:"status"`
+	StatusTitle string           `json:"status_title"`
+	DecidedBy   *ExecutorRef     `json:"decided_by"`
+	DecidedAt   *time.Time       `json:"decided_at"`
+	Reason      *string          `json:"reason"`
+	CanDecide   bool             `json:"can_decide"`
+	CreatedAt   time.Time        `json:"created_at"`
+	ExpiresAt   time.Time        `json:"expires_at"`
+}
+
+// proposalView 把应用层的待确认操作转成接口形状（名字与句子已按请求者语言渲染）。
+func proposalView(p *app.ProposalView) ProposalV {
+	v := ProposalV{
+		ID:     p.ID,
+		Agent:  ExecutorRef{ID: p.AgentID, Kind: string(domain.ExecutorAgent), Name: p.AgentName, OwnerID: p.OwnerID},
+		Owner:  ExecutorRef{ID: p.OwnerID, Kind: string(domain.ExecutorMember), Name: p.OwnerName},
+		Action: p.Action, ActionTitle: p.ActionTitle, Grant: nullable(string(p.Grant)),
+		Summary: p.SummaryText, Payload: p.Payload, Status: string(p.Status), StatusTitle: p.StatusTitle,
+		DecidedAt: p.DecidedAt, Reason: nullable(p.Reason), CanDecide: p.CanDecide,
+		CreatedAt: p.CreatedAt, ExpiresAt: p.ExpiresAt,
+	}
+	if v.Payload == nil {
+		v.Payload = map[string]any{}
+	}
+	if p.TargetKind != "" {
+		v.Target = &ProposalTargetV{Kind: p.TargetKind, ID: p.TargetID, Title: p.TargetTitle}
+	}
+	if p.DecidedBy != "" {
+		name := p.DecidedByName
+		if name == "" {
+			name = p.DecidedBy
+		}
+		v.DecidedBy = &ExecutorRef{ID: p.DecidedBy, Kind: string(domain.ExecutorMember), Name: name}
+	}
+	return v
+}
+
+// ---------- 动态 ----------
+
+type EventV struct {
+	ID        string         `json:"id"`
+	Kind      string         `json:"kind"`
+	TaskID    *string        `json:"task_id"`
+	TaskTitle *string        `json:"task_title"`
+	GoalID    *string        `json:"goal_id"`
+	Actor     *ExecutorRef   `json:"actor"`
+	Summary   string         `json:"summary"`
+	Data      map[string]any `json:"data"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
+func eventView(e *store.EventRow, r refs, taskTitle, goalOf map[string]string, roles map[string]i18n.Text, loc i18n.Locale) EventV {
+	v := EventV{ID: fmt.Sprint(e.ID), Kind: e.Type, TaskID: nullable(e.TaskID), Actor: r.get(e.ActorID), Data: e.Data, CreatedAt: e.At}
+	if v.Data == nil {
+		v.Data = map[string]any{}
+	}
+	if t, ok := taskTitle[e.TaskID]; ok {
+		v.TaskTitle = &t
+	}
+	if g, ok := goalOf[e.TaskID]; ok && g != "" {
+		v.GoalID = &g
+	}
+	v.Summary = eventSummary(e, r, taskTitle, roles, loc) + approvalNote(e, r, loc)
+	return v
+}
+
+// textOf 把动态数据里的多语言字段（JSON 对象或字符串）解析成该语言文本。
+func textOf(v any, loc i18n.Locale) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case i18n.Text:
+		return x.In(loc)
+	case map[string]any:
+		t := i18n.Text{}
+		for k, val := range x {
+			if s, ok := val.(string); ok {
+				if l := i18n.Normalize(k); l != "" {
+					t[l] = s
+				}
+			}
+		}
+		return t.In(loc)
+	}
+	return ""
+}
+
+func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles map[string]i18n.Text, loc i18n.Locale) string {
+	who := i18n.Tr(loc, "ev.system")
+	if a := r.get(e.ActorID); a != nil {
+		who = a.Name
+	}
+	task := ""
+	if t, ok := taskTitle[e.TaskID]; ok {
+		task = "「" + t + "」"
+		if loc == i18n.EnUS {
+			task = "\"" + t + "\""
+		}
+	}
+	s := func(k string) string { return textOf(e.Data[k], loc) }
+	switch e.Type {
+	case "TaskCreated":
+		return i18n.Trf(loc, "ev.TaskCreated", who, task)
+	case "TaskAssigned":
+		name := s("to")
+		if to := r.get(name); to != nil {
+			name = to.Name
+		}
+		if via := s("via_slot"); via != "" {
+			return i18n.Trf(loc, "ev.TaskAssignedVia", task, via, name)
+		}
+		return i18n.Trf(loc, "ev.TaskAssigned", who, task, name)
+	case "TaskClaimed":
+		return i18n.Trf(loc, "ev.TaskClaimed", who, task)
+	case "TaskSentToBacklog":
+		if role := s("required_role"); role != "" {
+			return i18n.Trf(loc, "ev.TaskSentToBacklogR", task, roleTitle(roles, role, loc))
+		}
+		return i18n.Trf(loc, "ev.TaskSentToBacklog", task)
+	case "TaskTransitioned":
+		to := s("to_title")
+		if to == "" {
+			to = s("to")
+		}
+		return i18n.Trf(loc, "ev.TaskTransitioned", who, s("title"), task, to)
+	case "RunStarted":
+		return i18n.Trf(loc, "ev.RunStarted", who, task)
+	case "RunEnded":
+		return i18n.Trf(loc, "ev.RunEnded", who, task, i18n.Tr(loc, "outcome."+s("outcome")))
+	case "UsageReported":
+		return i18n.Trf(loc, "ev.UsageReported", who, task)
+	case "ArtifactAttached":
+		return i18n.Trf(loc, "ev.ArtifactAttached", who, task, s("title"))
+	case "CommentAdded":
+		return i18n.Trf(loc, "ev.CommentAdded", who, task, s("text"))
+	case "NoteAdded":
+		return i18n.Trf(loc, "ev.NoteAdded", who, task)
+	case "TasksLinked":
+		return i18n.Trf(loc, "ev.TasksLinked", who, task)
+	case "RelationRemoved":
+		return i18n.Trf(loc, "ev.RelationRemoved", task)
+	case "GoalCreated":
+		return i18n.Trf(loc, "ev.GoalCreated", who, s("title"))
+	case "GoalUpdated":
+		return i18n.Trf(loc, "ev.GoalUpdated", who)
+	case "AgentRegistered":
+		return i18n.Trf(loc, "ev.AgentRegistered", who, s("name"))
+	case "AgentRemoved", "AgentRevoked":
+		return i18n.Trf(loc, "ev.AgentRemoved", who)
+	case "AgentUpdated":
+		return i18n.Trf(loc, "ev.AgentUpdated", who)
+	case "TaskUpdated":
+		return i18n.Trf(loc, "ev.TaskUpdated", who, task)
+	case "TaskTypeSaved":
+		return i18n.Trf(loc, "ev.TaskTypeSaved", who, s("name"))
+	case "MemberInvited":
+		return i18n.Trf(loc, "ev.MemberInvited", who, s("email"))
+	case "OrgSettingsUpdated":
+		return i18n.Trf(loc, "ev.OrgSettingsUpdated", who, i18n.Tr(loc, "visibility."+s("collaboration_visibility")), i18n.Tr(loc, "visibility."+s("finance_visibility")))
+	case "WorkspaceLayoutUpdated":
+		cleared, _ := e.Data["cleared"].(bool)
+		if s("target") != "role" {
+			if cleared {
+				return i18n.Trf(loc, "ev.WorkspacePersonalCleared", who)
+			}
+			return i18n.Trf(loc, "ev.WorkspacePersonal", who)
+		}
+		role := roleTitle(roles, s("role"), loc)
+		if cleared {
+			return i18n.Trf(loc, "ev.WorkspaceRoleCleared", who, role)
+		}
+		if p, ok := domain.PresetByKey(s("preset")); ok {
+			return i18n.Trf(loc, "ev.WorkspaceRolePreset", who, role, p.Title)
+		}
+		var titles []i18n.Text
+		if keys, ok := e.Data["blocks"].([]any); ok {
+			for _, k := range keys {
+				if b, ok := domain.BlockByKey(textOf(k, loc)); ok {
+					titles = append(titles, b.Title)
+				}
+			}
+		}
+		return i18n.Trf(loc, "ev.WorkspaceRoleBlocks", who, role, titles)
+	case "TeamCreated":
+		return i18n.Trf(loc, "ev.TeamCreated", who, s("name"))
+	case "TeamUpdated":
+		return i18n.Trf(loc, "ev.TeamUpdated", who, s("name"))
+	case "TeamDeleted":
+		return i18n.Trf(loc, "ev.TeamDeleted", who)
+	case "TeamBoundaryChanged":
+		if on, _ := e.Data["is_boundary"].(bool); on {
+			return i18n.Trf(loc, "ev.TeamBoundaryOn", who, s("name"))
+		}
+		return i18n.Trf(loc, "ev.TeamBoundaryOff", who, s("name"))
+	case "MemberJoined":
+		return i18n.Trf(loc, "ev.MemberJoined", who)
+	case "SprintCreated", "SprintUpdated", "SprintStarted":
+		return i18n.Trf(loc, "ev."+e.Type, who, s("name"))
+	case "SprintClosed":
+		moved, _ := numOf(e.Data["moved"])
+		returned, _ := numOf(e.Data["returned"])
+		return i18n.Trf(loc, "ev.SprintClosed", who, s("name"), moved, returned)
+	case "TaskAddedToSprint", "TaskRemovedFromSprint":
+		return i18n.Trf(loc, "ev."+e.Type, who, task, s("name"))
+	case "PointsChanged":
+		if p, ok := numOf(e.Data["points"]); ok {
+			return i18n.Trf(loc, "ev.PointsChanged", who, task, p)
+		}
+		return i18n.Trf(loc, "ev.PointsCleared", who, task)
+	case "ProposalCreated":
+		return i18n.Trf(loc, "ev.ProposalCreated", who, s("summary"))
+	case "ProposalApproved", "ProposalRejected":
+		agent := s("agent_id")
+		if a := r.get(agent); a != nil {
+			agent = a.Name
+		}
+		if e.Type == "ProposalRejected" {
+			return i18n.Trf(loc, "ev.ProposalRejected", who, agent, s("summary"), s("reason"))
+		}
+		return i18n.Trf(loc, "ev.ProposalApproved", who, agent, s("summary"))
+	case "ProposalExpired":
+		return i18n.Trf(loc, "ev.ProposalExpired", s("summary"))
+	}
+	return i18n.Trf(loc, "ev.generic", who, e.Type)
+}
+
+// approvalNote 是被确认后执行的动态尾巴：「经<确认人>确认」。
+func approvalNote(e *store.EventRow, r refs, loc i18n.Locale) string {
+	name, _ := e.Data["approved_by_name"].(string)
+	if id, _ := e.Data["approved_by"].(string); id != "" {
+		if a := r.get(id); a != nil && a.Name != "" && a.Name != id {
+			name = a.Name
+		}
+	}
+	if name == "" {
+		return ""
+	}
+	return i18n.Trf(loc, "ev.via_approval", name)
+}
+
+// numOf 把动态数据里的数字（JSON 解出来是 float64）转成 int。
+func numOf(v any) (int, bool) {
+	switch x := v.(type) {
+	case float64:
+		return int(x), true
+	case int:
+		return x, true
+	case int64:
+		return int(x), true
+	}
+	return 0, false
+}
+
+// ---------- 统计 ----------
+
+type CostStatV struct {
+	Key         string  `json:"key"`
+	Title       string  `json:"title"`
+	Cost        float64 `json:"cost"`
+	TotalTokens int64   `json:"total_tokens"`
+	RunCount    int     `json:"run_count"`
+}
+
+type CycleStatV struct {
+	Type           string  `json:"type"`
+	TypeTitle      string  `json:"type_title"`
+	Sample         int     `json:"sample"`
+	AvgHours       float64 `json:"avg_hours"`
+	MedianHours    float64 `json:"median_hours"`
+	AvgActiveHours float64 `json:"avg_active_hours"`
+}
+
+type ThroughputStatV struct {
+	Week       string `json:"week"`
+	Created    int    `json:"created"`
+	Done       int    `json:"done"`
+	Terminated int    `json:"terminated"`
+}
+
+type AgentStatV struct {
+	Agent       ExecutorRef `json:"agent"`
+	Owner       ExecutorRef `json:"owner"`
+	Runs        int         `json:"runs"`
+	Accepted    int         `json:"accepted"`
+	Rejected    int         `json:"rejected"`
+	SuccessRate float64     `json:"success_rate"`
+	RejectRate  float64     `json:"reject_rate"`
+	TotalTokens int64       `json:"total_tokens"`
+	Cost        float64     `json:"cost"`
+}
+
+// ---------- 错误 ----------
+
+type errorBody struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func errBody(status int, msg string) errorBody {
+	var b errorBody
+	b.Error.Message = msg
+	b.Error.Code = map[int]string{400: "bad_request", 401: "unauthenticated", 403: "forbidden", 404: "not_found", 409: "rejected", 500: "internal"}[status]
+	if b.Error.Code == "" {
+		b.Error.Code = strings.ToLower(fmt.Sprint(status))
+	}
+	return b
+}
+
+// ---------- 异常与负荷（ADR 0013） ----------
+
+// ExceptionTaskV 是异常列表里的任务。
+type ExceptionTaskV struct {
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Type        string     `json:"type"`
+	TypeTitle   string     `json:"type_title"`
+	State       TaskState  `json:"state"`
+	Assignee    *string    `json:"assignee"`
+	AssigneeID  *string    `json:"assignee_id"`
+	Team        string     `json:"team"`
+	TeamID      *string    `json:"team_id"`
+	GoalID      *string    `json:"goal_id"`
+	GoalTitle   *string    `json:"goal_title"`
+	Priority    string     `json:"priority"`
+	PlannedEnd  *time.Time `json:"planned_end"`
+	DaysOverdue int        `json:"days_overdue"`
+	URL         string     `json:"url"`
+}
+
+// ExceptionGoalV 是异常列表里的目标。
+type ExceptionGoalV struct {
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Owner       *string    `json:"owner"`
+	OwnerID     *string    `json:"owner_id"`
+	Team        string     `json:"team"`
+	TeamID      *string    `json:"team_id"`
+	Status      string     `json:"status"`
+	StatusTitle string     `json:"status_title"`
+	Progress    int        `json:"progress"`
+	Deadline    *time.Time `json:"deadline"`
+	DaysOverdue int        `json:"days_overdue"`
+	Budget      *float64   `json:"budget"`
+	Cost        *float64   `json:"cost"`
+	OverPct     *float64   `json:"over_pct"`
+	URL         string     `json:"url"`
+}
+
+// StuckTaskV 是卡在同一个状态太久的任务。
+type StuckTaskV struct {
+	Task        ExceptionTaskV `json:"task"`
+	DaysInState int            `json:"days_in_state"`
+}
+
+// ExceptionsV 是 /stats/exceptions 的形状。
+type ExceptionsV struct {
+	Scope            string           `json:"scope"`
+	ScopeTitle       string           `json:"scope_title"`
+	OverdueTasks     []ExceptionTaskV `json:"overdue_tasks"`
+	OverdueGoals     []ExceptionGoalV `json:"overdue_goals"`
+	OverBudgetGoals  []ExceptionGoalV `json:"over_budget_goals"`
+	StuckTasks       []StuckTaskV     `json:"stuck_tasks"`
+	PendingProposals []ProposalV      `json:"pending_proposals"`
+}
+
+func exceptionTaskView(x app.ExceptionTask) ExceptionTaskV {
+	return ExceptionTaskV{ID: x.ID, Title: x.Title, Type: x.TypeName, TypeTitle: x.TypeTitle,
+		State:    TaskState{Name: x.State.Name, Title: x.State.Title, Label: x.State.Label},
+		Assignee: nullable(x.Assignee), AssigneeID: nullable(x.AssigneeID), Team: x.Team, TeamID: nullable(x.TeamID),
+		GoalID: nullable(x.GoalID), GoalTitle: nullable(x.GoalTitle), Priority: priorityName(x.Priority),
+		PlannedEnd: x.PlannedEnd, DaysOverdue: x.DaysOverdue, URL: "/tasks/" + x.ID + "/"}
+}
+
+func exceptionGoalView(x app.ExceptionGoal) ExceptionGoalV {
+	return ExceptionGoalV{ID: x.ID, Title: x.Title, Owner: nullable(x.Owner), OwnerID: nullable(x.OwnerID),
+		Team: x.Team, TeamID: nullable(x.TeamID), Status: x.Status, StatusTitle: x.StatusTitle, Progress: x.Progress,
+		Deadline: x.Deadline, DaysOverdue: x.DaysOverdue, Budget: x.Budget, Cost: x.Cost, OverPct: x.OverPct,
+		URL: "/goals/" + x.ID + "/"}
+}
+
+func exceptionsView(v *app.ExceptionsView) ExceptionsV {
+	out := ExceptionsV{Scope: v.Scope, ScopeTitle: v.ScopeTitle, OverdueTasks: []ExceptionTaskV{}, OverdueGoals: []ExceptionGoalV{},
+		OverBudgetGoals: []ExceptionGoalV{}, StuckTasks: []StuckTaskV{}, PendingProposals: []ProposalV{}}
+	for _, x := range v.OverdueTasks {
+		out.OverdueTasks = append(out.OverdueTasks, exceptionTaskView(x))
+	}
+	for _, x := range v.OverdueGoals {
+		out.OverdueGoals = append(out.OverdueGoals, exceptionGoalView(x))
+	}
+	for _, x := range v.OverBudgetGoals {
+		out.OverBudgetGoals = append(out.OverBudgetGoals, exceptionGoalView(x))
+	}
+	for _, x := range v.StuckTasks {
+		out.StuckTasks = append(out.StuckTasks, StuckTaskV{Task: exceptionTaskView(x.Task), DaysInState: x.DaysInState})
+	}
+	for _, p := range v.PendingProposals {
+		out.PendingProposals = append(out.PendingProposals, proposalView(p))
+	}
+	return out
+}
+
+// LoadV 是 /stats/load 里的一行。
+type LoadV struct {
+	Executor             ExecutorRef `json:"executor"`
+	Team                 string      `json:"team"`
+	TeamID               *string     `json:"team_id"`
+	OpenTasks            int         `json:"open_tasks"`
+	ActiveTasks          int         `json:"active_tasks"`
+	PointsOpen           int         `json:"points_open"`
+	PlannedHoursThisWeek float64     `json:"planned_hours_this_week"`
+	Overdue              int         `json:"overdue"`
+	CapacityHint         string      `json:"capacity_hint"`
+	ActiveRuns           int         `json:"active_runs"`
+	MaxConcurrent        *int        `json:"max_concurrent"`
+	Online               *bool       `json:"online"`
+}
+
+func loadView(x app.LoadRow) LoadV {
+	return LoadV{Executor: ExecutorRef{ID: x.ExecutorID, Kind: x.Kind, Name: x.Name}, Team: x.Team, TeamID: nullable(x.TeamID),
+		OpenTasks: x.OpenTasks, ActiveTasks: x.ActiveTasks, PointsOpen: x.PointsOpen, PlannedHoursThisWeek: x.PlannedHoursThisWeek,
+		Overdue: x.Overdue, CapacityHint: x.CapacityHint, ActiveRuns: x.ActiveRuns, MaxConcurrent: x.MaxConcurrent, Online: x.Online}
+}

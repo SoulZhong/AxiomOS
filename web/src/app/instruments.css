@@ -1,0 +1,274 @@
+/*
+ * 舰内仪表（web/DESIGN.md「舰内系统 v3」§3 仪表级数据）。
+ * 组件在 src/components/instruments/*，这里只放样式：颜色一律走 --c-* token，曲线只用 --ease-*，
+ * 界面动画不超过 240ms；prefers-reduced-motion 下滚动 / 扫过 / 呼吸全部取消，只保留淡入。
+ */
+
+/* ---------- 1. 滚动数字（odometer） ---------- */
+/* 每一位是一个 1em 高的窗口，里面一列 0–9 竖排；数值变化时整列 translateY，160ms 强 ease-out。
+   分隔符、货币前缀、单位是静态字符，不滚。等宽 + tabular，滚动时不抖。 */
+.odm {
+  display: inline-flex;
+  align-items: flex-start;
+  height: 1em;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+/* 数字窗与静态字符都是 1em 高、行高 1 的盒子，字形基线自然对齐 */
+.odm-d {
+  display: inline-block;
+  height: 1em;
+  overflow: hidden;
+}
+.odm-col {
+  display: flex;
+  flex-direction: column;
+  transition: transform 160ms var(--ease-out);
+}
+.odm-col > span {
+  display: block;
+  height: 1em;
+  line-height: 1;
+}
+.odm-s {
+  display: inline-block;
+  height: 1em;
+  line-height: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .odm-col {
+    transition: none;
+  }
+}
+
+/* ---------- 2. 弧形仪表（arc gauge） ---------- */
+/* 270° 弧：底轨 hairline，读数弧 accent（完成后 success，超支 danger），外圈 24 格刻度，已完成格点亮。
+   挂载 / 更新时弧扫过 240ms（stroke-dashoffset，强 ease-out）；刻度亮起同一节拍。 */
+.gauge {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.gauge-track {
+  fill: none;
+  stroke: var(--c-hairline);
+  stroke-linecap: butt;
+}
+.gauge-arc {
+  fill: none;
+  stroke: var(--gauge, var(--c-accent));
+  stroke-linecap: butt;
+  transition: stroke-dashoffset 240ms var(--ease-out), stroke 160ms ease;
+}
+.gauge-tick {
+  stroke: var(--c-hairline-strong);
+  stroke-width: 1;
+  transition: stroke 240ms var(--ease-out);
+}
+.gauge-tick[data-lit] {
+  stroke: var(--gauge, var(--c-accent));
+}
+.gauge-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  fill: var(--c-ink);
+}
+.gauge-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  fill: var(--c-ink-subtle);
+}
+@media (prefers-reduced-motion: reduce) {
+  .gauge-arc,
+  .gauge-tick {
+    transition: none;
+  }
+}
+
+/* ---------- 3. 迷你折线（sparkline） ---------- */
+/* 24 点，hairline-strong 描边（安静的仪表走线），可选 6% 面积，尾端一枚发光的 accent 圆点。静态，不动画。 */
+.spark {
+  display: block;
+  flex-shrink: 0;
+  overflow: visible;
+}
+.spark-line {
+  fill: none;
+  /* hairline-strong 为底、掺 35% accent：深浅两个主题下都看得见，又不与柱 / 条抢戏 */
+  stroke: color-mix(in srgb, var(--c-accent) 35%, var(--c-hairline-strong));
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.spark-area {
+  fill: color-mix(in srgb, var(--c-accent) 6%, transparent);
+  stroke: none;
+}
+.spark-dot {
+  fill: var(--c-accent);
+}
+.spark-halo {
+  fill: var(--c-accent-glow);
+}
+
+/* ---------- 4. 吞吐柱（throughput bars） ---------- */
+/* 柱顶一条 1px 的 accent 边光（更亮的 accent-hover）+ 向上 4px 的微光；本周的柱以 3s 周期呼吸（只动 opacity）。 */
+.tbar {
+  position: relative;
+  width: 100%;
+  max-width: 16px;
+  border-radius: 2px 2px 0 0;
+}
+.tbar-lit {
+  box-shadow: inset 0 1px 0 var(--c-accent-hover), 0 -1px 4px var(--c-accent-glow);
+}
+.tbar-now {
+  animation: tbar-breathe 3s ease-in-out infinite;
+}
+@keyframes tbar-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tbar-now {
+    animation: none;
+  }
+}
+
+/* ---------- 5. 舰桥日志（bridge log） ---------- */
+/* 顶行：LED + `实时 · 最近同步 12s 前`；有新事件时 LED 闪一次（200ms 亮起再回落），新行 200ms 淡入。
+   行：等宽时间戳列（hh:mm:ss，遥测色）、事件类型 LED 色点、执行者芯片、正文。 */
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--c-hairline);
+}
+.log-led {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--c-accent);
+  box-shadow: var(--fx-led);
+  flex-shrink: 0;
+}
+.log-led[data-blink] {
+  animation: log-blink 400ms var(--ease-out);
+}
+@keyframes log-blink {
+  0% {
+    box-shadow: 0 0 0 0 var(--c-accent-glow);
+    opacity: 1;
+  }
+  30% {
+    box-shadow: 0 0 10px 3px var(--c-accent-glow);
+    opacity: 1;
+  }
+  100% {
+    box-shadow: var(--fx-led);
+    opacity: 1;
+  }
+}
+.log-row {
+  display: grid;
+  grid-template-columns: 8ch 12px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+}
+.log-row + .log-row {
+  border-top: 1px solid var(--c-hairline);
+}
+.log-row[data-new] {
+  animation: log-in 200ms var(--ease-out) both;
+}
+@keyframes log-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.log-ts {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  color: var(--c-telemetry);
+  white-space: nowrap;
+}
+.log-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  align-self: start;
+  margin: 8px 0 0 3px; /* 对齐正文第一行的视觉中心（14px × 1.5 行高），在 12px 列里居中 */
+}
+/* 事件类型的签名图标（12px），颜色沿用该类型的 LED 色 */
+.log-kind {
+  display: inline-flex;
+  align-self: start;
+  margin-top: 5px;
+}
+.log-day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--c-ink-subtle);
+}
+.log-day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--c-hairline);
+}
+.log-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px 0 3px;
+  margin-right: 6px;
+  border: 1px solid var(--c-hairline-strong);
+  border-radius: 4px;
+  background: var(--c-surface-2);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--c-ink-muted);
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.log-chip[data-kind="agent"] {
+  border-color: var(--c-accent-border);
+  background: var(--c-accent-bg);
+  color: var(--c-accent-hover);
+}
+.log-chip[data-kind="system"] {
+  padding-left: 6px;
+  color: var(--c-ink-subtle);
+}
+@media (prefers-reduced-motion: reduce) {
+  .log-led[data-blink] {
+    animation: none;
+  }
+}
