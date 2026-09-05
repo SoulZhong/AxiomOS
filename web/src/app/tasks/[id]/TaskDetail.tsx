@@ -5,6 +5,7 @@ import { api, isTerminal, type Event, type Proposal, type Relation, type Relatio
 import { fmtDate, fmtDateTime, fmtDuration, fmtMoney, fmtTokens } from "@/lib/format";
 import { errorMessage, useAction, useCapabilityTitles, useExecutors, useLoad, useRouteId } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
+import { prefersReducedMotion } from "@/lib/motion";
 import { isAcceptanceWait } from "@/lib/states";
 import { artifactTypeTitle, capabilityTitle, RELATIONS, relationTitle, roleTitle, runOutcomeTitle, stateLabel } from "@/lib/terms";
 import { useSession } from "@/components/AppShell";
@@ -99,7 +100,10 @@ export function TaskDetail() {
         <div className="-mx-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md px-2" data-motion={headMotion}>
           <h1 className="text-headline text-ink">{x.title}</h1>
           <span className="inline-flex flex-wrap items-center gap-2">
-            <TypeLabel type={x.type} title={x.type_title} tag />
+            {/* 任务类型徽标点开是这类任务的流程（组织设置 · 流程，对所有成员只读可见） */}
+            <Tip tip={t("task.viewWorkflow")} placement="bottom">
+              <Link href="/settings/?tab=workflows" className="inline-flex rounded-sm hover:opacity-80" aria-label={t("task.viewWorkflow")}><TypeLabel type={x.type} title={x.type_title} tag /></Link>
+            </Tip>
             <StateBadge state={shownState} pending={!!pendingState} accept={accept} />
             {x.priority !== "normal" && <PriorityTag priority={x.priority} />}
             {isOverdue(x) && <OverdueTag>{t("task.overdue")}</OverdueTag>}
@@ -496,6 +500,21 @@ function Thread({ task, onChanged, index }: { task: Task; onChanged: () => void;
   const [error, setError] = useState<string | null>(null);
   const notes = task.comments.filter((c) => c.kind === "note").length;
   const list = task.comments.filter((c) => showNotes || c.kind === "comment");
+  // 从「待我处理 · 等我答复」进来时地址带 #comment-<id>：评论是异步取的，浏览器自己滚不到，这里在列表画出来后滚过去并点亮那一条 2.4s（纯 DOM，不进状态）
+  const listKey = list.map((c) => c.id).join(",");
+  useEffect(() => {
+    const m = /^#comment-(.+)$/.exec(window.location.hash);
+    if (!m) return;
+    const el = document.getElementById(`comment-${decodeURIComponent(m[1])}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    el.classList.add("comment-anchored");
+    const timer = window.setTimeout(() => el.classList.remove("comment-anchored"), 2400);
+    return () => {
+      window.clearTimeout(timer);
+      el.classList.remove("comment-anchored");
+    };
+  }, [listKey]);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true); setError(null);
@@ -507,7 +526,7 @@ function Thread({ task, onChanged, index }: { task: Task; onChanged: () => void;
       {list.length === 0 ? <p className="text-body text-ink-subtle">{t("task.noComments")}</p> : (
         <ul className="space-y-4">
           {list.map((c) => (
-            <li key={c.id} className="flex gap-3">
+            <li key={c.id} id={`comment-${c.id}`} className="comment-row flex gap-3 rounded-md">
               <Avatar name={c.author.name} kind={c.author.kind} size={24} className="mt-0.5" />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2 text-caption text-ink-subtle">

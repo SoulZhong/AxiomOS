@@ -427,10 +427,57 @@ export interface Goal {
   planned_end: ISODate | null;
   actual_start: ISODate | null;
   actual_end: ISODate | null;
+  /** 截止日：横条外的一道短刻度（可与 planned_end 不同） */
+  deadline?: ISODate | null;
   task_count: number;
   done_task_count: number;
   children: Goal[]; // GET /goals 返回树时填充
   created_at: ISODateTime;
+  /** 里程碑（ADR 0016），按日期升序；老后端没有这个字段 */
+  milestones?: Milestone[];
+  milestone_summary?: MilestoneSummary;
+}
+
+// ---------- 里程碑（ADR 0016）：目标的时间刻度，不是任务 ----------
+
+export type MilestoneStatus = "upcoming" | "reached" | "overdue";
+
+export interface Milestone {
+  id: ID;
+  goal_id: ID;
+  title: string;
+  description: string;
+  due_on: ISODate;
+  reached_at: ISODateTime | null;
+  /** 由日期与 reached_at 算出：未到 / 已达到 / 逾期 */
+  status: MilestoneStatus;
+  /** 该日期前计划结束的任务都已完成，可以确认了（已达到的恒为假） */
+  ready_hint: boolean;
+  created_by: ExecutorRef;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface MilestoneSummary {
+  total: number;
+  reached: number;
+  overdue: number;
+  next: { title: string; due_on: ISODate } | null;
+}
+
+export interface MilestoneInput {
+  title: string;
+  due_on: ISODate;
+  description?: string;
+}
+
+/** 甘特图目标行上的精简里程碑（/gantt 按目标分组时带） */
+export interface MilestoneMark {
+  id: ID;
+  title: string;
+  due_on: ISODate;
+  status: MilestoneStatus;
+  ready_hint?: boolean;
 }
 
 export interface GoalInput {
@@ -441,6 +488,7 @@ export interface GoalInput {
   budget?: number | null;
   planned_start?: ISODate | null;
   planned_end?: ISODate | null;
+  deadline?: ISODate | null;
   achieved?: boolean;
   /** "abandoned" 放弃，"active" 重新开始 */
   status?: "active" | "abandoned";
@@ -803,7 +851,10 @@ export interface GanttRow {
     id: ID;
     planned_start: ISODate | null;
     planned_end: ISODate | null;
+    deadline?: ISODate | null;
     progress: number;
+    /** 里程碑（ADR 0016）：目标汇总行上的菱形 */
+    milestones?: MilestoneMark[];
   } | null;
   tasks: GanttTask[];
 }
@@ -843,6 +894,11 @@ export type EventKind =
   | "GoalCreated"
   | "GoalUpdated"
   | "GoalDeleted"
+  | "MilestoneCreated"
+  | "MilestoneUpdated"
+  | "MilestoneReached"
+  | "MilestoneUnreached"
+  | "MilestoneDeleted"
   | "AgentRegistered"
   | "AgentRemoved"
   | "SprintCreated"
@@ -1042,8 +1098,9 @@ export interface LoadRow {
 // ---------- 工作台（ADR 0015，docs/api.md「工作台」） ----------
 
 /** 区块键：系统定义的有限集合，客户不能自造。 */
-export type BlockKey = "overview_summary" | "exceptions" | "my_tasks" | "my_review" | "team_load" | "cost_budget" | "proposals" | "events" | "sprint" | "backlog" | "trend";
-export const BLOCK_KEYS: BlockKey[] = ["overview_summary", "exceptions", "my_tasks", "my_review", "team_load", "cost_budget", "proposals", "events", "sprint", "backlog", "trend"];
+export type BlockKey = "overview_summary" | "exceptions" | "my_tasks" | "my_review" | "team_load" | "cost_budget" | "events" | "sprint" | "backlog" | "trend";
+/** `proposals` 区块已从目录移除（DESIGN.md §12：被「待我处理」覆盖）；老布局里出现它时前端直接忽略。 */
+export const BLOCK_KEYS: BlockKey[] = ["overview_summary", "exceptions", "my_tasks", "my_review", "team_load", "cost_budget", "events", "sprint", "backlog", "trend"];
 export const isBlockKey = (k: string): k is BlockKey => (BLOCK_KEYS as string[]).includes(k);
 
 /** 已解析的工作台里的一块：title 由后端按语言给。 */
@@ -1094,6 +1151,52 @@ export interface RoleWorkspace {
 }
 
 export type RoleWorkspaceInput = { blocks: BlockKey[] } | { preset: string };
+
+// ---------- 待我处理（DESIGN.md §12，docs/api.md「待我处理」） ----------
+
+/** 六组事项，顺序就是紧急度：逾期 → 待确认 → 待验收 → 待答复 → 未开始 → 通知。 */
+export type InboxKind = "overdue" | "proposals" | "review" | "questions" | "unstarted" | "notifications";
+export const INBOX_KINDS: InboxKind[] = ["overdue", "proposals", "review", "questions", "unstarted", "notifications"];
+
+/** 任务类组里的一条：任务精简对象加逾期天数（只有 overdue 组非零）。 */
+export type InboxTask = Task & { days_overdue: number };
+
+/** 等我答复的一条提问：任务加那条评论。 */
+export interface InboxQuestion {
+  task: Task;
+  comment: Comment;
+}
+
+/** 站内通知：后端按语言给标题与正文；task_id 有值时能点去任务。id 是数字，标已读时按 id 传。 */
+export interface Notification {
+  id: number;
+  member_id?: ID;
+  title: string;
+  body: string;
+  task_id?: ID | null;
+  read_at?: ISODateTime | null;
+  created_at: ISODateTime;
+}
+
+/** 一组事项：title 由后端按语言给；items 的形状按 kind 不同。 */
+export type InboxGroup =
+  | { kind: "overdue" | "review" | "unstarted"; title?: string; count: number; items: InboxTask[] }
+  | { kind: "proposals"; title?: string; count: number; items: Proposal[] }
+  | { kind: "questions"; title?: string; count: number; items: InboxQuestion[] }
+  | { kind: "notifications"; title?: string; count: number; items: Notification[] };
+
+/** GET /inbox：空组省略；全空时 empty 是那句「没有等你处理的事。」 */
+export interface Inbox {
+  count: number;
+  groups: InboxGroup[];
+  empty?: string;
+}
+
+/** GET /inbox/count：侧栏角标与状态栏读数用的那一个 n。 */
+export interface InboxCount {
+  count: number;
+  by_kind: Partial<Record<InboxKind, number>>;
+}
 
 // ---------- 请求 ----------
 
@@ -1191,6 +1294,15 @@ export const api = {
     /** 只有空目标（没有子目标、没有任务）能删；有内容的目标应当放弃 */
     remove: (id: ID) => request<void>("DELETE", `/goals/${encodeURIComponent(id)}`),
   },
+  /** 里程碑（ADR 0016）：属于目标；能编辑该目标的人可增改删、确认已达到 / 撤销。每次写操作产生动态。 */
+  milestones: {
+    list: (goalId: ID) => request<Milestone[]>("GET", `/goals/${encodeURIComponent(goalId)}/milestones`),
+    create: (goalId: ID, input: MilestoneInput) => request<Milestone>("POST", `/goals/${encodeURIComponent(goalId)}/milestones`, input),
+    update: (id: ID, patch: Partial<MilestoneInput>) => request<Milestone>("PATCH", `/milestones/${encodeURIComponent(id)}`, patch),
+    remove: (id: ID) => request<void>("DELETE", `/milestones/${encodeURIComponent(id)}`),
+    reach: (id: ID) => request<Milestone>("POST", `/milestones/${encodeURIComponent(id)}/reach`, {}),
+    unreach: (id: ID) => request<Milestone>("POST", `/milestones/${encodeURIComponent(id)}/unreach`, {}),
+  },
   tasks: {
     list: (q: TaskQuery = {}) => request<Task[]>("GET", "/tasks", undefined, q as Query),
     create: (input: TaskInput) => request<Task>("POST", "/tasks", input),
@@ -1286,6 +1398,15 @@ export const api = {
     saveRole: (role: string, input: RoleWorkspaceInput) => request<RoleWorkspace>("PUT", `/org/workspace/${encodeURIComponent(role)}`, input),
     /** 清除该角色布局，回到默认 */
     resetRole: (role: string) => request<void>("DELETE", `/org/workspace/${encodeURIComponent(role)}`),
+  },
+  /** 待我处理（DESIGN.md §12）：只看本人，不带范围。 */
+  inbox: {
+    get: () => request<Inbox>("GET", "/inbox"),
+    count: () => request<InboxCount>("GET", "/inbox/count"),
+  },
+  notifications: {
+    /** 把这几条标为已读 → 剩下的未读数 */
+    read: (ids: number[]) => request<{ count: number }>("POST", "/notifications/read", { ids }),
   },
   /** 组织设置：组织负责人或持有 org_settings 权限的角色。 */
   org: {

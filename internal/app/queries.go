@@ -308,6 +308,8 @@ type GanttRow struct {
 	Progress int           `json:"progress"`
 	Tasks    []TaskSummary `json:"tasks"`
 	Children []*GanttRow   `json:"children,omitempty"`
+	// Milestones 只在目标行上有：目标自己的里程碑，甘特图画成横条上的菱形（ADR 0016）。
+	Milestones []*MilestoneView `json:"milestones,omitempty"`
 }
 
 // Gantt 按分组轴返回甘特图数据。
@@ -427,9 +429,12 @@ func (a *App) Gantt(ctx context.Context, sess *Session, group string) ([]*GanttR
 				return err
 			}
 			tree := buildGoalTree(goals, tasks, types, runs)
+			if err := a.attachMilestones(ctx, tx, tree, tasks, types); err != nil {
+				return err
+			}
 			var conv func(v *GoalView) *GanttRow
 			conv = func(v *GoalView) *GanttRow {
-				r := &GanttRow{Key: v.ID, Title: v.Title, Kind: "goal", Start: v.Start, End: v.End, Deadline: v.Deadline, Progress: v.Progress, Tasks: []TaskSummary{}}
+				r := &GanttRow{Key: v.ID, Title: v.Title, Kind: "goal", Start: v.Start, End: v.End, Deadline: v.Deadline, Progress: v.Progress, Tasks: []TaskSummary{}, Milestones: v.Milestones}
 				for _, t := range tasks {
 					if t.GoalID == v.ID && t.ParentID == "" {
 						r.Tasks = append(r.Tasks, sums[t.ID])

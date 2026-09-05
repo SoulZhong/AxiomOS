@@ -489,6 +489,21 @@ func (a *App) SeedDemo(ctx context.Context) (string, error) {
 		return "", err
 	}
 
+	// 里程碑（ADR 0016）：Q3 目标上一个已达到（日期已过）、一个未到；行政目标上一个逾期未确认
+	reached, err := a.CreateMilestone(ctx, wang, CreateMilestoneInput{GoalID: q3.ID, Title: "登录页改版进入测试", Description: "登录页需求开发完成并提测。", DueOn: day(-3)})
+	if err != nil {
+		return "", err
+	}
+	if _, err := a.ReachMilestone(ctx, wang, reached.ID); err != nil {
+		return "", err
+	}
+	if _, err := a.CreateMilestone(ctx, wang, CreateMilestoneInput{GoalID: q3.ID, Title: "官网 v2.0 上线", Description: "登录页与支付页一起随 v2.0 发布。", DueOn: day(30)}); err != nil {
+		return "", err
+	}
+	if _, err := a.CreateMilestone(ctx, zhao, CreateMilestoneInput{GoalID: admin.ID, Title: "供应商合同归档完成", DueOn: day(-4)}); err != nil {
+		return "", err
+	}
+
 	// 一条待确认操作：小李的 Agent 想把 Bug 转给小张，「指派」这项授权是需要人确认（ADR 0003）
 	if _, err := a.Assign(ctx, liAgentSess, bug.ID, zhang.MemberID); err != nil {
 		if _, ok := AsProposalPending(err); !ok {

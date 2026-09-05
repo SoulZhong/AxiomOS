@@ -1,11 +1,12 @@
 "use client";
 import Link from "next/link";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api, type Session } from "@/lib/api";
 import { fmtMoney } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import { LanguageSwitch } from "./LanguageSwitch";
 import { ScopePicker } from "./ScopePicker";
+import { Odometer } from "./ship-status/Odometer";
 import { useShipTelemetry } from "./ship-status/telemetry";
 import { Sparkline } from "./ship-status/Sparkline";
 import { StarBand } from "./ship-status/StarBand";
@@ -15,7 +16,7 @@ import { Readout, StatusLED, SysClock, cx } from "./ui";
 /*
  * 舷窗带（DESIGN.md「舰内系统 v3」§1）：主内容区顶部 32px 的舰桥舷窗——背后一条 Canvas2D 星海缓慢流过（StarBand，两层视差、软圆星点），
  * 前景是等宽 11px 读数。整条在浅色主题下也是深色（data-theme="dark"）：白色舱室里的一条舷窗。
- * 读数：AXIOM · 操作系统 · 组织 DEMO · AGENT 在线 n/m（有在线时雷达式脉冲）· 执行中 n · 待确认 n（只在有的时候出现，点它去待确认操作页）· 今日成本 ¥x（24 小时迷你折线 + 数字滚动）；
+ * 读数：AXIOM · 操作系统 · 组织 DEMO · AGENT 在线 n/m（有在线时雷达式脉冲）· 执行中 n · 待我处理 n（只在有的时候出现，点它回「我的工作」）· 今日成本 ¥x（24 小时迷你折线 + 数字滚动）；
  * 右侧 系统 16:07:22 + 主题 / 语言切换。数据来自 ship-status/telemetry（30s 刷新、隐藏时停、与「舰况」面板共用一次请求）。
  * 后台版：AXIOM · 平台控制台 · 组织 n · 系统。
  */
@@ -41,35 +42,6 @@ function Reading({ label, value, suffix }: { label: string; value: ReactNode; su
 }
 const Sep = ({ className }: { className?: string }) => <i className={cx("bridge-sep", className)} aria-hidden="true" />;
 
-/**
- * 舷窗带里的滚动数字（odometer）：每一位是一列 0–9，值变化时该列 160ms 强 ease-out 滚到新数字；非数字字符（¥ , .）原样显示。
- * 首次渲染不滚（data-still）。位数从右往左对齐（key 按距末尾的位置），金额增加一位时新位从左边出现，已有的位不跳。
- */
-function Odometer({ text, className }: { text: string; className?: string }) {
-  const [still, setStill] = useState(true);
-  const first = useRef(text);
-  useEffect(() => {
-    if (text !== first.current) setStill(false);
-  }, [text]);
-  const chars = [...text];
-  return (
-    <span className={cx("odo", className)} data-still={still || undefined} aria-label={text}>
-      {chars.map((ch, i) => {
-        const fromEnd = chars.length - 1 - i;
-        if (!/\d/.test(ch)) return <span key={`c${fromEnd}`} className="odo-c">{ch}</span>;
-        const d = Number(ch);
-        return (
-          <span key={`d${fromEnd}`} className="odo-d" aria-hidden="true">
-            <span className="odo-col" style={{ transform: `translateY(${-d * 100}%)` }}>
-              {Array.from({ length: 10 }, (_, k) => <span key={k}>{k}</span>)}
-            </span>
-          </span>
-        );
-      })}
-    </span>
-  );
-}
-
 /** 雷达式脉冲：在线的 success 灯外一圈 2.4s 扩散的细环（有 Agent 在线时才有）。 */
 function RadarLED({ online }: { online: boolean }) {
   return (
@@ -87,7 +59,7 @@ export function BridgeBar({ org, live }: { org: Session["organization"] | null |
   const anyOnline = !!tele && tele.agentsOnline > 0;
   const anyRuns = !!tele && tele.active > 0;
   const cost = tele ? fmtMoney(tele.costToday, org?.currency) : "—";
-  const pending = tele?.proposalsPending ?? 0;
+  const inbox = tele?.inbox ?? 0;
   return (
     <div className="bridge-bar" data-theme="dark" role="status" aria-label={t("bridge.label")}>
       <StarBand className="star-band" />
@@ -108,13 +80,13 @@ export function BridgeBar({ org, live }: { org: Session["organization"] | null |
         <Item className="hidden md:inline-flex" led={<StatusLED tone={anyRuns ? "accent" : "dark"} />}>
           <Reading label={t("bridge.runs")} value={tele ? tele.active : "–"} suffix={t("bridge.active")} />
         </Item>
-        {/* 待确认操作：只在有等人确认的动作时出现（ADR 0003），点它进「待确认操作」页 */}
-        {!!pending && (
+        {/* 待我处理：只在有等我出手的事时出现（DESIGN.md §12，原「待确认 n」并入），点它回「我的工作」；数字滚动 */}
+        {!!inbox && (
           <>
             <Sep />
             <Item led={<StatusLED tone="warning" />}>
-              <Link href="/proposals/" className="inline-flex items-center gap-1.5 hover:text-ink" title={t("bridge.proposalsTip", { n: pending })}>
-                <Reading label={t("bridge.proposals")} value={pending} />
+              <Link href="/" className="inline-flex items-center gap-1.5 hover:text-ink" title={t("bridge.inboxTip", { n: inbox })}>
+                {t("bridge.inbox")} <Odometer text={String(inbox)} className="text-telemetry" />
               </Link>
             </Item>
           </>

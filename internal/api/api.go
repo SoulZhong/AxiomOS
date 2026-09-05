@@ -52,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 	auth("GET /api/v1/goals/{id}", s.goal)
 	auth("PATCH /api/v1/goals/{id}", s.updateGoal)
 	auth("DELETE /api/v1/goals/{id}", s.deleteGoal)
+	s.milestoneRoutes(auth)
 
 	auth("GET /api/v1/tasks", s.tasks)
 	auth("POST /api/v1/tasks", s.createTask)
@@ -104,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 
 	s.proposalRoutes(auth)
 	s.workspaceRoutes(auth)
+	s.inboxRoutes(auth)
 
 	auth("GET /api/v1/events", s.events)
 	auth("GET /api/v1/notifications", s.notifications)

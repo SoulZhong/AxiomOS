@@ -34,6 +34,12 @@ const (
 	ActionTaskTypeSave      = "task_type.save"
 	ActionSprintStart       = "sprint.start"
 	ActionSprintClose       = "sprint.close"
+	// 里程碑（ADR 0016）：受「创建目标」授权约束
+	ActionMilestoneCreate  = "milestone.create"
+	ActionMilestoneUpdate  = "milestone.update"
+	ActionMilestoneDelete  = "milestone.delete"
+	ActionMilestoneReach   = "milestone.reach"
+	ActionMilestoneUnreach = "milestone.unreach"
 )
 
 // proposalPermission 是确认某个动作所需的组织权限；空表示只有 Agent 的所有者（和组织负责人）能确认。
@@ -506,6 +512,34 @@ func (a *App) runProposal(ctx context.Context, sess *Session, p *domain.Proposal
 		return a.StartSprint(ctx, sess, p.TargetID)
 	case ActionSprintClose:
 		return a.CloseSprint(ctx, sess, p.TargetID, payloadStr(p.Payload, "unfinished"), payloadStr(p.Payload, "next_sprint_id"))
+	case ActionMilestoneCreate:
+		var in CreateMilestoneInput
+		if err := fromPayload(p.Payload, &in); err != nil {
+			return nil, Bad("err.proposal_action", p.Action)
+		}
+		return a.CreateMilestone(ctx, sess, in)
+	case ActionMilestoneUpdate, ActionMilestoneDelete, ActionMilestoneReach, ActionMilestoneUnreach:
+		var mp milestonePayload
+		if err := fromPayload(p.Payload, &mp); err != nil || mp.MilestoneID == "" {
+			return nil, Bad("err.proposal_action", p.Action)
+		}
+		switch p.Action {
+		case ActionMilestoneUpdate:
+			var in UpdateMilestoneInput
+			if mp.Input != nil {
+				in = *mp.Input
+			}
+			return a.UpdateMilestone(ctx, sess, mp.MilestoneID, in)
+		case ActionMilestoneDelete:
+			if err := a.DeleteMilestone(ctx, sess, mp.MilestoneID); err != nil {
+				return nil, err
+			}
+			return map[string]any{"deleted": mp.MilestoneID}, nil
+		case ActionMilestoneReach:
+			return a.ReachMilestone(ctx, sess, mp.MilestoneID)
+		default:
+			return a.UnreachMilestone(ctx, sess, mp.MilestoneID)
+		}
 	}
 	return nil, Bad("err.proposal_action", p.Action)
 }

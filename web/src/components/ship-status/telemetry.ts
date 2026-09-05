@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useSyncExternalStore } from "react";
-import { api, isTerminal, type Event, type ProposalCount, type StateLabel, type Task } from "@/lib/api";
+import { api, isTerminal, type Event, type InboxCount, type StateLabel, type Task } from "@/lib/api";
 import { parseDate, today } from "@/lib/format";
 
 /**
@@ -11,7 +11,8 @@ import { parseDate, today } from "@/lib/format";
  *   （状态名 → 状态类型 由 GET /task-types 的流程定义给出；查不到的状态跳过）。
  * - 今日成本：今天有执行记录事件（开始 / 结束 / 上报用量）的任务，各取一次 GET /tasks/:id 拿到执行记录的金额，
  *   按结束（或开始）小时累计成 24 点；没有今天的执行记录时是一条平线（costReal=false，界面会说明）。
- * - 待确认操作：GET /proposals/count 的 pending，侧栏徽标与状态栏读数共用它（同一个 30s 轮询，不另起定时器）。
+ * - 待我处理：GET /inbox/count 的 count（六组之和，DESIGN.md §12），侧栏「我的工作」角标与状态栏读数共用它（同一个 30s 轮询，不另起定时器）；
+ *   老后端没有这个接口时退回 GET /proposals/count 的 pending。
  */
 export const HOURS = 24;
 
@@ -31,8 +32,8 @@ export interface ShipTelemetry {
   agentsTotal: number;
   costToday: number;
   costReal: boolean;
-  /** 等人确认的操作条数（ADR 0003）；老后端没有这个接口时是 0 */
-  proposalsPending: number;
+  /** 待我处理的条数（DESIGN.md §12：六组之和，通知只算未读）；老后端只有待确认操作的条数 */
+  inbox: number;
   series: Series;
   at: number;
 }
@@ -123,14 +124,24 @@ async function costSeries(events: Event[], now: Date): Promise<{ series: number[
   return { series, total: acc, real: any };
 }
 
+/** 待我处理的条数；接口不存在（老后端 404）时退回待确认操作的条数，再不行就是 0。 */
+async function fetchInboxCount(): Promise<InboxCount> {
+  try {
+    return await api.inbox.count();
+  } catch {
+    const p = await api.proposals.count().catch(() => ({ pending: 0 }));
+    return { count: p.pending ?? 0, by_kind: { proposals: p.pending ?? 0 } };
+  }
+}
+
 export async function fetchShipTelemetry(): Promise<ShipTelemetry> {
   const now = new Date();
-  const [tasks, agents, events, types, proposals] = await Promise.all([
+  const [tasks, agents, events, types, inbox] = await Promise.all([
     api.tasks.list(),
     api.agents.list(),
     api.events.list({ limit: EVENT_LIMIT }).catch(() => [] as Event[]),
     api.taskTypes.list().catch(() => []),
-    api.proposals.count().catch(() => ({ pending: 0 }) as ProposalCount),
+    fetchInboxCount(),
   ]);
   const states = new Map(types.map((tt) => [tt.name, tt.workflow.states]));
   const labelOf = (task: Task, state: string): StateLabel | null => states.get(task.type)?.[state]?.label ?? null;
@@ -151,7 +162,7 @@ export async function fetchShipTelemetry(): Promise<ShipTelemetry> {
     agentsTotal: agents.length,
     costToday: cost.total,
     costReal: cost.real,
-    proposalsPending: proposals.pending ?? 0,
+    inbox: inbox.count ?? 0,
     series: { ...replayed, cost: cost.series },
     at: now.getTime(),
   };

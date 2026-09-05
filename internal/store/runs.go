@@ -203,6 +203,43 @@ func (s *Store) MarkNotificationsRead(ctx context.Context, q Querier, memberID s
 	return err
 }
 
+// UnreadNotifications 只取某成员未读的通知（待我处理用）。
+func (s *Store) UnreadNotifications(ctx context.Context, q Querier, memberID string, limit int) ([]*domain.Notification, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := q.Query(ctx, `select id,member_id,title,body,coalesce(task_id,''),read_at,created_at from notifications where member_id=$1 and read_at is null order by id desc limit $2`, memberID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Notification
+	for rows.Next() {
+		n := &domain.Notification{}
+		if err := rows.Scan(&n.ID, &n.MemberID, &n.Title, &n.Body, &n.TaskID, &n.ReadAt, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// CountUnreadNotifications 统计某成员的未读通知数。
+func (s *Store) CountUnreadNotifications(ctx context.Context, q Querier, memberID string) (int, error) {
+	var n int
+	err := q.QueryRow(ctx, `select count(*) from notifications where member_id=$1 and read_at is null`, memberID).Scan(&n)
+	return n, err
+}
+
+// MarkNotificationsReadByIDs 把指定的几条标为已读；member_id 条件保证只能标自己的。
+func (s *Store) MarkNotificationsReadByIDs(ctx context.Context, q Querier, memberID string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx, `update notifications set read_at=now() where member_id=$1 and read_at is null and id = any($2)`, memberID, ids)
+	return err
+}
+
 // ---------- 价格表 ----------
 
 // PricesFor 返回组织覆盖优先、其次全局默认的价格表（按模型）。

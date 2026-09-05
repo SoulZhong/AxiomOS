@@ -32,6 +32,21 @@
 | PATCH | `/goals/{id}` | 同上字段的任意子集，另有 `achieved: bool`（确认达成 / 取消达成）与 `status: "active"\|"abandoned"`（放弃 / 重新开始） |
 | DELETE | `/goals/{id}` | 删除目标。只有空目标（没有子目标、没有任务）能删；否则 400 并说明还有多少子目标和任务，请改为放弃 |
 
+## 里程碑（ADR 0016）
+
+里程碑对象：`{id, goal_id, title, description, due_on(YYYY-MM-DD), reached_at|null, status: upcoming|reached|overdue, ready_hint: bool, created_by: ExecutorRef, created_at, updated_at}`。`ready_hint` 的口径：目标子树里所有计划结束早于或等于该日期的任务（跳过已终止的）都已进入成功终态，且至少有一个这样的任务；已达到的里程碑恒为假。`status` 由日期与 `reached_at` 算出；`ready_hint` 为真表示该日期前计划结束的任务都已完成、可以确认了。目标对象（树与详情）新增 `milestones[]`（按日期升序）与 `milestone_summary{total, reached, overdue, next{title,due_on}|null}`；`/gantt` 按目标分组时目标行带 `milestones[]`。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/goals/{id}/milestones` | 该目标的里程碑（不含子目标） |
+| POST | `/goals/{id}/milestones` | `{title, due_on, description?}` → 里程碑（能编辑该目标的人；Agent 受「创建目标」授权约束） |
+| PATCH | `/milestones/{id}` | `{title?, due_on?, description?}` |
+| DELETE | `/milestones/{id}` | 删除（产生动态） |
+| POST | `/milestones/{id}/reach` | 确认已达到 → 里程碑 |
+| POST | `/milestones/{id}/unreach` | 撤销确认 |
+
+动态种类：`MilestoneCreated`、`MilestoneUpdated`、`MilestoneReached`、`MilestoneUnreached`、`MilestoneDeleted`，摘要按语言渲染并带目标标题与日期。Agent 走待确认操作时的动作名：`milestone.create / update / delete / reach / unreach`。MCP 新增 `list_milestones`、`create_milestone`、`reach_milestone`。目标删除会连带删除其里程碑（里程碑是目标的一部分）；"有子目标或任务不能删"的规则不变。
+
 ## 任务
 
 任务对象：`{id, goal_id, goal{id,title}, parent_id, type, type_title, type_version, title, description, state{name,title,label,weight?,claimable?}, previous_state, creator, assignee, reviewer (ExecutorRef), participants{位置: {title, role, executor}}, required_role, pending_participant, required_capabilities[], human_only, relations[], artifacts[], comments[], runs[], subtasks[], planned_start, planned_end, actual_start, actual_end, estimate, priority: urgent|high|normal|low, progress, overdue, total_tokens, cost, fields, created_at, updated_at}`。
@@ -112,7 +127,7 @@ MCP 工具新增：`list_sprints`、`get_sprint`（含燃尽）、`add_tasks_to_
 
 ## 工作台（ADR 0015）
 
-区块键（系统定义）：`overview_summary` 组织概览摘要、`exceptions` 要我关注的异常、`my_tasks` 我的任务、`my_review` 等我验收、`team_load` 人员与 Agent 负荷、`cost_budget` 成本与预算、`proposals` 待确认操作、`events` 最近动态、`sprint` 当前迭代、`backlog` 待领取任务、`trend` 趋势与环比。预设键：`global` 全局视角、`unit` 部门视角、`team` 小组视角、`doer` 执行视角、`ops` 运营视角。
+区块键（系统定义）：`overview_summary` 组织概览摘要、`exceptions` 要我关注的异常、`my_tasks` 我的任务、`my_review` 等我验收、`team_load` 人员与 Agent 负荷、`cost_budget` 成本与预算、`events` 最近动态、`sprint` 当前迭代、`backlog` 待领取任务、`trend` 趋势与环比。预设键：`global` 全局视角、`unit` 部门视角、`team` 小组视角、`doer` 执行视角、`ops` 运营视角。`proposals` 区块已移除（并入「待我处理」）；已存布局里出现它时服务端静默丢弃。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -126,6 +141,16 @@ MCP 工具新增：`list_sprints`、`get_sprint`（含燃尽）、`add_tasks_to_
 
 首次种子时内置角色的默认映射：管理员 → 全局视角；运营、流程管理 → 运营视角；产品、设计、开发、测试、发布 → 执行视角。之后每次启动只给**没有任何记录**的内置角色补默认，组织改过或清过的一律不动。个人微调同样产生动态。
 
+## 待我处理（DESIGN.md §12）
+
+只看本人，不受 `scope` 影响。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/inbox` | `{count, groups[{kind: overdue|proposals|review|questions|unstarted|notifications, title, count, items[]}], empty?}`，组按紧急度排序，空组省略；`title` 是当前语言的组名，全空时 `empty` 是那句「没有等你处理的事。」。`items` 形状按组：任务类组是任务精简对象（含 `days_overdue` / `state`）；`proposals` 是待确认操作对象（`can_decide` 为真的）；`questions` 是等我答复的评论 `{task, comment}`；`notifications` 是站内通知对象。Agent 调用返回 403（Agent 没有待我处理） |
+| GET | `/inbox/count` | `{count, by_kind{...}}`，供侧栏角标与状态栏读数（与 `/proposals/count` 合并；后者保留兼容） |
+| POST | `/notifications/read` | `{ids[]}` 标为已读（只能标自己的，别人的 ID 被忽略）→ `{count}` 是剩余未读数。标已读不产生动态 |
+
 ## 待确认操作
 
 Agent 发起、但其授权模式是「需要人确认」的动作不会立即生效，而是记为一条待确认操作，等人点确认后才执行（ADR 0003）。对象：`{id, agent{id,name}, owner{id,name}, action, action_title, grant, target{kind: task|goal|sprint|task_type|agent, id, title}|null, summary, payload, status: pending|approved|rejected|expired, status_title, can_decide, decided_by, decided_at, reason, created_at, expires_at}`（`grant` 是用到的授权名，`can_decide` 表示当前登录者能否确认这一条）。`summary` 是完整中文句子，说明"确认后会发生什么"。
@@ -136,13 +161,13 @@ Agent 发起、但其授权模式是「需要人确认」的动作不会立即�
 | GET | `/proposals/{id}` | 详情 |
 | POST | `/proposals/{id}/approve` | 确认并立即执行；执行失败时保持 pending 并返回失败理由（完整中文句子）→ `{proposal, result}` |
 | POST | `/proposals/{id}/reject` | `{reason}` 必填，至少 6 个字的完整句子（Agent 直接读它）→ 待确认操作 |
-| GET | `/proposals/count` | `{pending: n}`，供侧栏与状态栏显示提醒 |
+| GET | `/proposals/count` | `{pending: n}`，保留兼容：成员取 `/inbox/count` 里 `by_kind.proposals`（等我确认的条数），Agent 仍是全组织待确认条数 |
 
 Agent 侧：任何写操作若命中「需要人确认」的授权，HTTP 返回 `202` 与 `{proposal, message}`（`message` 是完整中文句子，如「已提交待确认操作，等小王确认后才会执行。」）；MCP 工具同样返回这句话与待确认操作 ID，并新增 `list_my_proposals` 查看自己提交的待确认操作。
 
 动态种类新增：`ProposalCreated`、`ProposalApproved`、`ProposalRejected`、`ProposalExpired`（七天没人确认自动作废，由后台巡检产生）。确认后执行产生的动态照常记在 Agent 名下，并在摘要里带上「经<确认人>确认」。
 
-会走待确认操作的动作（`action` 取值）：`task.transition`、`task.claim`、`task.begin`、`task.assign`、`task.comment`、`task.note`、`task.artifact`、`task.link`、`task.create`、`task.create_subtask`、`goal.create`、`task_type.save`、`sprint.start`、`sprint.close`。每条另有 `action_title`（当前语言的动作名）、`status_title`、`can_decide`（当前登录者能否确认）。`task_type.save`、`sprint.start`、`sprint.close` 需要「管理流程」权限才能确认，其余只有 Agent 的所有者与组织负责人能确认。
+会走待确认操作的动作（`action` 取值）：`task.transition`、`task.claim`、`task.begin`、`task.assign`、`task.comment`、`task.note`、`task.artifact`、`task.link`、`task.create`、`task.create_subtask`、`goal.create`、`milestone.create`、`milestone.update`、`milestone.delete`、`milestone.reach`、`milestone.unreach`（里程碑动作的 `target` 是所属目标，`payload.milestone_id` 指向那条里程碑）、`task_type.save`、`sprint.start`、`sprint.close`。每条另有 `action_title`（当前语言的动作名）、`status_title`、`can_decide`（当前登录者能否确认）。`task_type.save`、`sprint.start`、`sprint.close` 需要「管理流程」权限才能确认，其余只有 Agent 的所有者与组织负责人能确认。
 
 ## Agent 与成员
 

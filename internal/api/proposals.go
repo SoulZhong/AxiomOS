@@ -46,11 +46,6 @@ func (s *Server) proposal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, proposalView(v))
 }
 
-func (s *Server) proposalCount(w http.ResponseWriter, r *http.Request) {
-	n, err := s.App.PendingProposalCount(r.Context(), sessionOf(r))
-	respond(w, r, map[string]any{"pending": n}, err)
-}
-
 func (s *Server) approveProposal(w http.ResponseWriter, r *http.Request) {
 	res, err := s.App.ApproveProposal(r.Context(), sessionOf(r), r.PathValue("id"))
 	if err != nil {

@@ -4,7 +4,7 @@ import { api, type Event } from "@/lib/api";
 import { fmtDate, fmtDateTime, parseDate } from "@/lib/format";
 import { eventTitle } from "@/lib/terms";
 import { t } from "@/lib/i18n";
-import { IconAgent, IconApprove, IconBacklog, IconBlocks, IconComment, IconExternal, IconGoal, IconRun, IconTask, IconTaskActive, IconUsage } from "./icons";
+import { IconAgent, IconApprove, IconBacklog, IconBlocks, IconComment, IconExternal, IconGoal, IconMilestone, IconRun, IconTask, IconTaskActive, IconUsage } from "./icons";
 import { Avatar, Button, Empty, TaskLink, cx } from "./ui";
 
 /*
@@ -28,6 +28,9 @@ const LED_OF: Partial<Record<Event["kind"], Led>> = {
   TaskTransitioned: "accent",
   TaskCreated: "success",
   GoalCreated: "success",
+  MilestoneCreated: "success",
+  MilestoneReached: "success",
+  MilestoneDeleted: "warning",
   AgentRegistered: "success",
   RelationRemoved: "warning",
   ProposalCreated: "warning",
@@ -60,6 +63,12 @@ function kindIcon(kind: Event["kind"]): ReactNode {
     case "GoalUpdated":
     case "GoalDeleted":
       return <IconGoal {...p} />;
+    case "MilestoneCreated":
+    case "MilestoneUpdated":
+    case "MilestoneReached":
+    case "MilestoneUnreached":
+    case "MilestoneDeleted":
+      return <IconMilestone {...p} />;
     case "AgentRegistered":
     case "AgentUpdated":
     case "AgentRemoved":

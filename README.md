@@ -1,6 +1,8 @@
 # AxiomOS
 
-AI 原生的组织操作系统：目标、任务、人与 Agent 在同一个系统里协同运转。设计与术语见 `CONTEXT.md`，架构决策见 `docs/adr/`，流程定义规格见 `docs/spec/`。
+**中文** | [English](README.en.md)
+
+AI 原生的组织操作系统：目标、任务、人与 Agent 在同一个系统里协同运转。可高度定制的 SaaS，同时支持私有化部署。设计与术语见 `CONTEXT.md`，架构决策见 `docs/adr/`，流程定义规格见 `docs/spec/`，接口契约见 `docs/api.md`。
 
 ## 本地运行
 
@@ -28,8 +30,9 @@ PLATFORM_ADMIN_EMAIL=admin@example.com PLATFORM_ADMIN_PASSWORD=改成你的密�
 ## 文档
 
 - `CONTEXT.md` 词汇表：所有面向用户的名称都以它为准
-- `docs/adr/` 架构决策（多租户隔离、动态骨架、Agent 权限、跨角色流转、状态类型、执行记录、用语原则、技术栈）
+- `docs/adr/` 十五条架构决策（多租户隔离、动态骨架、Agent 权限、跨角色流转、状态类型、执行记录、用语原则、技术栈、设计规范、看板与迭代、可见范围、可定制边界、角色工作台）
 - `docs/spec/workflow-definition.md` 任务类型与流程定义规格
+- `docs/api.md` HTTP 接口与 MCP 工具契约
 - `web/DESIGN.md` 界面设计规范 v2（以 Linear 为蓝本，叠加 Axiom 母舰科幻层；来源见 `docs/design/sources/`）
 - `docs/agent-integration.md` Agent 接入指南
 - `prototypes/` 一次性验证原型

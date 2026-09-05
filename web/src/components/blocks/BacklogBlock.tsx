@@ -26,7 +26,7 @@ export function BacklogBlock({ index, title, noLink }: BlockProps) {
       icon={<IconBacklog />}
       title={title ?? t("block.backlog")}
       telemetry={backlog.data ? t("block.backlog.count", { n: claimable.length, total }) : undefined}
-      href="/backlog/"
+      href="/tasks/?view=backlog"
       padded={false}
       loading={backlog.loading && !backlog.data}
       error={backlog.error}
@@ -35,7 +35,7 @@ export function BacklogBlock({ index, title, noLink }: BlockProps) {
       emptyText={total > 0 ? t("block.backlog.noneForMe", { n: total }) : t("block.backlog.empty")}
       emptyAction={
         total > 0 ? (
-          <Link href="/backlog/" className="text-caption text-ink-muted hover:text-accent-hover">
+          <Link href="/tasks/?view=backlog" className="text-caption text-ink-muted hover:text-accent-hover">
             {t("block.more")}
           </Link>
         ) : undefined
@@ -70,7 +70,7 @@ export function BacklogBlock({ index, title, noLink }: BlockProps) {
         ))}
         {claimable.length > LIMIT && (
           <li className="px-4 py-2 text-caption text-ink-subtle">
-            <Link href="/backlog/" className="hover:text-accent-hover">
+            <Link href="/tasks/?view=backlog" className="hover:text-accent-hover">
               {t("block.moreN", { n: claimable.length })}
             </Link>
           </li>

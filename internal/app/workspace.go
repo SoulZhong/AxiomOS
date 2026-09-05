@@ -138,6 +138,7 @@ func (a *App) SetMyWorkspace(ctx context.Context, sess *Session, blocks []string
 	if err := requireHuman(sess); err != nil {
 		return nil, err
 	}
+	blocks = domain.DropRetiredBlocks(blocks) // 已移除的区块（proposals）不再落库
 	if err := domain.ValidateBlocks(blocks); err != nil {
 		return nil, blocksError(err)
 	}
@@ -194,8 +195,8 @@ func (a *App) WorkspaceCatalog(sess *Session) *WorkspaceCatalogView {
 // roleLayoutView 组一个角色的布局视图；没有布局时区块取非负责人的默认预设，preset 为 null。
 func roleLayoutView(r *domain.Role, l *domain.WorkspaceLayout, memberCount int, loc i18n.Locale) RoleLayoutView {
 	v := RoleLayoutView{Role: r.Name, RoleTitle: r.Title.In(loc), MemberCount: memberCount}
-	if l != nil && len(l.Blocks) > 0 {
-		v.Blocks = append([]string{}, l.Blocks...)
+	if l != nil && len(domain.DropRetiredBlocks(l.Blocks)) > 0 {
+		v.Blocks = domain.DropRetiredBlocks(l.Blocks) // 旧布局里的 proposals 静默丢弃
 		if l.Preset != "" {
 			p := l.Preset
 			v.Preset = &p
@@ -276,6 +277,7 @@ func (a *App) SetRoleWorkspace(ctx context.Context, sess *Session, role string, 
 		return nil, err
 	}
 	preset = strings.TrimSpace(preset)
+	blocks = domain.DropRetiredBlocks(blocks) // 已移除的区块（proposals）不再落库
 	if (preset == "") == (len(blocks) == 0) {
 		return nil, Bad("err.workspace_body")
 	}

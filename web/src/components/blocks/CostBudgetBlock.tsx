@@ -33,7 +33,7 @@ export function CostBudgetBlock({ index, title, noLink }: BlockProps) {
       icon={<IconUsage />}
       title={title ?? t("block.cost_budget")}
       telemetry={t("block.cost_budget.thisMonth")}
-      href="/dashboard/"
+      href="/overview/?tab=cost"
       loading={overview.loading && !totals}
       error={overview.error}
       onRetry={overview.reload}

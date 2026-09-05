@@ -55,6 +55,8 @@ func (s *Store) GoalUsage(ctx context.Context, q Querier, id string) (children, 
 }
 
 // DeleteGoal 物理删除一个目标。调用方必须先确认它没有子目标也没有任务。
+// 里程碑不算「内容」：它们是目标自己的时间刻度（ADR 0016），没有任务那样的历史与成本，
+// 随目标一起删（milestones.goal_id on delete cascade），所以这里不再单独检查。
 func (s *Store) DeleteGoal(ctx context.Context, q Querier, id string) error {
 	_, err := q.Exec(ctx, `delete from goals where id=$1`, id)
 	return err

@@ -13,6 +13,7 @@ import { IconCheck, IconGoal, IconLog, IconTask } from "@/components/icons";
 import { ArcGauge } from "@/components/instruments/ArcGauge";
 import { Odometer } from "@/components/instruments/Odometer";
 import { TaskTable } from "@/components/TaskTable";
+import { MilestonePanel } from "./MilestonePanel";
 import { Avatar, Button, DescList, DetailSkeleton, ErrorBox, IdLine, ListSkeleton, PageHeader, Panel, ProgressBar, TableSkeleton, Tag, cx } from "@/components/ui";
 
 export function GoalDetail() {
@@ -91,6 +92,9 @@ function GoalDetailBody({ id }: { id: string | null }) {
               </div>
             )}
           </Panel>
+
+          {/* 里程碑（ADR 0016）：按日期列出，确认 / 撤销 / 编辑 / 删除，末尾一行内联新增 */}
+          <MilestonePanel goal={g} index={idx()} onChanged={goal.reload} />
 
           {g.children.length > 0 && (
             <Panel index={idx()} icon={<IconGoal />} title={t("goal.children")} telemetry={t("panel.rows", { n: g.children.length })} padded={false}>

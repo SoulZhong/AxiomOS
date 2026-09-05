@@ -339,13 +339,17 @@ type GoalV struct {
 	DoneTaskCount int         `json:"done_task_count"`
 	Children      []GoalV     `json:"children"`
 	CreatedAt     time.Time   `json:"created_at"`
+	// 里程碑（ADR 0016）：目标自己的，按日期升序
+	Milestones       []MilestoneV      `json:"milestones"`
+	MilestoneSummary MilestoneSummaryV `json:"milestone_summary"`
 }
 
 // goalView 递归转换；actual 从任务实际时间聚合。
 func goalView(g *app.GoalView, r refs, actual map[string][2]*time.Time) GoalV {
 	v := GoalV{ID: g.ID, Title: g.Title, Description: g.Description, Owner: r.must(g.OwnerMemberID), ParentID: nullable(g.ParentID), TeamID: nullable(g.TeamID),
 		Progress: g.Progress, Achieved: g.Status == domain.GoalAchieved, Status: string(g.Status), Budget: g.Budget, Cost: g.Cost, OverBudget: g.OverBudget,
-		PlannedStart: dateStr(g.Start), PlannedEnd: dateStr(g.End), Deadline: dateStr(g.Deadline), TaskCount: g.TaskCount, DoneTaskCount: g.DoneCount, Children: []GoalV{}, CreatedAt: g.CreatedAt}
+		PlannedStart: dateStr(g.Start), PlannedEnd: dateStr(g.End), Deadline: dateStr(g.Deadline), TaskCount: g.TaskCount, DoneTaskCount: g.DoneCount, Children: []GoalV{}, CreatedAt: g.CreatedAt,
+		Milestones: milestoneViews(g.Milestones, r), MilestoneSummary: milestoneSummaryView(g)}
 	if g.PlannedStart != nil {
 		v.PlannedStart = dateStr(g.PlannedStart)
 	}
@@ -871,17 +875,21 @@ type GanttTaskV struct {
 	Overdue      bool         `json:"overdue"`
 }
 
+// GanttGoalV 是甘特图目标行的汇总：横条起止、截止刻度、进度，以及横条上的里程碑菱形（ADR 0016）。
+type GanttGoalV struct {
+	ID           string            `json:"id"`
+	PlannedStart *string           `json:"planned_start"`
+	PlannedEnd   *string           `json:"planned_end"`
+	Deadline     *string           `json:"deadline"`
+	Progress     int               `json:"progress"`
+	Milestones   []GanttMilestoneV `json:"milestones"`
+}
+
 type GanttRowV struct {
-	Key   string `json:"key"`
-	Title string `json:"title"`
-	Depth int    `json:"depth"`
-	Goal  *struct {
-		ID           string  `json:"id"`
-		PlannedStart *string `json:"planned_start"`
-		PlannedEnd   *string `json:"planned_end"`
-		Deadline     *string `json:"deadline"`
-		Progress     int     `json:"progress"`
-	} `json:"goal"`
+	Key   string       `json:"key"`
+	Title string       `json:"title"`
+	Depth int          `json:"depth"`
+	Goal  *GanttGoalV  `json:"goal"`
 	Tasks []GanttTaskV `json:"tasks"`
 }
 
@@ -909,13 +917,7 @@ func ganttView(group string, rows []*app.GanttRow, r refs, from, to string) Gant
 		}
 		v := GanttRowV{Key: key, Title: row.Title, Depth: depth, Tasks: []GanttTaskV{}}
 		if row.Kind == "goal" && row.Key != "" {
-			v.Goal = &struct {
-				ID           string  `json:"id"`
-				PlannedStart *string `json:"planned_start"`
-				PlannedEnd   *string `json:"planned_end"`
-				Deadline     *string `json:"deadline"`
-				Progress     int     `json:"progress"`
-			}{row.Key, dateStr(row.Start), dateStr(row.End), dateStr(row.Deadline), row.Progress}
+			v.Goal = &GanttGoalV{ID: row.Key, PlannedStart: dateStr(row.Start), PlannedEnd: dateStr(row.End), Deadline: dateStr(row.Deadline), Progress: row.Progress, Milestones: ganttMilestones(row.Milestones)}
 		}
 		for _, t := range row.Tasks {
 			v.Tasks = append(v.Tasks, GanttTaskV{ID: t.ID, Title: t.Title, Type: t.TypeName, TypeTitle: t.TypeTitle, State: TaskState{Name: t.State.Name, Title: t.State.Title, Label: t.State.Label}, Assignee: r.get(t.AssigneeID), GoalID: nullable(t.GoalID),
@@ -1018,6 +1020,9 @@ func eventView(e *store.EventRow, r refs, taskTitle, goalOf map[string]string, r
 	}
 	if g, ok := goalOf[e.TaskID]; ok && g != "" {
 		v.GoalID = &g
+	} else if g, ok := e.Data["goal_id"].(string); ok && g != "" {
+		// 不挂在任务上的动态（目标本身、里程碑）把目标 ID 写在数据里；目标详情的动态面板按 goal_id 过滤
+		v.GoalID = &g
 	}
 	v.Summary = eventSummary(e, r, taskTitle, roles, loc) + approvalNote(e, r, loc)
 	return v
@@ -1102,6 +1107,12 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 		return i18n.Trf(loc, "ev.GoalCreated", who, s("title"))
 	case "GoalUpdated":
 		return i18n.Trf(loc, "ev.GoalUpdated", who)
+	case "MilestoneCreated", "MilestoneUpdated", "MilestoneReached", "MilestoneUnreached", "MilestoneDeleted":
+		var due any = s("due_on")
+		if t, err := time.ParseInLocation("2006-01-02", s("due_on"), time.Local); err == nil {
+			due = i18n.Date(t)
+		}
+		return i18n.Trf(loc, "ev."+e.Type, who, s("goal_title"), s("title"), due)
 	case "AgentRegistered":
 		return i18n.Trf(loc, "ev.AgentRegistered", who, s("name"))
 	case "AgentRemoved", "AgentRevoked":

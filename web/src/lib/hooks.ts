@@ -59,10 +59,32 @@ export function errorMessage(e: unknown): string {
   return t("common.error");
 }
 
+/** 本页自己用 replaceState 改地址栏时广播这一事件，让 useQueryParam 的订阅者跟着重渲染（popstate 只在前进 / 后退时触发） */
+const LOCATION_EVENT = "axiomos:location";
 const subscribeLocation = (cb: () => void) => {
   window.addEventListener("popstate", cb);
-  return () => window.removeEventListener("popstate", cb);
+  window.addEventListener(LOCATION_EVENT, cb);
+  return () => {
+    window.removeEventListener("popstate", cb);
+    window.removeEventListener(LOCATION_EVENT, cb);
+  };
 };
+
+/**
+ * 改地址栏查询串（不刷新、不入历史）：patch 里的空值删掉这个参数，其余原样保留。
+ * 页签与筛选都写在 URL 里（DESIGN.md §10：切页签不丢筛选，可分享）。
+ */
+export function setQueryParams(patch: Record<string, string | null | undefined>) {
+  const url = new URL(window.location.href);
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null || v === undefined || v === "") url.searchParams.delete(k);
+    else url.searchParams.set(k, v);
+  }
+  const next = url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : "") + url.hash;
+  if (next === window.location.pathname + window.location.search + window.location.hash) return;
+  window.history.replaceState(window.history.state, "", next);
+  window.dispatchEvent(new Event(LOCATION_EVENT));
+}
 const lastSegment = (p: string) => {
   const segs = p.split("/").filter(Boolean);
   return segs[segs.length - 1] ?? "";

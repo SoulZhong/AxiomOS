@@ -10,11 +10,12 @@ import { useTaskTypeIndex } from "@/lib/states";
 import { capabilityTitle, grantTitle, PROPOSAL_STATUSES, priorityTitle, proposalFieldTitle, proposalStatusOf, proposalStatusTitle, proposalTargetHref, proposalTargetKindTitle } from "@/lib/terms";
 import { usePersisted } from "@/lib/usePersisted";
 import { useSession } from "@/components/AppShell";
+import { HELM_MS, RejectDialog } from "@/components/proposals/RejectDialog";
 import { IconApprove, IconChevronDown, IconChevronRight, IconClose } from "@/components/icons";
 import { refreshShipTelemetry } from "@/components/ship-status/telemetry";
 import { StateBadge } from "@/components/StateBadge";
 import { useToast } from "@/components/toast";
-import { Avatar, Button, Checkbox, Code, DescList, Dialog, Empty, ErrorBox, ExecutorName, Field, ListSkeleton, PageHeader, Panel, ProgressBar, RelativeTime, StatChips, Tag, Textarea, Tip, cx } from "@/components/ui";
+import { Avatar, Button, Checkbox, Code, DescList, Empty, ErrorBox, ExecutorName, ListSkeleton, PageHeader, Panel, ProgressBar, RelativeTime, StatChips, Tag, Tip, cx } from "@/components/ui";
 
 /*
  * 待确认操作（CONTEXT.md「待确认操作」/ ADR 0003）：Agent 的授权是「需要人确认」时，它发起的动作先记成一条，
@@ -26,13 +27,10 @@ import { Avatar, Button, Checkbox, Code, DescList, Dialog, Empty, ErrorBox, Exec
  *   失败时回滚并把后端那句完整的失败理由原样显示。「拒绝」要求写一句完整的理由，Agent 会读它。
  */
 
-/** 转舵 240ms（globals.css F.），与乐观更新错开：动效放完再翻牌，reduced-motion 时立即翻。 */
-const HELM_MS = 240;
 /** 倒计时每分钟自己往前走一格，不用等 30 秒的遥测。 */
 const TICK_MS = 60_000;
 /** 6 小时内到期的用警示色催一下。 */
 const SOON_MS = 6 * 3600_000;
-const MIN_REASON = 6;
 
 export default function ProposalsPage() {
   const { session } = useSession();
@@ -412,49 +410,5 @@ function TargetState({ target }: { target: ProposalTarget }) {
       <Tag tone={v.sprint.status === "active" ? "accent" : v.sprint.status === "closed" ? "success" : "neutral"}>{v.sprint.name}</Tag>
       <span className="telemetry text-caption">{fmtDate(v.sprint.starts_on)} – {fmtDate(v.sprint.ends_on)}</span>
     </div>
-  );
-}
-
-// ---------- 拒绝：理由是写给 Agent 看的 ----------
-
-function RejectDialog({ proposal, busy, onClose, onSubmit }: { proposal: Proposal | null; busy: boolean; onClose: () => void; onSubmit: (p: Proposal, reason: string) => Promise<boolean> }) {
-  const [reason, setReason] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  // 换了一条（或关掉重开）就把输入清空：渲染期比较，不用 effect
-  const id = proposal?.id ?? null;
-  const [seen, setSeen] = useState(id);
-  if (seen !== id) {
-    setSeen(id);
-    setReason("");
-    setError(null);
-  }
-  const submit = async () => {
-    if (!proposal) return;
-    if (reason.trim().length < MIN_REASON) {
-      setError(t("proposals.reasonTooShort"));
-      return;
-    }
-    // 失败时后端那句完整的理由已经由 Toast 说了，这里只把对话框留着让人改
-    await onSubmit(proposal, reason.trim());
-  };
-  return (
-    <Dialog
-      open={!!proposal}
-      onClose={onClose}
-      title={t("proposals.rejectTitle")}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
-          <Button variant="danger" disabled={busy} onClick={() => void submit()}>{t("proposals.reject")}</Button>
-        </>
-      }
-    >
-      {proposal && <p className="text-ink-muted">{proposal.summary}</p>}
-      <Field label={t("proposals.reasonLabel")} error={error}>
-        <Textarea value={reason} onChange={(e) => { setReason(e.target.value); setError(null); }} placeholder={t("proposals.reasonPlaceholder")} autoFocus />
-      </Field>
-      {/* 说明始终在场：写错了要提示，但"这句话是给 Agent 看的"这件事不能因为报错就消失 */}
-      <p className="text-caption text-ink-subtle">{t("proposals.rejectHint", { agent: proposal?.agent.name })}</p>
-    </Dialog>
   );
 }

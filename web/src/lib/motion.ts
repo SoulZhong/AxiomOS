@@ -27,6 +27,16 @@ export function easeOut(): string {
   return v || "cubic-bezier(0.23, 1, 0.32, 1)";
 }
 
+/**
+ * 一次 200ms 的"重绘"过渡（DESIGN.md §10 页签切换、§8 甘特图切刻度共用）：0.6 透明 + 2px 模糊 → 清晰，WAAPI，不重挂、不丢滚动位置。
+ * reduced-motion 下只做透明度；键盘触发（html[data-kbd]）时不播。返回的 Animation 可在清理时 cancel。
+ */
+export function fadeRepaint(el: Element | null): Animation | null {
+  if (!el || keyboardIntent()) return null;
+  const frames = prefersReducedMotion() ? [{ opacity: 0.6 }, { opacity: 1 }] : [{ opacity: 0.6, filter: "blur(2px)" }, { opacity: 1, filter: "blur(0px)" }];
+  return el.animate(frames, { duration: 200, easing: easeOut() });
+}
+
 /*
  * 3. 领取任务的两段动效需要跨组件记住"刚领走了哪一块"（提案「领取任务 · 取走一块」）：
  *    - 领取成功时 rememberClaim(id) 并广播 `axiomos:claimed`（侧栏「待领取任务」图标取走一块）；

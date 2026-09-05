@@ -1,9 +1,10 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { api, OVERVIEW_PERIODS, type OverviewData, type OverviewPeriod, type OverviewUnit } from "@/lib/api";
 import { fmtDate, fmtMoney } from "@/lib/format";
-import { useLoad } from "@/lib/hooks";
+import { setQueryParams, useLoad, useQueryParam } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
+import { useFadeOnChange } from "@/lib/useFadeOnChange";
 import { setScope, useScopeState } from "@/lib/useScope";
 import { useSession } from "@/components/AppShell";
 import { ScopeMoney } from "@/components/ScopePicker";
@@ -11,21 +12,31 @@ import { ExceptionsBlock } from "@/components/blocks/ExceptionsBlock";
 import { TeamLoadBlock } from "@/components/blocks/TeamLoadBlock";
 import { TrendBlock } from "@/components/blocks/TrendBlock";
 import { IconChevronRight } from "@/components/icons";
-import { Empty, ErrorBox, PageHeader, Panel, ProgressBar, Readout, Segmented, Table, TableSkeleton, cx } from "@/components/ui";
+import { AgentsTab } from "@/components/overview/AgentsTab";
+import { CostTab } from "@/components/overview/CostTab";
+import { EfficiencyTab } from "@/components/overview/EfficiencyTab";
+import { Empty, ErrorBox, PageHeader, Panel, ProgressBar, Readout, Segmented, Table, TableSkeleton, Tabs, cx } from "@/components/ui";
+
+const TABS = ["overview", "cost", "efficiency", "agents"] as const;
+type Tab = (typeof TABS)[number];
+const isTab = (v: unknown): v is Tab => typeof v === "string" && (TABS as readonly string[]).includes(v);
 
 /*
- * 组织概览（ADR 0013、docs/api.md「范围与概览」）。
- * 四块，全部按当前范围（状态栏里的范围选择器）取数：各组织单元对比、要我关注的异常、人员与 Agent 负荷、趋势与环比。
- * 表格里点组织单元 = 把范围切到那一档往下看，页头的面包屑负责回到上一层。
- * 看不到财务数据的范围里，所有金额走 ScopeMoney 显示「—」并说明原因（句子按组织的策略选，不拼字符串）。
+ * 组织概览（ADR 0013、DESIGN.md §10）：四个页签，?tab=overview|cost|efficiency|agents，默认「概览」。
+ *   概览：各组织单元对比、要我关注的异常、人员与 Agent 负荷、趋势与环比（全部按当前范围取数，与首页共用区块组件）；
+ *   成本 / 效率 / Agent：原「运营总览」的四块拆到三个页签（/dashboard 跳到 ?tab=cost）。
+ * 表格里点组织单元 = 把范围切到那一档往下看，页头的面包屑负责回到上一层。看不到财务数据的范围里，所有金额走 ScopeMoney 显示「—」。
  * 版面遵守 DESIGN.md 的空间铁律：不放装饰画面，信息铺满宽度，1280 起两列、1920 起表格更宽。
  */
 export default function OverviewPage() {
   const { session } = useSession();
   const scope = useScopeState();
-  const currency = session?.organization.currency;
+  const qTab = useQueryParam("tab");
+  const tab: Tab = isTab(qTab) ? qTab : "overview";
+  const switchTab = useCallback((k: Tab) => setQueryParams({ tab: k === "overview" ? null : k }), []);
   const [period, setPeriod] = useState<OverviewPeriod>("month");
-  const overview = useLoad(() => api.stats.overview(period), [period]);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useFadeOnChange(bodyRef, tab);
 
   // 面包屑：当前范围沿团队树往上的一串，点任意一层切回去
   const trail = useMemo(() => {
@@ -41,7 +52,6 @@ export default function OverviewPage() {
     return chain;
   }, [session?.teams, scope.scope]);
   const canPickAll = scope.options.some((o) => o.id === "all");
-  const data = overview.data;
 
   return (
     <div>
@@ -74,9 +84,27 @@ export default function OverviewPage() {
             </>
           ) : undefined
         }
-        actions={<Segmented size="sm" value={period} options={OVERVIEW_PERIODS.map((k) => [k, t(`overview.period.${k}`)])} onChange={setPeriod} aria-label={t("overview.trend")} />}
       />
+      <Tabs
+        value={tab}
+        label={t("overview.tabs")}
+        items={TABS.map((k) => ({ key: k, label: t(`overview.tab.${k}`) }))}
+        onChange={switchTab}
+        actions={tab === "overview" ? <Segmented size="sm" value={period} options={OVERVIEW_PERIODS.map((k) => [k, t(`overview.period.${k}`)])} onChange={setPeriod} aria-label={t("overview.trend")} /> : undefined}
+      />
+      <div ref={bodyRef} data-tab={tab}>
+        {tab === "cost" ? <CostTab /> : tab === "efficiency" ? <EfficiencyTab /> : tab === "agents" ? <AgentsTab /> : <SummaryTab period={period} currency={session?.organization.currency} scope={scope.scope} />}
+      </div>
+    </div>
+  );
+}
 
+/** 概览页签：各组织单元对比 + 与首页共用的三个区块 */
+function SummaryTab({ period, currency, scope }: { period: OverviewPeriod; currency?: string; scope: string }) {
+  const overview = useLoad(() => api.stats.overview(period), [period]);
+  const data = overview.data;
+  return (
+    <div>
       <div className="grid items-start gap-4">
         {/* 01 各组织单元对比 */}
         <Panel
@@ -95,7 +123,7 @@ export default function OverviewPage() {
           ) : !data || data.units.length === 0 ? (
             <Empty text={t("overview.emptyUnits")} illustration={false} className="py-8" />
           ) : (
-            <UnitsTable units={data.units} totals={data.totals} currency={currency} scope={scope.scope} />
+            <UnitsTable units={data.units} totals={data.totals} currency={currency} scope={scope} />
           )}
         </Panel>
 

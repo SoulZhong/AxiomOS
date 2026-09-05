@@ -135,6 +135,21 @@ type createGoalIn struct {
 	Deadline    string `json:"deadline,omitempty" jsonschema:"Deadline YYYY-MM-DD"`
 }
 
+type goalIDIn struct {
+	GoalID string `json:"goal_id" jsonschema:"Goal ID"`
+}
+
+type createMilestoneIn struct {
+	GoalID      string `json:"goal_id" jsonschema:"Goal the milestone belongs to"`
+	Title       string `json:"title" jsonschema:"What should be achieved by that date"`
+	DueOn       string `json:"due_on" jsonschema:"Date YYYY-MM-DD"`
+	Description string `json:"description,omitempty" jsonschema:"Optional description"`
+}
+
+type milestoneIDIn struct {
+	MilestoneID string `json:"milestone_id" jsonschema:"Milestone ID"`
+}
+
 type linkIn struct {
 	TaskID  string `json:"task_id" jsonschema:"This task ID"`
 	Type    string `json:"type" jsonschema:"Relation type: blocks (this task is a predecessor of the other), found_in (this task is a bug found in the other), relates_to"`
@@ -215,6 +230,10 @@ var toolDescs = map[string]i18n.Text{
 	"get_board":               i18n.T("查看看板：按状态分列的任务卡片；每张卡片的 can_move_to 与 moves 说明你现在能把它拖到哪个状态、要走哪一步（用 transition_task 执行）。列上的 over_limit 表示超出在制品上限（只提醒不拦截）。", "View the board: task cards grouped by state. Each card's can_move_to and moves tell you which states you can move it to and which step to call via transition_task. over_limit on a column means the WIP limit is exceeded (a reminder, not a block)."),
 	"start_sprint":            i18n.T("开始一个规划中的迭代。需要「管理流程」权限；对 Agent 这一步必须经人确认，调用后会生成一条待确认操作，等人确认才真正开始。", "Start a sprint in planning. Requires the Manage workflows permission; for agents this always needs human confirmation, so the call records a pending action that a person must confirm."),
 	"close_sprint":            i18n.T("结束迭代：未完成的任务退回待领取任务（backlog）或转入下一个迭代（next）。需要「管理流程」权限；对 Agent 这一步必须经人确认，会生成一条待确认操作。", "Close a sprint: unfinished tasks return to the unclaimed tasks (backlog) or carry over to the next sprint (next). Requires Manage workflows; for agents this always needs human confirmation and records a pending action."),
+
+	"list_milestones":  i18n.T("列出一个目标自己的里程碑（不含子目标）：名称、日期、状态（未到 / 已达到 / 已逾期）与「可以确认了」提示。里程碑是目标在时间轴上的刻度，不是任务，没有人去做它。", "List a goal's own milestones (not sub-goals): title, date, status (upcoming / reached / overdue) and the ready-to-confirm hint. A milestone marks what the goal should have achieved by a date; it is not a task and nobody executes it."),
+	"create_milestone": i18n.T("在目标上新增里程碑（需要「创建目标」授权；授权是需要人确认时会生成一条待确认操作）。", "Add a milestone to a goal (requires the Create goals grant; when that grant needs confirmation, a pending action is recorded instead)."),
+	"reach_milestone":  i18n.T("确认里程碑已达到（需要「创建目标」授权；授权是需要人确认时会生成一条待确认操作）。只在里程碑对应的事真的做到了之后调用；list_milestones 里 ready_hint 为真表示日期前的任务都已完成。", "Confirm a milestone as reached (requires the Create goals grant; when that grant needs confirmation, a pending action is recorded instead). Call it only once what the milestone stands for is actually done; ready_hint in list_milestones tells you the tasks due before that date are all finished."),
 
 	"list_my_proposals": i18n.T("列出我提交的待确认操作（等人确认 / 已确认 / 已拒绝 / 已过期），可按状态过滤。被告知「已提交待确认操作」后用它查看进展，不要重复提交同一个操作。", "List the pending actions I submitted (awaiting confirmation / confirmed / rejected / expired), optionally filtered by status. Use it after being told an action was submitted for confirmation; do not resubmit the same action."),
 }
@@ -342,6 +361,33 @@ func newServer(a *app.App, sess *app.Session) *sdk.Server {
 			return f(err)
 		}
 		return jsonResult(g)
+	})
+	// 里程碑（ADR 0016）
+	sdk.AddTool(s, tool("list_milestones"), func(ctx context.Context, req *sdk.CallToolRequest, in goalIDIn) (*sdk.CallToolResult, any, error) {
+		out, err := a.ListMilestones(ctx, sess, in.GoalID)
+		if err != nil {
+			return f(err)
+		}
+		return jsonResult(out)
+	})
+	sdk.AddTool(s, tool("create_milestone"), func(ctx context.Context, req *sdk.CallToolRequest, in createMilestoneIn) (*sdk.CallToolResult, any, error) {
+		mi := app.CreateMilestoneInput{GoalID: in.GoalID, Title: in.Title, Description: in.Description}
+		var err error
+		if mi.DueOn, err = parseDate(in.DueOn); err != nil {
+			return f(err)
+		}
+		m, err := a.CreateMilestone(ctx, sess, mi)
+		if err != nil {
+			return f(err)
+		}
+		return jsonResult(m)
+	})
+	sdk.AddTool(s, tool("reach_milestone"), func(ctx context.Context, req *sdk.CallToolRequest, in milestoneIDIn) (*sdk.CallToolResult, any, error) {
+		m, err := a.ReachMilestone(ctx, sess, in.MilestoneID)
+		if err != nil {
+			return f(err)
+		}
+		return jsonResult(m)
 	})
 	sdk.AddTool(s, tool("link_tasks"), func(ctx context.Context, req *sdk.CallToolRequest, in linkIn) (*sdk.CallToolResult, any, error) {
 		t, err := a.Link(ctx, sess, in.TaskID, domain.RelationType(in.Type), in.OtherID)

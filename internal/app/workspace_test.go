@@ -275,7 +275,12 @@ func TestWorkspaceRejectsAgentsAndBadInput(t *testing.T) {
 
 	// 目录按语言
 	cat := a.WorkspaceCatalog(f.dev)
-	if len(cat.Blocks) != 11 || len(cat.Presets) != 5 || cat.Blocks[0].Title != "组织概览摘要" || cat.Presets[0].Description == "" {
+	for _, b := range cat.Blocks {
+		if b.Key == "proposals" {
+			t.Fatal("目录不应再提供 proposals 区块（已并入待我处理）")
+		}
+	}
+	if len(cat.Blocks) != 10 || len(cat.Presets) != 5 || cat.Blocks[0].Title != "组织概览摘要" || cat.Presets[0].Description == "" {
 		t.Fatalf("目录不符: %d 区块 %d 预设 %+v", len(cat.Blocks), len(cat.Presets), cat.Blocks[0])
 	}
 	en := *f.dev

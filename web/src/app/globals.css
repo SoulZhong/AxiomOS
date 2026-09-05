@@ -515,6 +515,50 @@ html[data-kbd] dialog[open]::backdrop {
   min-height: 0;
   overflow: hidden;
 }
+/* 待我处理（DESIGN.md §12）：处理完的行沿用 .fold 收拢，但收起也是 200ms（目标树是 150ms）；
+   读数是舷窗带那种滚动数字，有事时 warning 三件套、没事时 hairline；通知行前一枚 6px 的未读灯，读过就熄成 hairline。
+   任务详情从「答复」进来时，那条评论 2.4s 内带一层 accent 底色，让人一眼找到它。 */
+.inbox-row[data-closed] {
+  transition-duration: 200ms;
+}
+.inbox-count {
+  display: inline-flex;
+  align-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--c-hairline-strong);
+  border-radius: var(--radius-xs);
+  background: var(--c-surface-2);
+  color: var(--c-ink-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+.inbox-count-warm {
+  border-color: var(--c-warning-border);
+  background: var(--c-warning-bg);
+  color: var(--c-warning);
+}
+.inbox-led {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--c-accent);
+  transition: background-color 200ms var(--ease-out);
+}
+.inbox-led-read {
+  background: var(--c-hairline-tertiary);
+}
+.comment-row {
+  transition: background-color 400ms var(--ease-out);
+}
+.comment-anchored {
+  background: color-mix(in srgb, var(--c-accent) 10%, transparent);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--c-accent) 10%, transparent);
+}
+
 /* 折叠箭头：一枚向右的箭头，展开时转 90°（屏上变形 → 强 ease-in-out） */
 .chevron {
   transition: transform 160ms var(--ease-in-out);
@@ -1385,6 +1429,67 @@ li:focus-within .row-actions {
   width: 2px;
   border-radius: 0 1px 1px 0;
   background: var(--c-accent);
+}
+
+/* 横向页签（DESIGN.md §10：任务 / 组织概览 / 目标）：32px 高、13px 字；选中 = ink + 底部 2px accent 线，hover 只变字色与底色；整条下面一道 hairline。
+   页签切换本身不动画，内容区由调用方做一次 200ms 的 fadeRepaint（与甘特图切刻度同一条过渡）。 */
+.htabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--c-hairline);
+}
+.htabs-list {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.htab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--c-ink-subtle);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition:
+    color 80ms ease,
+    background-color 80ms ease;
+}
+.htab:hover {
+  color: var(--c-ink);
+  background: var(--c-surface-2);
+}
+.htab[aria-selected="true"] {
+  color: var(--c-ink);
+  font-weight: 500;
+}
+.htab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--c-accent);
+}
+.htab-n {
+  font-family: var(--font-jetbrains), "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--c-ink-tertiary);
+}
+.htab[aria-selected="true"] .htab-n {
+  color: var(--c-accent-hover);
 }
 
 /* 原生日期输入：与文本框同高同边，配色跟随主题（color-scheme 由 html 继承）；空值时把 mm/dd/yyyy 淡成占位符色 */

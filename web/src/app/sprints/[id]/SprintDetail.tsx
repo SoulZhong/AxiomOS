@@ -47,7 +47,7 @@ export function SprintDetail() {
   return (
     <div>
       <div className="mb-1 flex flex-wrap items-center gap-1 text-caption text-ink-subtle">
-        <Link href="/sprints/" className="hover:text-accent-hover">{t("sprint.breadcrumb")}</Link>
+        <Link href="/tasks/?view=sprints" className="hover:text-accent-hover">{t("sprint.breadcrumb")}</Link>
         <span>/</span>
         <span className="telemetry">{x.id}</span>
       </div>

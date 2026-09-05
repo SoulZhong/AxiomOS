@@ -6,6 +6,7 @@ import { isOverdue } from "@/components/TaskTable";
  * 目标行的「状态摘要句」（DESIGN.md §9）：一句话说清这个目标下一步该干什么。
  * 统计范围是目标自己 + 全部后代目标下的任务。按优先级取第一条命中的：
  * 没有任务 → 逾期 → 等验收 → 都完成了等确认 → 有进行中 → 未开始。
+ * 里程碑（ADR 0016）插在最前面：目标还在做、却有逾期的里程碑时，先说「里程碑「X」已逾期」。
  */
 export interface GoalTally {
   total: number;
@@ -61,6 +62,8 @@ export function goalSummary(goal: Goal, c: GoalTally | undefined): { text: strin
   const x = c ?? EMPTY;
   if (goal.status === "abandoned") return { text: t("goals.sum.abandoned"), tone: "muted", needsAchieve: false };
   if (goal.achieved) return { text: t("goals.sum.achieved"), tone: "accent", needsAchieve: false };
+  const lateMs = goal.milestones?.find((m) => m.status === "overdue");
+  if (lateMs) return { text: t("goals.sum.msOverdue", { title: lateMs.title }), tone: "danger", needsAchieve: false };
   if (x.total === 0) return { text: t("goals.sum.noTasks"), tone: "muted", needsAchieve: false };
   if (x.overdue > 0) return { text: t("goals.sum.overdue", { n: x.overdue }), tone: "danger", needsAchieve: false };
   if (x.waiting > 0) return { text: t("goals.sum.waiting", { n: x.waiting }), tone: "warning", needsAchieve: false };

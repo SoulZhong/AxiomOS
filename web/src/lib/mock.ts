@@ -45,6 +45,10 @@ import type {
   InvitationInfo,
   LocalizedTitle,
   Member,
+  Milestone,
+  MilestoneInput,
+  MilestoneMark,
+  MilestoneSummary,
   OrgInfo,
   OrgMember,
   OrgPricing,
@@ -97,8 +101,15 @@ import type {
   Usage,
   VelocityData,
   WorkflowAvailability,
+  Inbox,
+  InboxCount,
+  InboxGroup,
+  InboxKind,
+  InboxQuestion,
+  InboxTask,
+  Notification,
 } from "./api";
-import { ApiError, BLOCK_KEYS, isBlockKey } from "./api";
+import { ApiError, BLOCK_KEYS, INBOX_KINDS, isBlockKey } from "./api";
 import { addDays, diffDays, parseDate, startOfWeek, toISODate, today } from "./format";
 import { getLocale, normalizeLocale, t, type Locale } from "./i18n";
 
@@ -503,7 +514,11 @@ let loggedIn = true;
 // ---------- 内部存储 ----------
 interface GoalRow {
   id: ID; title: string; description: string; owner_id: ID; parent_id: ID | null; achieved: boolean; budget: number | null; status?: Goal["status"]; team_id?: ID | null;
-  planned_start: string | null; planned_end: string | null; actual_start: string | null; actual_end: string | null; created_at: string;
+  planned_start: string | null; planned_end: string | null; actual_start: string | null; actual_end: string | null; deadline?: string | null; created_at: string;
+}
+/** 里程碑（ADR 0016）：目标上的一个有日期的节点；状态与"可以确认了"都是算出来的 */
+interface MilestoneRow {
+  id: ID; goal_id: ID; title: string; description: string; due_on: string; reached_at: string | null; created_by: ID; created_at: string; updated_at: string;
 }
 interface TaskRow {
   id: ID; goal_id: ID | null; parent_id: ID | null; type: string; type_version: number; title: string; description: string;
@@ -528,6 +543,7 @@ interface ProposalRow {
 interface RunRow { id: ID; task_id: ID; state: string; executor_id: ID; started_at: string; ended_at: string | null; outcome: Run["outcome"]; usage: Usage[] }
 
 const goals: Record<ID, GoalRow> = {};
+const milestones: Record<ID, MilestoneRow> = {};
 const tasks: Record<ID, TaskRow> = {};
 const sprints: Record<ID, SprintRow> = {};
 const relations: RelationRow[] = [];
@@ -536,6 +552,9 @@ const runs: RunRow[] = [];
 const events: Event[] = [];
 
 function addGoal(row: GoalRow) { goals[row.id] = row; }
+function addMilestone(row: Omit<MilestoneRow, "updated_at" | "created_by" | "description"> & Partial<MilestoneRow>) {
+  milestones[row.id] = { description: "", created_by: goals[row.goal_id]?.owner_id ?? "wang", updated_at: row.created_at, ...row };
+}
 function addTask(row: Omit<TaskRow, "artifacts" | "comments" | "last_weight" | "previous_state" | "fields" | "updated_at" | "type_version" | "parent_id" | "required_role" | "pending_participant" | "required_capabilities" | "description" | "points" | "sprint_id"> & Partial<TaskRow>) {
   const def = TASK_TYPES[row.type];
   const st = def.workflow.states[row.state];
@@ -584,7 +603,11 @@ function seed() {
   addGoal({ id: "G1", title: "Q3 提升用户留存", description: "把次月留存从 31% 提到 38%。", owner_id: "wang", parent_id: null, achieved: false, budget: 5000, planned_start: day(-40), planned_end: day(50), actual_start: day(-38), actual_end: null, created_at: at(-42) });
   addGoal({ id: "G2", title: "登录体验改版", description: "减少登录流失，支持一键登录。", owner_id: "li", parent_id: "G1", achieved: false, budget: 2000, planned_start: day(-30), planned_end: day(20), actual_start: day(-28), actual_end: null, created_at: at(-32) });
   addGoal({ id: "G3", title: "支付转化优化", description: "支付页改版与报表导出。", owner_id: "zhang", parent_id: "G1", achieved: false, budget: null, planned_start: day(-10), planned_end: day(45), actual_start: day(-9), actual_end: null, created_at: at(-12) });
-  addGoal({ id: "G4", title: "内部效率工具", description: "周报、月报、看板自动化。", owner_id: "zhao", parent_id: null, achieved: false, budget: 1500, planned_start: day(-20), planned_end: day(60), actual_start: day(-20), actual_end: null, created_at: at(-22) });
+  addGoal({ id: "G4", title: "内部效率工具", description: "周报、月报、看板自动化。", owner_id: "zhao", parent_id: null, achieved: false, budget: 1500, planned_start: day(-20), planned_end: day(60), actual_start: day(-20), actual_end: null, deadline: day(60), created_at: at(-22) });
+  // 里程碑（ADR 0016）：与演示库一致——一条已达到、一条未到、一条逾期（且该日期前的任务都已完成 → 可以确认了）
+  addMilestone({ id: "M1", goal_id: "G1", title: "登录页改版进入测试", description: "登录页需求开发完成并提测。", due_on: day(-3), reached_at: at(-2, 18), created_at: at(-40) });
+  addMilestone({ id: "M2", goal_id: "G1", title: "官网 v2.0 上线", description: "登录页与支付页一起随 v2.0 发布。", due_on: day(30), reached_at: null, created_at: at(-40) });
+  addMilestone({ id: "M3", goal_id: "G4", title: "供应商合同归档完成", due_on: day(-4), reached_at: null, created_at: at(-20) });
 
   // T1：需求，走到开发中；设计阶段小王没留执行记录；开发阶段两段执行记录（提问前后各一段）
   addTask({
@@ -662,6 +685,14 @@ function seed() {
   addRun({ id: "R20", task_id: "T21", state: "in_progress", executor_id: "zhou-agent", started_at: at(-3, 10), ended_at: at(-3, 15), usage: [usage("gpt-5", 9000, 3000, 3_400_000, 18)] });
   addRun({ id: "R21", task_id: "T21", state: "in_progress", executor_id: "zhou-agent", started_at: at(-1, 9), ended_at: at(-1, 12), usage: [usage("claude-sonnet-5", 6000, 2200, 2_100_000, 11)] });
 
+  // 给「待我处理」的示例（DESIGN.md §12）：小王名下一条逾期两天还没开始的、一条明天才开始的，以及一条小李的编码 Agent 停下来提问、等创建者小王答复的
+  // （自己的 Agent 提的问不算"等我答复"——它和我是同一方，真实后端同样按 isPrincipal 判断）
+  addTask({ id: "T22", goal_id: "G2", type: "generic", title: "补齐登录改版的验收清单", description: "把一键登录的验收项按设备与网络环境列全。", state: "todo", creator_id: "wang", assignee_id: "wang", reviewer_id: "zhao", participants: {}, planned_start: day(-4), planned_end: day(-2), actual_start: null, actual_end: null, estimate: 3, points: 2, sprint_id: "S7", priority: "high", created_at: at(-5, 11) });
+  addTask({ id: "T23", goal_id: "G3", type: "generic", title: "审阅支付页两步方案", description: "对照支付页优化需求，审阅交互稿。", state: "todo", creator_id: "zhao", assignee_id: "wang", reviewer_id: "zhao", participants: {}, planned_start: day(1), planned_end: day(3), actual_start: null, actual_end: null, estimate: 2, points: 1, sprint_id: "S8", priority: "normal", created_at: at(-1, 14) });
+  addTask({ id: "T24", goal_id: "G4", type: "generic", title: "整理竞品登录流程", description: "记录五家竞品的登录步骤与耗时。", state: "waiting", previous_state: "in_progress", creator_id: "wang", assignee_id: "li-agent", reviewer_id: "wang", participants: {}, planned_start: day(-2), planned_end: day(2), actual_start: day(-2), actual_end: null, estimate: 4, points: 2, sprint_id: "S7", priority: "normal", created_at: at(-2, 9) });
+  tasks.T24.comments.push({ id: "C5", kind: "comment", author: ref("li-agent"), body: "五家里有两家已经下线了独立登录页，改成了第三方账号直连。这两家是跳过，还是按第三方流程记？", created_at: at(0, 8, 12) });
+  addRun({ id: "R22", task_id: "T24", state: "in_progress", executor_id: "li-agent", started_at: at(-2, 9, 20), ended_at: at(0, 8, 12), usage: [usage("claude-sonnet-5", 5200, 1800, 1_900_000, 14)] });
+
   // 迭代：两个已结束（其中最早的一个任务已归档，只留汇总）、一个进行中、一个规划中
   sprints.S5 = { id: "S5", team_id: "team-rd", name: "第 5 次迭代", goal: "留存漏斗与访谈纪要。", starts_on: day(-48), ends_on: day(-35), status: "closed", created_by: "wang", started_at: at(-48, 9), closed_at: at(-35, 18), created_at: at(-50), snapshot: { task_count: 9, points_total: 26, points_done: 21, tasks_done: 7 } };
   sprints.S6 = { id: "S6", team_id: "team-rd", name: "第 6 次迭代", goal: "补齐周报、月报的自动化。", starts_on: day(-34), ends_on: day(-21), status: "closed", created_by: "wang", started_at: at(-34, 9), closed_at: at(-21, 18), created_at: at(-36), snapshot: { task_count: 8, points_total: 24, points_done: 18, tasks_done: 6 } };
@@ -697,6 +728,12 @@ function seed() {
   emit("SprintStarted", { actor: "wang", summary: "开始迭代「第 7 次迭代」", data: { sprint_id: "S7" }, at: at(-6, 9) });
   emit("TaskAddedToSprint", { task: "T16", actor: "zhang", summary: "加入迭代「第 7 次迭代」", data: { sprint_id: "S7" }, at: at(-3, 10) });
   emit("SprintCreated", { actor: "wang", summary: "创建迭代「第 8 次迭代」", data: { sprint_id: "S8" }, at: at(-2) });
+  emit("TaskCreated", { task: "T22", actor: "wang", summary: "创建任务「补齐登录改版的验收清单」", at: at(-5, 11) });
+  emit("TaskCreated", { task: "T23", actor: "zhao", summary: "创建任务「审阅支付页两步方案」", at: at(-1, 14) });
+  emit("TaskCreated", { task: "T24", actor: "wang", summary: "创建任务「整理竞品登录流程」", at: at(-2, 9) });
+  emit("RunStarted", { task: "T24", actor: "li-agent", summary: "小李的编码 Agent 开始执行（进行中）", at: at(-2, 9, 20) });
+  emit("CommentAdded", { task: "T24", actor: "li-agent", summary: "评论：五家里有两家已经下线了独立登录页，是跳过还是按第三方流程记？", at: at(0, 8, 12) });
+  emit("TaskTransitioned", { task: "T24", actor: "li-agent", summary: "提问等待：进行中 → 等待答复", data: { from: "in_progress", to: "waiting" }, at: at(0, 8, 12) });
 }
 seed();
 
@@ -797,6 +834,26 @@ function goalSubtreeIds(id: ID): ID[] {
   for (const gr of Object.values(goals)) if (gr.parent_id === id) out.push(...goalSubtreeIds(gr.id));
   return out;
 }
+/** 里程碑状态：已确认 → 已达到；日期已过未确认 → 逾期；否则未到 */
+const milestoneStatus = (m: MilestoneRow): Milestone["status"] => (m.reached_at ? "reached" : m.due_on < day(0) ? "overdue" : "upcoming");
+/** 可以确认了：目标子树里所有计划结束早于或等于该日期的任务（跳过已终止的）都已进入成功终态，且至少有一个；已达到的恒为假 */
+function milestoneReady(m: MilestoneRow): boolean {
+  if (m.reached_at) return false;
+  const ids = goalSubtreeIds(m.goal_id);
+  const due = Object.values(tasks).filter((tk) => tk.goal_id && ids.includes(tk.goal_id) && tk.planned_end && tk.planned_end <= m.due_on && stateOf(tk).label !== "terminal_failure");
+  return due.length > 0 && due.every((tk) => stateOf(tk).label === "terminal_success");
+}
+const viewMilestone = (m: MilestoneRow): Milestone => ({
+  id: m.id, goal_id: m.goal_id, title: m.title, description: m.description, due_on: m.due_on, reached_at: m.reached_at,
+  status: milestoneStatus(m), ready_hint: milestoneReady(m), created_by: ref(m.created_by), created_at: m.created_at, updated_at: m.updated_at,
+});
+const goalMilestones = (goalId: ID) => Object.values(milestones).filter((m) => m.goal_id === goalId).sort((a, b) => (a.due_on < b.due_on ? -1 : a.due_on > b.due_on ? 1 : 0));
+const milestoneMark = (m: MilestoneRow): MilestoneMark => ({ id: m.id, title: m.title, due_on: m.due_on, status: milestoneStatus(m), ready_hint: milestoneReady(m) });
+function milestoneSummary(goalId: ID): MilestoneSummary {
+  const ms = goalMilestones(goalId).map(viewMilestone);
+  const next = ms.find((m) => m.status === "upcoming");
+  return { total: ms.length, reached: ms.filter((m) => m.status === "reached").length, overdue: ms.filter((m) => m.status === "overdue").length, next: next ? { title: next.title, due_on: next.due_on } : null };
+}
 function viewGoal(gr: GoalRow, withChildren: boolean): Goal {
   const ids = goalSubtreeIds(gr.id);
   const ts = Object.values(tasks).filter((tk) => tk.goal_id && ids.includes(tk.goal_id));
@@ -807,10 +864,11 @@ function viewGoal(gr: GoalRow, withChildren: boolean): Goal {
     id: gr.id, title: gr.title, description: gr.description, owner: ref(gr.owner_id), parent_id: gr.parent_id, team_id: gr.team_id ?? null, progress, achieved: gr.achieved,
     status: gr.status ?? (gr.achieved ? "achieved" : "active"),
     budget: gr.budget, cost: round2(ts.reduce((s, tk) => s + taskCost(tk.id), 0)),
-    planned_start: gr.planned_start, planned_end: gr.planned_end, actual_start: gr.actual_start, actual_end: gr.actual_end,
+    planned_start: gr.planned_start, planned_end: gr.planned_end, actual_start: gr.actual_start, actual_end: gr.actual_end, deadline: gr.deadline ?? null,
     task_count: ts.length, done_task_count: ts.filter((tk) => stateOf(tk).label === "terminal_success").length,
     children: withChildren ? Object.values(goals).filter((c) => c.parent_id === gr.id).map((c) => viewGoal(c, true)) : [],
     created_at: gr.created_at,
+    milestones: goalMilestones(gr.id).map(viewMilestone), milestone_summary: milestoneSummary(gr.id),
   };
 }
 
@@ -996,7 +1054,7 @@ function gantt(group: GanttGroup, from: string, to: string, pick: ((team: ID | n
     const walk = (parent: ID | null, depth: number) => {
       for (const gr of Object.values(goals).filter((x) => x.parent_id === parent)) {
         const gv = viewGoal(gr, false);
-        push(gr.id, `${"　".repeat(depth)}${L(gr.title)}`, all.filter((tk) => tk.goal_id === gr.id), { id: gr.id, planned_start: gr.planned_start, planned_end: gr.planned_end, progress: gv.progress });
+        push(gr.id, `${"　".repeat(depth)}${L(gr.title)}`, all.filter((tk) => tk.goal_id === gr.id), { id: gr.id, planned_start: gr.planned_start, planned_end: gr.planned_end, deadline: gr.deadline ?? null, progress: gv.progress, milestones: goalMilestones(gr.id).map(milestoneMark) });
         walk(gr.id, depth + 1);
       }
     };
@@ -1144,6 +1202,7 @@ on("PATCH", "/goals/:id", (m, body) => {
   if (b.budget !== undefined) gr.budget = b.budget;
   if (b.planned_start !== undefined) gr.planned_start = b.planned_start;
   if (b.planned_end !== undefined) gr.planned_end = b.planned_end;
+  if (b.deadline !== undefined) gr.deadline = b.deadline;
   if (b.achieved !== undefined) { gr.achieved = b.achieved; gr.actual_end = b.achieved ? day(0) : null; gr.status = b.achieved ? "achieved" : "active"; }
   if (b.status !== undefined) gr.status = b.status;
   emit("GoalUpdated", { goal: gr.id, actor: ME, summary: t("mock.ev.goalUpdated", { title: L(gr.title) }) });
@@ -1158,8 +1217,65 @@ on("DELETE", "/goals/:id", (m) => {
   const ts = Object.values(tasks).filter((tk) => tk.goal_id === gr.id).length;
   if (children || ts) throw new ApiError(400, t("mock.goal.notEmpty", { children: String(children), tasks: String(ts) }));
   delete goals[gr.id];
+  for (const m of goalMilestones(gr.id)) delete milestones[m.id];
   emit("GoalDeleted", { actor: ME, summary: t("mock.ev.goalDeleted", { title: L(gr.title) }) });
   return undefined;
+});
+
+// ---------- 里程碑（ADR 0016） ----------
+const getMilestone = (id: string) => { const m = milestones[id]; if (!m) throw new ApiError(404, t("mock.ms.notFound")); return m; };
+const isoDate = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+const msEvent = (kind: EventKind, m: MilestoneRow, key: "mock.ev.msCreated" | "mock.ev.msUpdated" | "mock.ev.msReached" | "mock.ev.msUnreached" | "mock.ev.msDeleted") => {
+  const gr = goals[m.goal_id];
+  emit(kind, { goal: m.goal_id, actor: ME, summary: t(key, { goal: L(gr?.title ?? m.goal_id), title: L(m.title), date: m.due_on }), data: { milestone_id: m.id, goal_id: m.goal_id, goal_title: gr?.title, title: m.title, due_on: m.due_on } });
+};
+on("GET", "/goals/:id/milestones", (m) => { requireLogin(); return goalMilestones(getGoal(m.groups!.id).id).map(viewMilestone); });
+on("POST", "/goals/:id/milestones", (m, body) => {
+  requireLogin();
+  const gr = getGoal(m.groups!.id);
+  const b = (body ?? {}) as Partial<MilestoneInput>;
+  if (!b.title?.trim()) throw new ApiError(400, t("mock.ms.emptyTitle"));
+  if (!isoDate(b.due_on)) throw new ApiError(400, t("mock.ms.badDate"));
+  const row: MilestoneRow = { id: nextId("M"), goal_id: gr.id, title: b.title.trim(), description: b.description?.trim() ?? "", due_on: b.due_on!, reached_at: null, created_by: ME, created_at: nowISO(), updated_at: nowISO() };
+  milestones[row.id] = row;
+  msEvent("MilestoneCreated", row, "mock.ev.msCreated");
+  return viewMilestone(row);
+});
+on("PATCH", "/milestones/:id", (m, body) => {
+  requireLogin();
+  const row = getMilestone(m.groups!.id);
+  const b = (body ?? {}) as Partial<MilestoneInput>;
+  if (b.title !== undefined) { if (!b.title.trim()) throw new ApiError(400, t("mock.ms.emptyTitle")); row.title = b.title.trim(); }
+  if (b.due_on !== undefined) { if (!isoDate(b.due_on)) throw new ApiError(400, t("mock.ms.badDate")); row.due_on = b.due_on; }
+  if (b.description !== undefined) row.description = b.description.trim();
+  row.updated_at = nowISO();
+  msEvent("MilestoneUpdated", row, "mock.ev.msUpdated");
+  return viewMilestone(row);
+});
+on("DELETE", "/milestones/:id", (m) => {
+  requireLogin();
+  const row = getMilestone(m.groups!.id);
+  delete milestones[row.id];
+  msEvent("MilestoneDeleted", row, "mock.ev.msDeleted");
+  return undefined;
+});
+on("POST", "/milestones/:id/reach", (m) => {
+  requireLogin();
+  const row = getMilestone(m.groups!.id);
+  if (row.reached_at) throw new ApiError(400, t("mock.ms.alreadyReached", { title: L(row.title) }));
+  row.reached_at = nowISO();
+  row.updated_at = nowISO();
+  msEvent("MilestoneReached", row, "mock.ev.msReached");
+  return viewMilestone(row);
+});
+on("POST", "/milestones/:id/unreach", (m) => {
+  requireLogin();
+  const row = getMilestone(m.groups!.id);
+  if (!row.reached_at) throw new ApiError(400, t("mock.ms.notReached", { title: L(row.title) }));
+  row.reached_at = null;
+  row.updated_at = nowISO();
+  msEvent("MilestoneUnreached", row, "mock.ev.msUnreached");
+  return viewMilestone(row);
 });
 
 on("GET", "/tasks", (_m, _b, q) => {
@@ -1407,6 +1523,87 @@ on("POST", "/proposals/:id/reject", (m, body) => {
   p.reason = reason;
   emit("ProposalRejected", { actor: ME, task: p.target?.kind === "task" ? p.target.id : null, summary: t("mock.ev.proposalRejected", { action: L(p.action_title), reason }), data: { proposal_id: p.id } });
   return viewProposal(p);
+});
+
+// ---------- 待我处理与站内通知（DESIGN.md §12） ----------
+interface NotificationRow { id: number; member_id: ID; title: string; body: string; task_id: ID | null; read_at: string | null; created_at: string }
+const notifications: NotificationRow[] = [
+  { id: 1, member_id: "wang", title: "「留存漏斗分析」已提交，等你验收", body: "小张的测试 Agent 提交了结果：报告里的口径和上次一致。", task_id: "T13", read_at: null, created_at: at(-1, 17, 2) },
+  { id: 2, member_id: "wang", title: "「第 7 次迭代」还剩 2 天", body: "12 个任务里还有 5 个没到验收，其中 1 个逾期。", task_id: null, read_at: null, created_at: at(0, 8) },
+  { id: 3, member_id: "wang", title: "小李的编码 Agent 在「导出报表」上附了代码 PR", body: "feat: weekly CSV export #4，等测试角色领取后进入测试。", task_id: "T6", read_at: null, created_at: at(-4, 18, 3) },
+  { id: 4, member_id: "wang", title: "小王的写作助手已离线一天", body: "上次心跳是昨天 18:00，名下没有进行中的执行记录。", task_id: null, read_at: at(-1, 19), created_at: at(-1, 18, 30) },
+  { id: 5, member_id: "li", title: "「金额显示错位」已确认并指派给你", body: "小张确认了这个 Bug，严重程度：中，在第 7 次迭代里。", task_id: "T2", read_at: null, created_at: at(-3, 14, 31) },
+  { id: 6, member_id: "li", title: "小王答复了你的 Agent 在「登录页改版」里的提问", body: "用品牌蓝，深灰那处是笔误。任务已回到开发中。", task_id: "T1", read_at: null, created_at: at(-6, 14, 6) },
+];
+const viewNotification = (n: NotificationRow): Notification => ({ id: n.id, member_id: n.member_id, title: n.title, body: n.body, task_id: n.task_id, read_at: n.read_at, created_at: n.created_at });
+const INBOX_TITLES: Record<InboxKind, string> = {
+  overdue: "我负责但逾期的任务", proposals: "等我确认的待确认操作", review: "等我验收的任务", questions: "等我答复的提问", unstarted: "指派给我但没开始的任务", notifications: "未读通知",
+};
+/** 从当前状态出发、由我（按参与规则）能触发的步骤 */
+const stepsForMe = (tk: TaskRow) => {
+  const me = principals();
+  const who = (rule: string) => (rule === "assignee" ? !!tk.assignee_id && me.includes(tk.assignee_id) : rule === "reviewer" ? tk.reviewer_id === ME : rule === "creator" ? tk.creator_id === ME : rule === "anyone");
+  return defOf(tk).workflow.transitions.filter((tr) => (tr.from.includes("*") || tr.from.includes(tk.state)) && tr.by.some(who));
+};
+/**
+ * 待我处理的六组（与真实后端同一套规则，只认状态类型与步骤声明）：
+ * 逾期 = 我负责、计划结束日早于今天、没结束；待确认 = 等人确认且我能确认；待验收 = 停在等待类型、从这里有一步带「验收」授权且由我触发；
+ * 待答复 = 停在等待类型、从这里有一步要求评论、不带验收授权且由我触发，且最后一条评论不是我写的；未开始 = 我负责、处于未开始类型；通知 = 我的未读。
+ * 同一任务可能出现在两组（例如逾期且待验收），count 是各组之和，不去重。
+ */
+function inboxGroups(): InboxGroup[] {
+  const me = principals();
+  const open = Object.values(tasks).filter((tk) => !isTerminalRow(tk));
+  const mine = open.filter((tk) => tk.assignee_id && me.includes(tk.assignee_id));
+  const overdue: InboxTask[] = mine
+    .filter((tk) => tk.planned_end && parseDate(tk.planned_end)! < T0)
+    .map((tk) => ({ ...viewTask(tk), days_overdue: Math.round((T0.getTime() - parseDate(tk.planned_end)!.getTime()) / 86_400_000) }))
+    .sort((a, b) => b.days_overdue - a.days_overdue);
+  const pending = proposals.filter((p) => proposalStatus(p) === "pending" && proposalIsMine(p)).sort((a, b) => b.created_at.localeCompare(a.created_at)).map(viewProposal);
+  const waiting = open.filter((tk) => stateOf(tk).label === "waiting");
+  const review: InboxTask[] = waiting.filter((tk) => stepsForMe(tk).some((tr) => tr.grant === "review")).map((tk) => ({ ...viewTask(tk), days_overdue: 0 }));
+  const questions: InboxQuestion[] = waiting.flatMap((tk) => {
+    if (!stepsForMe(tk).some((tr) => tr.requires.includes("comment") && tr.grant !== "review")) return [];
+    const last = tk.comments.filter((c) => c.kind === "comment").at(-1);
+    if (!last || me.includes(last.author.id)) return [];
+    return [{ task: viewTask(tk), comment: last }];
+  });
+  const unstarted: InboxTask[] = mine.filter((tk) => stateOf(tk).label === "pending").map((tk) => ({ ...viewTask(tk), days_overdue: 0 }));
+  const unread = notifications.filter((n) => n.member_id === ME && !n.read_at).sort((a, b) => b.created_at.localeCompare(a.created_at)).map(viewNotification);
+  const all: InboxGroup[] = [
+    { kind: "overdue", title: INBOX_TITLES.overdue, count: overdue.length, items: overdue },
+    { kind: "proposals", title: INBOX_TITLES.proposals, count: pending.length, items: pending },
+    { kind: "review", title: INBOX_TITLES.review, count: review.length, items: review },
+    { kind: "questions", title: INBOX_TITLES.questions, count: questions.length, items: questions },
+    { kind: "unstarted", title: INBOX_TITLES.unstarted, count: unstarted.length, items: unstarted },
+    { kind: "notifications", title: INBOX_TITLES.notifications, count: unread.length, items: unread },
+  ];
+  return INBOX_KINDS.map((k) => all.find((g) => g.kind === k)!).filter((g) => g.count > 0);
+}
+on("GET", "/inbox", (): Inbox => {
+  requireLogin();
+  const groups = inboxGroups();
+  const count = groups.reduce((n, g) => n + g.count, 0);
+  return count ? { count, groups } : { count: 0, groups: [], empty: t("mock.inbox.empty") };
+});
+on("GET", "/inbox/count", (): InboxCount => {
+  requireLogin();
+  const groups = inboxGroups();
+  return { count: groups.reduce((n, g) => n + g.count, 0), by_kind: Object.fromEntries(groups.map((g) => [g.kind, g.count])) };
+});
+on("POST", "/notifications/read", (_m, body) => {
+  requireLogin();
+  const ids = ((body ?? {}) as { ids?: unknown }).ids;
+  if (!Array.isArray(ids)) throw new ApiError(400, t("mock.inbox.needIds"));
+  for (const n of notifications) if (n.member_id === ME && !n.read_at && ids.includes(n.id)) n.read_at = nowISO();
+  return { count: notifications.filter((n) => n.member_id === ME && !n.read_at).length };
+});
+on("GET", "/notifications", (_m, _b, q) => {
+  requireLogin();
+  const mine = notifications.filter((n) => n.member_id === ME).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const out = mine.map(viewNotification);
+  if (str(q, "read") === "1") for (const n of mine) if (!n.read_at) n.read_at = nowISO();
+  return out;
 });
 
 on("GET", "/task-types", () => { requireLogin(); return Object.values(TASK_TYPES); });
@@ -1944,15 +2141,14 @@ const BLOCK_DEFS: BlockDef[] = [
   { key: "my_review", title: "等我验收", description: "我是验收人、正在等我处理的任务。" },
   { key: "team_load", title: "人员与 Agent 负荷", description: "每个人和 Agent 手上有多少活、有没有逾期。" },
   { key: "cost_budget", title: "成本与预算", description: "这一个月的成本、预算执行率，以及成本最高的目标。" },
-  { key: "proposals", title: "待确认操作", description: "Agent 发起、等我确认后才执行的动作。" },
   { key: "events", title: "最近动态", description: "当前范围里最近发生了什么。" },
   { key: "sprint", title: "当前迭代", description: "进行中的迭代：进度、剩余天数与燃尽图。" },
   { key: "backlog", title: "待领取任务", description: "现在我能领的任务。" },
   { key: "trend", title: "趋势与环比", description: "成本与吞吐随时间的变化，与上一段时间对比。" },
 ];
 const PRESETS: Preset[] = [
-  { key: "global", title: "全局视角", description: "看全公司：概览、异常、成本、负荷与趋势。", blocks: ["overview_summary", "exceptions", "cost_budget", "team_load", "trend", "proposals", "events"] },
-  { key: "unit", title: "部门视角", description: "看本部：概览、异常、负荷、成本，加上等我验收的。", blocks: ["overview_summary", "exceptions", "team_load", "cost_budget", "my_review", "proposals", "events"] },
+  { key: "global", title: "全局视角", description: "看全公司：概览、异常、成本、负荷与趋势。", blocks: ["overview_summary", "exceptions", "cost_budget", "team_load", "trend", "events"] },
+  { key: "unit", title: "部门视角", description: "看本部：概览、异常、负荷、成本，加上等我验收的。", blocks: ["overview_summary", "exceptions", "team_load", "cost_budget", "my_review", "events"] },
   { key: "team", title: "小组视角", description: "带小组：异常、负荷、当前迭代、验收与待领取。", blocks: ["exceptions", "team_load", "sprint", "my_review", "backlog", "events"] },
   { key: "doer", title: "执行视角", description: "干活：我的任务、等我验收、待领取、当前迭代与动态。", blocks: ["my_tasks", "my_review", "backlog", "sprint", "events"] },
   { key: "ops", title: "运营视角", description: "看经营：成本、趋势、负荷与异常。", blocks: ["cost_budget", "trend", "team_load", "exceptions", "overview_summary", "events"] },

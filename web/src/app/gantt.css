@@ -345,3 +345,136 @@ button.gantt-chevron:hover {
     transition: none;
   }
 }
+
+/* ---------- 目标甘特图与里程碑（DESIGN.md §11，ADR 0016） ---------- */
+/* 目标行的左列：按层级缩进，标题 500，右侧等宽进度读数 */
+.gantt-label-goal {
+  background: var(--c-surface-1);
+  color: var(--c-ink);
+}
+.gantt-label-goal .gantt-goal-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.gantt-label-goal[data-depth="0"] .gantt-goal-title {
+  font-weight: 500;
+}
+.gantt-label-goal[data-depth]:not([data-depth="0"]) .gantt-goal-title {
+  font-weight: 400;
+  color: var(--c-ink-muted);
+}
+.gantt-unscheduled {
+  flex: none;
+  font-family: var(--font-jetbrains), "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  color: var(--c-ink-tertiary);
+}
+/* 横条两端的拖拽把手：透明，悬停时露出一道 accent */
+.gantt-handle {
+  fill: transparent;
+  cursor: ew-resize;
+}
+.gantt-handle:hover,
+.gantt-row[data-dragging] .gantt-handle {
+  fill: color-mix(in srgb, var(--c-accent) 35%, transparent);
+}
+.gantt-row[data-dragging] {
+  cursor: ew-resize;
+}
+.gantt-row[data-dragging] .gantt-bars {
+  cursor: ew-resize;
+}
+/* 里程碑菱形：8px，命中区 18px；悬停放大到 1.15，打开气泡 / 拖动时带一圈 accent 光晕 */
+.gantt-ms {
+  cursor: pointer;
+}
+.gantt-ms-hit {
+  fill: transparent;
+}
+.gantt-ms-shape {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 120ms var(--ease-out);
+}
+.gantt-ms:hover .gantt-ms-shape {
+  transform: scale(1.18);
+}
+.gantt-ms[data-active] .gantt-ms-halo {
+  stroke: var(--c-accent);
+  stroke-width: 2;
+}
+.gantt-ms[data-dragging] {
+  cursor: grabbing;
+}
+/* 浮在图上的气泡（提示 / 小气泡 / 内联输入）：fixed 定位，不受滚动容器裁切 */
+.gantt-float {
+  position: fixed;
+  z-index: 80;
+}
+.gantt-ms-tip {
+  pointer-events: none;
+  max-width: 320px;
+  padding: 6px 8px;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--c-hairline-strong);
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--c-ink) 12%, transparent);
+}
+.gantt-ms-tip .gantt-ms-tip-date {
+  font-family: var(--font-jetbrains), "SF Mono", Menlo, monospace;
+  color: var(--c-ink-muted);
+}
+.gantt-ms-pop {
+  width: 300px;
+  padding: 10px 12px 12px;
+  border-radius: var(--radius-lg, 12px);
+  border: 1px solid var(--c-hairline-strong);
+  background: var(--c-surface-2);
+  color: var(--c-ink);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--c-ink) 16%, transparent);
+}
+/* 双击新建里程碑的内联输入：钉在双击处那一天 */
+.gantt-inline-input {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 6px 0 8px;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--c-accent);
+  background: var(--c-surface-1);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--c-ink) 12%, transparent);
+}
+.gantt-inline-input input {
+  width: 200px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  color: var(--c-ink);
+  outline: none;
+}
+.gantt-inline-input input::placeholder {
+  color: var(--c-ink-tertiary);
+}
+.gantt-inline-input .gantt-inline-date {
+  flex: none;
+  font-family: var(--font-jetbrains), "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--c-telemetry);
+}
+@media (prefers-reduced-motion: reduce) {
+  .gantt-ms-shape {
+    transition: none;
+  }
+}

@@ -19,6 +19,10 @@ var catalog = map[string]Text{
 	"goal.status.active":    T("进行中", "Active"),
 	"goal.status.achieved":  T("已达成", "Achieved"),
 	"goal.status.abandoned": T("已放弃", "Abandoned"),
+	// 里程碑状态（ADR 0016）
+	"milestone.status.upcoming": T("未到", "Upcoming"),
+	"milestone.status.reached":  T("已达到", "Reached"),
+	"milestone.status.overdue":  T("已逾期", "Overdue"),
 
 	// 授权
 	"grant.execute":          T("执行任务", "Execute tasks"),
@@ -120,6 +124,11 @@ var catalog = map[string]Text{
 	"err.agent_revoke_forbid":       T("只有所有者或组织负责人可以吊销这个 Agent", "Only the owner or the organization owner can revoke this agent"),
 	"err.goal_edit_forbidden":       T("只有目标负责人、上级目标负责人或组织负责人可以修改目标", "Only the goal owner, a parent goal owner, or the organization owner can modify this goal"),
 	"err.goal_not_empty":            T("这个目标下面还有 %d 个子目标和 %d 个任务，不能删。把它们移走，或者直接放弃这个目标。", "This goal still has %d sub-goals and %d tasks, so it cannot be deleted. Move them elsewhere, or abandon the goal instead."),
+	"err.milestone_missing":         T("里程碑不存在", "Milestone not found"),
+	"err.milestone_invalid":         T("里程碑不合法：%s", "Invalid milestone: %s"),
+	"err.milestone_edit_forbidden":  T("只有目标负责人、上级目标负责人或组织负责人可以改这个目标的里程碑", "Only the goal owner, a parent goal owner, or the organization owner can change this goal's milestones"),
+	"err.milestone_already_reached": T("里程碑「%s」已经确认达到了，不用再确认。", "Milestone \"%s\" has already been confirmed as reached."),
+	"err.milestone_not_reached":     T("里程碑「%s」还没有确认达到，没有可撤销的确认。", "Milestone \"%s\" has not been confirmed as reached, so there is nothing to undo."),
 	"err.goal_status":               T("目标状态只能改成「进行中」或「已放弃」，收到的是 %s。", "A goal's status can only be set to active or abandoned; got %s."),
 	"err.parent_goal_missing":       T("上级目标不存在", "Parent goal not found"),
 	"err.agent_no_grant":            T("Agent 没有「%s」授权", "The agent lacks the \"%s\" grant"),
@@ -182,6 +191,15 @@ var catalog = map[string]Text{
 	"err.block_duplicate": T("区块「%s」重复出现，同一个区块只能放一次。", "Block \"%s\" appears more than once; each block can only be placed once."),
 	"err.preset_unknown":  T("预设「%s」不存在，可选的预设是：全局视角、部门视角、小组视角、执行视角、运营视角。", "Preset \"%s\" does not exist; the available presets are global, unit, team, doer and ops."),
 	"err.workspace_body":  T("请给出区块列表（blocks）或预设键（preset），二者选一。", "Provide either a block list (blocks) or a preset key (preset), not both."),
+	// 待我处理（DESIGN.md §12）
+	"err.inbox_agent":          T("Agent 没有「待我处理」，等 Agent 出手的事都在它的工具列表里；请用任务与待确认操作接口。", "Agents do not have an inbox; everything waiting for an agent is in its tool list. Use the task and pending-action endpoints instead."),
+	"inbox.kind.overdue":       T("我负责但逾期的任务", "My overdue tasks"),
+	"inbox.kind.proposals":     T("等我确认的待确认操作", "Pending actions awaiting my confirmation"),
+	"inbox.kind.review":        T("等我验收的任务", "Tasks awaiting my review"),
+	"inbox.kind.questions":     T("等我答复的提问", "Questions awaiting my reply"),
+	"inbox.kind.unstarted":     T("指派给我但没开始的任务", "Assigned to me, not started"),
+	"inbox.kind.notifications": T("未读通知", "Unread notifications"),
+	"inbox.empty":              T("没有等你处理的事。", "Nothing is waiting for you."),
 
 	// 动态句子
 	"ev.TaskCreated":        T("%s 创建了任务%s", "%s created task %s"),
@@ -202,6 +220,11 @@ var catalog = map[string]Text{
 	"ev.GoalCreated":        T("%s 创建了目标「%s」", "%s created goal \"%s\""),
 	"ev.GoalUpdated":        T("%s 修改了目标", "%s updated a goal"),
 	"ev.GoalDeleted":        T("删除目标", "Goal deleted"),
+	"ev.MilestoneCreated":   T("%s 在目标「%s」上新增了里程碑「%s」（%s）", "%s added a milestone to goal \"%s\": \"%s\" (%s)"),
+	"ev.MilestoneUpdated":   T("%s 修改了目标「%s」的里程碑「%s」（%s）", "%s edited a milestone of goal \"%s\": \"%s\" (%s)"),
+	"ev.MilestoneReached":   T("%s 确认目标「%s」的里程碑「%s」（%s）已达到", "%s confirmed a milestone of goal \"%s\" as reached: \"%s\" (%s)"),
+	"ev.MilestoneUnreached": T("%s 撤销了目标「%s」的里程碑「%s」（%s）的达到确认", "%s undid the reached confirmation of a milestone of goal \"%s\": \"%s\" (%s)"),
+	"ev.MilestoneDeleted":   T("%s 删除了目标「%s」的里程碑「%s」（%s）", "%s deleted a milestone of goal \"%s\": \"%s\" (%s)"),
 	"ev.GoalAbandoned":      T("放弃目标", "Goal abandoned"),
 	"ev.GoalResumed":        T("重新开始目标", "Goal resumed"),
 	"ev.AgentRegistered":    T("%s 注册了 Agent「%s」", "%s registered agent \"%s\""),
@@ -293,6 +316,8 @@ var catalog = map[string]Text{
 	"val.active_dead_end":     T("进行中状态「%s」没有任何出路，任务会卡死", "In-progress state \"%s\" has no way out; tasks would get stuck"),
 	"val.wip_limit":           T("状态「%s」的在制品上限必须是非负整数", "State \"%s\": the WIP limit must be a non-negative integer"),
 	"val.sprint_no_name":      T("迭代名称不能为空", "Sprint name is required"),
+	"val.milestone_no_title":  T("里程碑名称不能为空", "Milestone title is required"),
+	"val.milestone_no_date":   T("里程碑必须有日期", "Milestone date is required"),
 	"val.sprint_no_dates":     T("迭代必须有开始日期和结束日期", "A sprint needs a start date and an end date"),
 	"val.sprint_dates":        T("迭代的结束日期不能早于开始日期", "The sprint end date cannot be earlier than its start date"),
 	"val.proposal_no_action":  T("待确认操作缺少动作名", "The pending action is missing an action name"),
@@ -326,6 +351,11 @@ var catalog = map[string]Text{
 	"proposal.action.task_type.save":      T("修改任务类型与流程", "Change a task type and its workflow"),
 	"proposal.action.sprint.start":        T("开始迭代", "Start a sprint"),
 	"proposal.action.sprint.close":        T("结束迭代", "Close a sprint"),
+	"proposal.action.milestone.create":    T("新增里程碑", "Add a milestone"),
+	"proposal.action.milestone.update":    T("修改里程碑", "Edit a milestone"),
+	"proposal.action.milestone.delete":    T("删除里程碑", "Delete a milestone"),
+	"proposal.action.milestone.reach":     T("确认里程碑已达到", "Confirm a milestone as reached"),
+	"proposal.action.milestone.unreach":   T("撤销里程碑的达到确认", "Undo a milestone's reached confirmation"),
 
 	"proposal.summary.task.transition":     T("确认后会把任务「%s」从「%s」推进到「%s」。", "Once confirmed, task \"%s\" will move from \"%s\" to \"%s\"."),
 	"proposal.summary.task.claim":          T("确认后 %s 会领取任务「%s」并成为它的负责人。", "Once confirmed, %s will claim task \"%s\" and become its assignee."),
@@ -343,6 +373,11 @@ var catalog = map[string]Text{
 	"proposal.summary.task_type.save":      T("确认后会保存任务类型「%s」的新版本，之后新建的任务按新流程走。", "Once confirmed, a new version of task type \"%s\" will be saved and new tasks will follow the new workflow."),
 	"proposal.summary.sprint.start":        T("确认后会开始迭代「%s」。", "Once confirmed, sprint \"%s\" will start."),
 	"proposal.summary.sprint.close":        T("确认后会结束迭代「%s」，未完成的任务%s。", "Once confirmed, sprint \"%s\" will be closed and unfinished tasks will %s."),
+	"proposal.summary.milestone.create":    T("确认后会在目标「%s」上新增里程碑「%s」（%s）。", "Once confirmed, milestone \"%[2]s\" (%[3]s) will be added to goal \"%[1]s\"."),
+	"proposal.summary.milestone.update":    T("确认后会修改目标「%s」的里程碑「%s」。", "Once confirmed, milestone \"%[2]s\" of goal \"%[1]s\" will be edited."),
+	"proposal.summary.milestone.delete":    T("确认后会删除目标「%s」的里程碑「%s」（%s）。", "Once confirmed, milestone \"%[2]s\" (%[3]s) of goal \"%[1]s\" will be deleted."),
+	"proposal.summary.milestone.reach":     T("确认后会把目标「%s」的里程碑「%s」（%s）标为已达到。", "Once confirmed, milestone \"%[2]s\" (%[3]s) of goal \"%[1]s\" will be marked as reached."),
+	"proposal.summary.milestone.unreach":   T("确认后会撤销目标「%s」的里程碑「%s」（%s）的达到确认。", "Once confirmed, the reached confirmation of milestone \"%[2]s\" (%[3]s) of goal \"%[1]s\" will be undone."),
 
 	// MCP
 	"mcp.unauth":       T("未通过身份验证：%s。请在 Authorization 头里带上 Bearer <Agent 令牌>。", "Not authenticated: %s. Send Authorization: Bearer <agent token>."),

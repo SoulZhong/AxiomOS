@@ -23,6 +23,9 @@ type GoalView struct {
 	Children   []*GoalView `json:"children"`
 	Start      *time.Time  `json:"start,omitempty"` // 子项聚合的计划开始
 	End        *time.Time  `json:"end,omitempty"`   // 子项聚合的计划结束
+	// 里程碑（ADR 0016）：目标自己的，按日期升序；摘要只算自己的里程碑，提示按子树任务算。
+	Milestones       []*MilestoneView        `json:"milestones"`
+	MilestoneSummary domain.MilestoneSummary `json:"milestone_summary"`
 }
 
 // CreateGoalInput 是创建/修改目标的输入。
@@ -231,7 +234,7 @@ func (a *App) GoalTree(ctx context.Context, sess *Session) ([]*GoalView, error) 
 			return err
 		}
 		roots = buildGoalTree(goals, tasks, types, runs)
-		return nil
+		return a.attachMilestones(ctx, tx, roots, tasks, types)
 	})
 	return roots, err
 }
@@ -265,7 +268,7 @@ func (a *App) GetGoal(ctx context.Context, sess *Session, id string) (*GoalView,
 func buildGoalTree(goals []*domain.Goal, tasks []*domain.Task, types map[string]*domain.TaskType, runs []*store.RunRow) []*GoalView {
 	views := map[string]*GoalView{}
 	for _, g := range goals {
-		views[g.ID] = &GoalView{Goal: g, Children: []*GoalView{}}
+		views[g.ID] = &GoalView{Goal: g, Children: []*GoalView{}, Milestones: []*MilestoneView{}}
 	}
 	costByTask := map[string]float64{}
 	for _, r := range runs {

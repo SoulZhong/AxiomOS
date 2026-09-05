@@ -254,6 +254,13 @@ export const IconGoal = ({ stage = "grown", ...p }: IconProps & { stage?: "bud" 
     {stage === "grown" && <path className="ax-leaf ax-leaf-l" pathLength={40} d="M12 12c0-2.5-1.7-3.5-3.5-3.5 0 2.2 1.5 3.5 3.5 3.5z" />}
   </Svg24>
 );
+/** 里程碑：目标时间轴上的一枚菱形刻度，下面一道短竿把它钉在日期上（ADR 0016）。 */
+export const IconMilestone = (p: IconProps) => (
+  <Svg24 {...p} className={cxi("sig-milestone", p.className)}>
+    <path d="M12 4l6.5 6.5L12 17l-6.5-6.5z" />
+    <path d="M12 17v3" />
+  </Svg24>
+);
 /** 任务：方块（等轴立方体）。完成时整枚"压实"（.sig-task 缩 15% 回弹）。 */
 export const IconTask = (p: IconProps) => (
   <Svg24 {...p} className={cxi("sig-task", p.className)}>

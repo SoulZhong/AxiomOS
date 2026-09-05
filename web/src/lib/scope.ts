@@ -107,8 +107,11 @@ export function applySession(session: Session | null) {
   let scope = state.scope;
   if (!options.length) scope = stored ?? fallback;
   else if (stored && optionOf(options, stored)) scope = stored;
+  // 没有存过选择时以会话的 default_scope 为准（有团队的人默认自己的团队），
+  // 不能沿用会话到达前的内存默认值「全公司」——那会让按边界看财务的人一进来就撞 403
+  else if (optionOf(options, fallback)) scope = fallback;
   else if (optionOf(options, scope)) scope = state.scope;
-  else scope = optionOf(options, fallback) ? fallback : options[0].id;
+  else scope = options[0].id;
   commit({
     scope,
     options,

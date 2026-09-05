@@ -672,3 +672,44 @@ export function Segmented<T extends string>({ value, options, onChange, size = "
     </span>
   );
 }
+
+// ---------- 横向页签（DESIGN.md §10：任务 / 组织概览 / 目标 的页签条） ----------
+export interface TabItem<T extends string> {
+  key: T;
+  label: string;
+  icon?: ReactNode;
+  /** 右侧的等宽小数字（如任务数）；不给则不显示 */
+  count?: number | string;
+}
+/**
+ * 一条页签：32px 高、13px 字，选中 = ink + 底部 2px accent 线，hover 只变字色与底色；左右方向键在页签间移动。
+ * 页签本身不管地址栏——调用方在 onChange 里写 URL（setQueryParams）并记住个人偏好。actions 放在右侧（与页签同一行）。
+ */
+export function Tabs<T extends string>({ value, items, onChange, label, actions, className }: { value: T | null; items: Array<TabItem<T>>; onChange: (key: T) => void; label: string; actions?: ReactNode; className?: string }) {
+  const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const i = items.findIndex((x) => x.key === value);
+    if (i < 0) return;
+    e.preventDefault();
+    const next = items[(i + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
+    onChange(next.key);
+    (e.currentTarget.querySelector<HTMLElement>(`[data-tab="${next.key}"]`))?.focus();
+  };
+  return (
+    <div className={cx("htabs", className)}>
+      <div role="tablist" aria-label={label} className="htabs-list" onKeyDown={onKey}>
+        {items.map((it) => {
+          const active = it.key === value;
+          return (
+            <button key={it.key} type="button" role="tab" data-tab={it.key} aria-selected={active} tabIndex={active || value === null ? 0 : -1} className="htab pressable" onClick={() => onChange(it.key)}>
+              {it.icon && <span className="shrink-0 text-current" aria-hidden="true">{it.icon}</span>}
+              <span>{it.label}</span>
+              {it.count !== undefined && <span className="htab-n">{it.count}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {actions && <div className="ml-auto flex shrink-0 items-center gap-2 pb-1">{actions}</div>}
+    </div>
+  );
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Locale 是语言代码。
@@ -181,3 +182,25 @@ func lookup(key string, l Locale) string {
 
 // Has 判断词条是否存在。
 func Has(key string) bool { _, ok := catalog[key]; return ok }
+
+// Date 是作为消息参数的日期：按语言渲染成「9月20日」/「Sep 20」，不在当年时带上年份。
+type Date time.Time
+
+// Render 实现 Renderable。
+func (d Date) Render(l Locale) string {
+	t := time.Time(d)
+	if t.IsZero() {
+		return ""
+	}
+	sameYear := t.Year() == time.Now().Year()
+	if l == EnUS {
+		if sameYear {
+			return t.Format("Jan 2")
+		}
+		return t.Format("Jan 2, 2006")
+	}
+	if sameYear {
+		return fmt.Sprintf("%d月%d日", int(t.Month()), t.Day())
+	}
+	return fmt.Sprintf("%d年%d月%d日", t.Year(), int(t.Month()), t.Day())
+}

@@ -8,8 +8,16 @@ import (
 )
 
 func TestWorkspaceCatalogIsConsistent(t *testing.T) {
-	if len(Blocks) != 11 {
-		t.Fatalf("应有 11 个区块，实际 %d", len(Blocks))
+	if len(Blocks) != 10 {
+		t.Fatalf("应有 10 个区块，实际 %d", len(Blocks))
+	}
+	if _, ok := BlockByKey("proposals"); ok {
+		t.Fatal("待确认操作已并入待我处理，目录里不应再有 proposals 区块")
+	}
+	for _, p := range Presets {
+		if contains(p.Blocks, "proposals") {
+			t.Fatalf("预设 %s 不应再含 proposals", p.Key)
+		}
 	}
 	seen := map[string]bool{}
 	for _, b := range Blocks {
@@ -41,6 +49,8 @@ func TestValidateBlocks(t *testing.T) {
 		key  string // 期望的词条键；空表示合法
 	}{
 		{"合法", []string{"my_tasks", "events"}, ""},
+		{"已移除的区块被忽略", []string{"my_tasks", "proposals"}, ""},
+		{"只有已移除的区块等于空", []string{"proposals"}, "err.blocks_empty"},
 		{"空", nil, "err.blocks_empty"},
 		{"未知键", []string{"my_tasks", "dashboard"}, "err.block_unknown"},
 		{"重复", []string{"my_tasks", "events", "my_tasks"}, "err.block_duplicate"},
@@ -115,5 +125,22 @@ func TestBuiltinRolePreset(t *testing.T) {
 		if BuiltinRolePreset(r.Name) == "" {
 			t.Fatalf("内置角色 %s 没有默认预设", r.Name)
 		}
+	}
+}
+
+// 旧布局里的 proposals（已并入待我处理）解析时静默丢弃；只剩它时等于没有布局。
+func TestResolveWorkspaceDropsRetiredBlocks(t *testing.T) {
+	if b, src := ResolveWorkspace([]string{"proposals", "my_tasks", "events"}, nil, false); src != WorkspaceSourcePersonal || !reflect.DeepEqual(b, []string{"my_tasks", "events"}) {
+		t.Fatalf("个人布局里的 proposals 应被丢弃: %v %s", b, src)
+	}
+	if b, src := ResolveWorkspace(nil, [][]string{{"proposals", "my_review"}, {"proposals"}}, false); src != WorkspaceSourceRoles || !reflect.DeepEqual(b, []string{"my_review"}) {
+		t.Fatalf("角色布局里的 proposals 应被丢弃: %v %s", b, src)
+	}
+	doer, _ := PresetByKey(PresetDoer)
+	if b, src := ResolveWorkspace([]string{"proposals"}, nil, false); src != WorkspaceSourceDefault || !reflect.DeepEqual(b, doer.Blocks) {
+		t.Fatalf("只有 proposals 的个人布局应视为没有布局: %v %s", b, src)
+	}
+	if got := DropRetiredBlocks(nil); got == nil || len(got) != 0 {
+		t.Fatalf("空输入应返回空切片: %#v", got)
 	}
 }

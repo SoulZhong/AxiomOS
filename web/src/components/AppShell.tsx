@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useState, useSyncExternalStore, type ReactNode } from "react";
-import { CLAIM_EVENT, prefersReducedMotion } from "@/lib/motion";
+import { prefersReducedMotion } from "@/lib/motion";
 import { api, ApiError, MOCK, type Session } from "@/lib/api";
 import { normalizeLocale, setLocale, t } from "@/lib/i18n";
 import { toggleSidebar, useSidebarCollapsed } from "@/lib/sidebar";
@@ -147,40 +147,29 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
     setNavOpen(false);
   }
 
-  // 领取任务时侧栏「待领取任务」的方块堆被取走一块（motion.ts 广播 axiomos:claimed，360ms 后复原）
-  const [pile, setPile] = useState(false);
-  useEffect(() => {
-    let timer = 0;
-    const on = () => {
-      if (prefersReducedMotion()) return;
-      setPile(true);
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => setPile(false), 400);
-    };
-    window.addEventListener(CLAIM_EVENT, on);
-    return () => {
-      window.removeEventListener(CLAIM_EVENT, on);
-      window.clearTimeout(timer);
-    };
-  }, []);
-
-  // 侧栏「待确认操作」的条数徽标：与舷窗带共用同一份 30s 遥测（ship-status/telemetry），不另起轮询
-  const pending = useShipTelemetry(!!session)?.proposalsPending ?? 0;
-  // 签名图标（提案 §二）：目标 = 靴中的芽，任务 = 方块，待领取 = 方块堆，待确认操作 = 舵轮，甘特图 = 航线，Agent = 视窗；首页 / 看板 / 流程 / 设置沿用通用图标
-  const nav: Array<{ href: string; label: string; icon: ReactNode; badge?: number }> = [
-    { href: "/", label: t("nav.home"), icon: <IconHome /> },
+  // 侧栏「我的工作」的角标 = 待我处理的条数（DESIGN.md §12）：与舷窗带共用同一份 30s 遥测（ship-status/telemetry），不另起轮询
+  const inbox = useShipTelemetry(!!session)?.inbox ?? 0;
+  // 六个入口（DESIGN.md §10、§12，CONTEXT.md「入口」）：看板 / 甘特图 / 迭代 / 待领取是「任务」的页签，运营数据是「组织概览」的页签，流程是「组织设置」的页签，
+  // 待确认操作并入「我的工作」的「待我处理」（历史记录 /proposals/ 只从那里和指令台进）。
+  // 签名图标（提案 §二）：目标 = 靴中的芽，任务 = 方块，Agent = 视窗；我的工作 / 概览 / 设置沿用通用图标
+  const nav: Array<{ href: string; label: string; icon: ReactNode; badge?: number; match?: (p: string) => boolean }> = [
+    { href: "/", label: t("nav.home"), icon: <IconHome />, badge: inbox },
     { href: "/overview", label: t("nav.overview"), icon: <IconOverview /> },
     { href: "/goals", label: t("nav.goals"), icon: <IconGoal /> },
-    { href: "/tasks", label: t("nav.tasks"), icon: <IconTask /> },
-    { href: "/board", label: t("nav.board"), icon: <IconBoard /> },
-    { href: "/backlog", label: t("nav.backlog"), icon: <IconBacklog /> },
-    { href: "/proposals", label: t("nav.proposals"), icon: <IconApprove />, badge: pending },
-    { href: "/sprints", label: t("nav.sprints"), icon: <IconSprint /> },
-    { href: "/gantt", label: t("nav.gantt"), icon: <IconGanttFlight /> },
+    // 迭代详情（/sprints/[id]）仍属于「任务」入口
+    { href: "/tasks", label: t("nav.tasks"), icon: <IconTask />, match: (p) => p.startsWith("/tasks") || p.startsWith("/sprints") },
     { href: "/agents", label: t("nav.agents"), icon: <IconAgent /> },
-    { href: "/dashboard", label: t("nav.dashboard"), icon: <IconChart /> },
-    { href: "/task-types", label: t("nav.taskTypes"), icon: <IconFlow /> },
     ...(canManageOrg ? [{ href: "/settings", label: t("nav.settings"), icon: <IconSettings /> }] : []),
+  ];
+  // 指令台里除六个入口外，再列出各页签的直达项（「任务 · 看板」……）与待确认操作的历史记录，地址带查询串
+  const sub = (base: string, label: string, tabs: Array<[string, string, ReactNode]>) => tabs.map(([q, tl, icon]) => ({ href: `${base}${q}`, label: `${label} · ${tl}`, icon }));
+  const palettePages = [
+    ...nav.map((n) => ({ href: n.href === "/" ? "/" : `${n.href}/`, label: n.label, icon: n.icon })),
+    ...sub("/tasks/?view=", t("nav.tasks"), [["board", t("tasks.view.board"), <IconBoard key="b" />], ["gantt", t("tasks.view.gantt"), <IconGanttFlight key="g" />], ["sprints", t("tasks.view.sprints"), <IconSprint key="s" />], ["backlog", t("tasks.view.backlog"), <IconBacklog key="k" />]]),
+    ...sub("/overview/?tab=", t("nav.overview"), [["cost", t("overview.tab.cost"), <IconChart key="c" />], ["efficiency", t("overview.tab.efficiency"), <IconChart key="e" />], ["agents", t("overview.tab.agents"), <IconAgent key="a" />]]),
+    { href: "/proposals/", label: `${t("proposals.title")} · ${t("proposals.history")}`, icon: <IconApprove key="p" /> },
+    // 「流程」每个成员都能查看（只读），不受组织设置入口的门槛限制；没有组织设置入口的人看到的就叫「流程」
+    ...(canManageOrg ? sub("/settings/?tab=", t("nav.settings"), [["workflows", t("settings.tab.workflows"), <IconFlow key="w" />]]) : [{ href: "/settings/?tab=workflows", label: t("taskTypes.title"), icon: <IconFlow key="w" /> }]),
   ];
   // 收起态（显式收起，或 768–1199 没有偏好）只显示图标 + 气泡，文字藏起来（.sb-x）；展开态完整；<768 变抽屉（始终完整）。
   const labelCls = "sb-x min-w-0 truncate";
@@ -221,10 +210,10 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
         </div>
         <nav className="sb-nav relative flex flex-1 flex-col gap-0.5 px-3">
           {nav.map((n) => {
-            const active = n.href === "/" ? pathname === "/" : pathname.startsWith(n.href);
+            const active = n.href === "/" ? pathname === "/" : n.match ? n.match(pathname) : pathname.startsWith(n.href);
             return (
-              <Link key={n.href} href={n.href === "/" ? "/" : `${n.href}/`} className="nav-item sb-row" aria-current={active ? "page" : undefined} data-motion={pile && n.href === "/backlog" ? "pile" : undefined}>
-                {navTip(n.badge ? `${n.label} · ${t("proposals.count", { n: n.badge })}` : n.label, <span className="relative shrink-0">{n.icon}{!!n.badge && <span className="nav-dot sb-n" aria-hidden="true" />}</span>)}
+              <Link key={n.href} href={n.href === "/" ? "/" : `${n.href}/`} className="nav-item sb-row" aria-current={active ? "page" : undefined}>
+                {navTip(n.badge ? `${n.label} · ${t("inbox.countTip", { n: n.badge })}` : n.label, <span className="relative shrink-0">{n.icon}{!!n.badge && <span className="nav-dot sb-n" aria-hidden="true" />}</span>)}
                 <span className={labelCls}>{n.label}</span>
                 {!!n.badge && <span className="sb-x nav-badge">{n.badge}</span>}
               </Link>
@@ -294,7 +283,7 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
         </div>
       </div>
       <ShortcutHelp open={help} onClose={() => setHelp(false)} />
-      <CommandPalette open={palette} onClose={() => setPalette(false)} onHelp={openHelp} pages={nav.map((n) => ({ href: n.href, label: n.label, icon: n.icon }))} loggedIn={!!session} />
+      <CommandPalette open={palette} onClose={() => setPalette(false)} onHelp={openHelp} pages={palettePages} loggedIn={!!session} />
     </div>
   );
 }

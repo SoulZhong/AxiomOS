@@ -165,12 +165,12 @@ export function CommandPalette({ open, onClose, onHelp, pages, loggedIn }: { ope
     const nextLocale = LOCALES[(LOCALES.indexOf(locale) + 1) % LOCALES.length];
     const actions: PaletteItem[] = [
       { id: "a:new", group: "actions", title: t("palette.newTask"), hint: "n", keywords: "new task create", icon: <IconPlus />, run: () => go("/tasks/?new=1") },
-      { id: "a:claim", group: "actions", title: t("palette.claim"), keywords: "claim backlog", icon: <IconBacklog />, run: () => go("/backlog/") },
+      { id: "a:claim", group: "actions", title: t("palette.claim"), keywords: "claim backlog", icon: <IconBacklog />, run: () => go("/tasks/?view=backlog") },
       { id: "a:theme", group: "actions", title: t("palette.theme"), hint: t(`theme.${nextTheme}`), keywords: "theme dark light", run: () => { close(); setTheme(nextTheme); } },
       { id: "a:lang", group: "actions", title: t("palette.lang"), hint: nextLocale === "zh-CN" ? "中文" : "English", keywords: "language english 中文", run: () => { close(); if (loggedIn) void api.auth.updateMe({ locale: nextLocale }).catch(() => {}); setLocale(nextLocale); } },
       { id: "a:keys", group: "actions", title: t("palette.shortcuts"), hint: "?", keywords: "shortcuts keys help", icon: <IconKeyboard />, run: () => { close(); onHelp(); } },
     ];
-    const pageItems: PaletteItem[] = pages.map((p) => ({ id: `p:${p.href}`, group: "pages", title: p.label, keywords: p.href, icon: p.icon, run: () => go(p.href === "/" ? "/" : `${p.href}/`) }));
+    const pageItems: PaletteItem[] = pages.map((p) => ({ id: `p:${p.href}`, group: "pages", title: p.label, keywords: p.href, icon: p.icon, run: () => go(p.href) }));
     const taskItems: PaletteItem[] = (index?.tasks ?? []).map((tk) => ({ id: `t:${tk.id}`, group: "tasks", title: tk.title, hint: tk.state.title, keywords: `${tk.type_title} ${tk.assignee?.name ?? ""}`, icon: <IconTask />, run: () => go(`/tasks/${encodeURIComponent(tk.id)}/`) }));
     const goalItems: PaletteItem[] = flattenGoals(index?.goals ?? []).map((g) => ({ id: `g:${g.id}`, group: "goals", title: g.title, hint: `${Math.round(g.progress)}%`, keywords: g.owner?.name ?? "", icon: <IconGoal stage={g.achieved ? "grown" : "bud"} />, run: () => go(`/goals/${encodeURIComponent(g.id)}/`) }));
     const agentItems: PaletteItem[] = (index?.agents ?? []).map((a) => ({ id: `ag:${a.id}`, group: "agents", title: a.name, hint: a.online ? t("agents.online") : t("agents.offlineShort"), keywords: a.owner.name, icon: <IconAgent />, run: () => go("/agents/") }));

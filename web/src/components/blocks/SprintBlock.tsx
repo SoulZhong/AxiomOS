@@ -27,7 +27,7 @@ export function SprintBlock({ index, title, noLink }: BlockProps) {
       icon={<IconSprint />}
       title={title ?? t("block.sprint")}
       telemetry={days ? <span className={cx(days.over && "text-danger")}>{days.text}</span> : undefined}
-      href={sp ? `/sprints/${encodeURIComponent(sp.id)}/` : "/sprints/"}
+      href={sp ? `/sprints/${encodeURIComponent(sp.id)}/` : "/tasks/?view=sprints"}
       hrefLabel={sp ? t("block.sprint.open") : t("block.sprint.all")}
       loading={list.loading && !list.data}
       error={list.error}
@@ -35,7 +35,7 @@ export function SprintBlock({ index, title, noLink }: BlockProps) {
       empty={!!list.data && !current}
       emptyText={t("block.sprint.empty")}
       emptyAction={
-        <Link href="/sprints/" className="text-caption text-ink-muted hover:text-accent-hover">
+        <Link href="/tasks/?view=sprints" className="text-caption text-ink-muted hover:text-accent-hover">
           {t("block.sprint.all")}
         </Link>
       }

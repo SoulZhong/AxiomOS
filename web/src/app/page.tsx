@@ -7,14 +7,18 @@ import { useSession } from "@/components/AppShell";
 import { blockRegistry, type BlockEntry, type BlockSpan } from "@/components/blocks/registry";
 import { WorkspaceEditor } from "@/components/blocks/WorkspaceEditor";
 import { IconEdit } from "@/components/icons";
+import { InboxSection } from "@/components/inbox/InboxSection";
 import { ShipStatus } from "@/components/ship-status/ShipStatus";
 import { useToast } from "@/components/toast";
 import { Button, Empty, ErrorBox, ListSkeleton, PageHeader, Panel, cx } from "@/components/ui";
 
 /*
- * 首页 = 工作台（ADR 0015）：GET /workspace 给出已解析的区块顺序（个人微调 → 角色并集 → 默认），
- * 这里只按顺序从 blockRegistry 取组件排进两列网格（≥1200 两列，通栏区块占两列），不再有写死的按身份自适应规则。
- * 右上角「调整首页」打开抽屉：勾选 / 排序 → PUT /workspace/me（乐观更新 + Toast）；「恢复角色默认」→ DELETE /workspace/me。
+ * 我的工作 = 待我处理 + 工作台（DESIGN.md §12、ADR 0015 补记）：
+ * - 最上面是固定的「待我处理」（InboxSection）：GET /inbox，只看本人，不属于布局、不能隐藏或挪走；
+ * - 然后是组织概况读数条；
+ * - 下面是工作台：GET /workspace 给出已解析的区块顺序（个人微调 → 角色并集 → 默认），按顺序从 blockRegistry 取组件排进两列网格
+ *   （≥1200 两列，通栏区块占两列）；目录里没有的键（如已移除的 proposals）直接跳过。
+ * 右上角「调整工作台」打开抽屉：勾选 / 排序 → PUT /workspace/me（乐观更新 + Toast）；「恢复角色默认」→ DELETE /workspace/me。
  */
 export default function HomePage() {
   const { session } = useSession();
@@ -93,7 +97,10 @@ export default function HomePage() {
         }
       />
 
-      {/* 组织概况读数条（DESIGN.md 舰内 v3 §2）：不是区块，始终在最上面 */}
+      {/* 待我处理（DESIGN.md §12）：固定区，不属于工作台布局 */}
+      <InboxSection className="mb-4" />
+
+      {/* 组织概况读数条（DESIGN.md 舰内 v3 §2）：不是区块，在待我处理和工作台之间 */}
       <ShipStatus className="mb-4" />
 
       {ws.error && !workspace ? (

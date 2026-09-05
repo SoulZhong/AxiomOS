@@ -16,7 +16,7 @@ type Block struct {
 	Description i18n.Text
 }
 
-// Blocks 是全部区块，顺序即目录顺序。
+// Blocks 是全部区块，顺序即目录顺序。「待确认操作」不再是区块：它已并入「待我处理」（DESIGN.md §12）。
 var Blocks = []Block{
 	{"overview_summary", i18n.T("组织概览摘要", "Organization overview"), i18n.T("当前范围内的任务、成本与负荷一眼看完。", "Tasks, cost and load in the current scope at a glance.")},
 	{"exceptions", i18n.T("要我关注的异常", "Exceptions for me"), i18n.T("逾期、阻塞、超预算和长时间没人接的任务。", "Overdue, blocked, over-budget and long-unclaimed tasks.")},
@@ -24,7 +24,6 @@ var Blocks = []Block{
 	{"my_review", i18n.T("等我验收", "Awaiting my review"), i18n.T("已提交、等我验收的任务。", "Submitted tasks waiting for my review.")},
 	{"team_load", i18n.T("人员与 Agent 负荷", "People and agent load"), i18n.T("当前范围内每个人和每个 Agent 手上有多少活。", "How much work each person and agent in scope is carrying.")},
 	{"cost_budget", i18n.T("成本与预算", "Cost and budget"), i18n.T("当前范围内的成本花到哪里、离预算还有多远。", "Where cost is going in scope and how far it is from budget.")},
-	{"proposals", i18n.T("待确认操作", "Pending actions"), i18n.T("Agent 发起、等人确认后才会执行的操作。", "Actions agents proposed that wait for a person to confirm.")},
 	{"events", i18n.T("最近动态", "Recent activity"), i18n.T("当前范围内最近发生了什么。", "What happened recently in scope.")},
 	{"sprint", i18n.T("当前迭代", "Current sprint"), i18n.T("进行中迭代的进度与剩余工作量。", "Progress and remaining work of the active sprint.")},
 	{"backlog", i18n.T("待领取任务", "Unclaimed tasks"), i18n.T("没人负责、可以领取的任务。", "Tasks nobody owns yet that can be claimed.")},
@@ -51,15 +50,15 @@ const (
 // Presets 是全部预设，顺序即目录顺序。
 var Presets = []Preset{
 	{PresetGlobal, i18n.T("全局视角", "Global view"), i18n.T("看全公司的概览、异常、成本与趋势，适合组织负责人。", "Company-wide overview, exceptions, cost and trends, for the organization owner."),
-		[]string{"overview_summary", "exceptions", "cost_budget", "trend", "proposals"}},
-	{PresetUnit, i18n.T("部门视角", "Unit view"), i18n.T("看本部的概览、异常与负荷，兼顾等我验收与待确认操作，适合部门负责人。", "Unit overview, exceptions and load, plus reviews and pending actions, for unit leads."),
-		[]string{"overview_summary", "exceptions", "team_load", "my_review", "proposals", "events"}},
+		[]string{"overview_summary", "exceptions", "cost_budget", "trend"}},
+	{PresetUnit, i18n.T("部门视角", "Unit view"), i18n.T("看本部的概览、异常与负荷，兼顾等我验收，适合部门负责人。", "Unit overview, exceptions and load, plus reviews, for unit leads."),
+		[]string{"overview_summary", "exceptions", "team_load", "my_review", "events"}},
 	{PresetTeam, i18n.T("小组视角", "Team view"), i18n.T("先看等我验收和小组负荷，再看异常、我的任务与当前迭代，适合小组负责人。", "Reviews and team load first, then exceptions, my tasks and the sprint, for team leads."),
 		[]string{"my_review", "team_load", "exceptions", "my_tasks", "sprint", "events"}},
 	{PresetDoer, i18n.T("执行视角", "Doer view"), i18n.T("先看我的任务，再看等我验收、待领取任务与当前迭代，适合一线成员。", "My tasks first, then reviews, unclaimed tasks and the sprint, for hands-on members."),
 		[]string{"my_tasks", "my_review", "backlog", "sprint", "events"}},
-	{PresetOps, i18n.T("运营视角", "Operations view"), i18n.T("先看成本与趋势，再看待确认操作、异常与负荷，适合运营与流程管理。", "Cost and trends first, then pending actions, exceptions and load, for operations and workflow managers."),
-		[]string{"cost_budget", "trend", "proposals", "exceptions", "team_load", "events"}},
+	{PresetOps, i18n.T("运营视角", "Operations view"), i18n.T("先看成本与趋势，再看异常与负荷，适合运营与流程管理。", "Cost and trends first, then exceptions and load, for operations and workflow managers."),
+		[]string{"cost_budget", "trend", "exceptions", "team_load", "events"}},
 }
 
 // 工作台来源。
@@ -76,6 +75,23 @@ type WorkspaceLayout struct {
 	Blocks    []string
 	Preset    string // 套用的预设键；逐块改过则为空
 	UpdatedAt time.Time
+}
+
+// RetiredBlocks 是曾经存在、现已从目录移除的区块键。已存布局里出现它们时静默丢弃（ADR 0015 §12）。
+var RetiredBlocks = []string{"proposals"}
+
+// IsRetiredBlock 判断一个键是否是已移除的区块。
+func IsRetiredBlock(key string) bool { return contains(RetiredBlocks, key) }
+
+// DropRetiredBlocks 去掉已移除的区块键，保持其余顺序；总是返回新切片。
+func DropRetiredBlocks(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !IsRetiredBlock(k) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // BlockByKey 按键找区块。
@@ -103,8 +119,9 @@ type WorkspaceError struct{ Msg i18n.Msg }
 
 func (e *WorkspaceError) Error() string { return e.Msg.Render(i18n.Default) }
 
-// ValidateBlocks 检查一份区块列表：非空、只用系统区块键、不重复。
+// ValidateBlocks 检查一份区块列表：非空、只用系统区块键、不重复。已移除的区块键不算错，只是被忽略。
 func ValidateBlocks(keys []string) error {
+	keys = DropRetiredBlocks(keys)
 	if len(keys) == 0 {
 		return &WorkspaceError{i18n.M("err.blocks_empty")}
 	}
@@ -148,10 +165,11 @@ func DefaultPreset(isOwner bool) string {
 // ResolveWorkspace 按顺序解析一个人的工作台：个人微调 → 各角色布局并集 → 默认。
 // roleLayouts 按成员的角色顺序传入（没有布局的角色不要传）。返回区块与来源。
 func ResolveWorkspace(personal []string, roleLayouts [][]string, isOwner bool) (blocks []string, source string) {
-	if len(personal) > 0 {
-		return append([]string{}, personal...), WorkspaceSourcePersonal
+	// 已移除的区块（如 proposals）在旧布局里可能还在，读出来时静默丢掉
+	if personal = DropRetiredBlocks(personal); len(personal) > 0 {
+		return personal, WorkspaceSourcePersonal
 	}
-	if merged := MergeLayouts(roleLayouts); len(merged) > 0 {
+	if merged := DropRetiredBlocks(MergeLayouts(roleLayouts)); len(merged) > 0 {
 		return merged, WorkspaceSourceRoles
 	}
 	p, _ := PresetByKey(DefaultPreset(isOwner))
