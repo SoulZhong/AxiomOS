@@ -77,7 +77,11 @@
   "by": ["assignee"],               // 谁能触发，见 3.1
   "requires": ["artifact:pr"],      // 前提条件，见 3.2
   "grant": "execute",               // Agent 触发时需要的授权，默认 execute
-  "assign_to": "participant:tester" // 走完后负责人换成谁，见 3.3
+  "assign_to": "participant:tester",// 走完后负责人换成谁，见 3.3
+  "triggered_by": {                 // 可选：由外部事件触发，见 3.5
+    "source": "git",
+    "event": "pr_merged"
+  }
 }
 ```
 
@@ -123,6 +127,28 @@ Agent 触发时：任务相对身份（creator / assignee / reviewer / participa
 
 `to: "$previous"` 表示回到进入当前 `waiting` 状态之前的那个 `active` 状态。任务记录 `previous_state`，仅在从 `active` 离开时更新。若无记录，该步骤不可用。
 
+### 3.5 `triggered_by`：由外部事件触发（ADR 0020）
+
+一步可以声明"代码平台上发生某件事时自动走它"。
+
+```jsonc
+"triggered_by": { "source": "git", "event": "pr_merged" }
+```
+
+| 字段 | 取值 |
+|---|---|
+| `source` | 目前只有 `git`（代码平台：GitHub / GitLab / Gitee） |
+| `event` | `pr_opened` PR 打开、`pr_ready` PR 转为可评审、`pr_merged` PR 合并、`pr_closed` PR 关闭（未合并）、`ci_passed` 检查通过、`ci_failed` 检查失败 |
+
+内核的规则：
+
+1. 外部事件到达某个任务时，在**当前状态**里找第一条 `triggered_by` 对得上的步骤。
+2. 找到了就检查它的 `requires`（第 3.2 节）与 `$previous`；**不检查 `by`，也不检查 `grant`**——外部事件既不是人也不是 Agent，`by` 说的是"谁能点这个按钮"，授权说的是 Agent 的权限，两者对它都不适用。组织想禁止某一步被外部事件触发，就不给它写 `triggered_by`。
+3. 全部满足就以「外部事件」为执行者走这一步：状态、负责人切换、离开进行中时结束执行记录，全部照常；**但永远不为谁开始执行记录**（ADR 0006：执行记录只在执行者自己开始时开启），即使外部操作者绑定了本系统成员、而他正好是负责人。
+4. 走成了写两条动态：`ExternalEventApplied`（一句话：「GitHub：PR #12 合并，「登录改版」进入「待验收」」）与照常的 `TaskTransitioned`（统计与燃尽图靠它回放）。
+5. 任何一条不满足（当前状态没有这样的步骤、前提没满足、任务已结束）就**什么都不改**，只写一条 `ExternalEventIgnored`，里面是一句说清为什么的完整中文。
+6. 外部操作者（如 GitHub 登录名）记在动态里；他绑定了本系统成员时（`external_identities`，`kind = git_user`），动态挂在那个成员名下。
+
 ## 4. 执行记录（Run）规则（ADR 0006）
 
 1. 执行记录只能在 `active` 状态下存在，且同一任务同一时刻至多一段进行中。
@@ -164,6 +190,7 @@ Agent 触发时：任务相对身份（creator / assignee / reviewer / participa
 6. `requires` 中的条件必须在 3.2 表内；`artifact:<类型>` 的类型必须在组织交付物类型表内。
 7. 任一 `active` 状态必须至少有一条出边（否则任务会卡死）。
 8. 步骤 `name` 在流程内唯一；状态 `name` 在流程内唯一。
+9. `triggered_by` 的 `source` 必须是 `git`，`event` 必须是 3.5 表里的六个之一（不认识的报「步骤「x」的触发事件「y」系统不认识。」）。
 
 ## 8. 内置任务类型
 
@@ -205,6 +232,8 @@ Agent 触发时：任务相对身份（creator / assignee / reviewer / participa
 | ask_for_input / resume | 任一 active ↔ waiting | assignee / creator, reviewer | comment | resume 用 $previous |
 | block / unblock / cancel | 同通用 | | | unblock 用 $previous |
 
+**内置的外部事件触发**（ADR 0020，只在状态确实存在的地方给）：`design_done` 由 `pr_opened` 触发（PR 一开就进「开发中」；缺「需求文档」时不迁移，写一条说明）、`dev_done` 由 `pr_merged` 触发（PR 合并进「测试中」）、`block` 由 `ci_failed` 触发（检查失败进「已阻塞」）。
+
 ### 8.3 Bug `bug`
 
 参与角色：developer 修复、tester 验证。创建者即报告人。
@@ -220,6 +249,8 @@ Agent 触发时：任务相对身份（creator / assignee / reviewer / participa
 | fixed 修复完成 | fixing → fixed | assignee | artifact:pr | participant:tester |
 | verify 验证通过 | fixed → verified | assignee, reviewer (review) | — | — |
 | reopen 重新打开 | fixed, verified → fixing | assignee, reviewer, creator | comment | participant:developer |
+
+**内置的外部事件触发**：`start_fix` 由 `pr_opened` 触发（PR 一开就进「修复中」）、`fixed` 由 `pr_merged` 触发（PR 合并进「待验证」）。Bug 流程没有「已阻塞」状态，所以不给 `ci_failed` 的映射。通用任务与发布不带触发声明，组织按需自己加。
 
 Bug 通过「发现于」关联挂到被测任务；被测任务的流程用 `no_open_bugs` 决定是否放行。
 
@@ -269,6 +300,8 @@ Bug 通过「发现于」关联挂到被测任务；被测任务的流程用 `no
 ## 11. 动态（事件）清单
 
 `TaskCreated 创建任务`、`TaskAssigned 指派负责人`、`TaskClaimed 领取任务`、`TaskSentToBacklog 进入待领取`、`TaskTransitioned 状态变化`（数据里带 `from_label` / `to_label`，燃尽图回放用）、`RunStarted 开始执行`、`RunEnded 执行结束`、`UsageReported 上报用量`、`ArtifactAttached 附上交付物`、`CommentAdded 评论`、`TasksLinked 建立关联`、`RelationRemoved 自动解除前置`。
+
+代码平台与外部事件（ADR 0020）新增：`ExternalLinkAdded 挂上外部链接`、`ExternalLinkUpdated 外部链接状态变化`、`ExternalLinkRemoved 摘掉外部链接`、`ExternalEventApplied 外部事件推进了流程`、`ExternalEventIgnored 外部事件没有推进流程`、`CodePlatformConfigured 配置代码平台`、`CodeIdentityBound 绑定代码平台登录名`。
 
 看板与迭代（ADR 0012）新增：`SprintCreated 创建迭代`、`SprintUpdated 修改迭代`、`SprintStarted 开始迭代`、`SprintClosed 结束迭代`、`TaskAddedToSprint 加入迭代`（数据里带当时的 `points` 与 `done`）、`TaskRemovedFromSprint 移出迭代`、`PointsChanged 修改工作量`。燃尽图完全由这些动态与 `TaskTransitioned` 回放得出，不另存快照。
 

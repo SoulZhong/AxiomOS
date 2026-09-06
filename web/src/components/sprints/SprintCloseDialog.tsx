@@ -61,6 +61,18 @@ export function SprintCloseDialog({ open, onClose, sprint, candidates, unfinishe
           </Field>
         )}
         {mode === "backlog" && !candidates.length && <p className="text-caption text-ink-subtle">{t("sprints.noNext")}</p>}
+        {/* 后果（DESIGN.md §6）：写清几个任务去哪儿、结束后不能再改 */}
+        <div data-consequences>
+          <p className="eyebrow mb-1.5 text-ink-subtle">{t("consequence.lead")}</p>
+          <ul className="space-y-1.5 text-body text-ink">
+            {[
+              unfinished === undefined ? null : unfinished === 0 ? t("sprints.closeEffect.none") : mode === "next" ? t("sprints.closeEffect.next", { n: unfinished, name: candidates.find((s) => s.id === next)?.name ?? "" }) : t("sprints.closeEffect.backlog", { n: unfinished }),
+              t("sprints.closeEffect.frozen"),
+            ].filter(Boolean).map((line, i) => (
+              <li key={i} className="flex items-start gap-2"><span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-danger" aria-hidden="true" /><span>{line}</span></li>
+            ))}
+          </ul>
+        </div>
         {mode === "backlog" && error && <p className="text-caption text-danger" role="alert">{error}</p>}
       </form>
     </Dialog>

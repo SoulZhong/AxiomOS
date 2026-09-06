@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -57,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	auth("GET /api/v1/tasks", s.tasks)
 	auth("POST /api/v1/tasks", s.createTask)
 	auth("GET /api/v1/tasks/mine", s.myTasks)
+	auth("GET /api/v1/task-by-number/{n}", s.taskByNumber)
 	auth("GET /api/v1/tasks/{id}", s.task)
 	auth("PATCH /api/v1/tasks/{id}", s.updateTask)
 	auth("GET /api/v1/tasks/{id}/workflow", s.workflow)
@@ -105,7 +107,11 @@ func (s *Server) Handler() http.Handler {
 
 	s.proposalRoutes(auth)
 	s.workspaceRoutes(auth)
+	s.preferenceRoutes(auth)
+	s.deviceRoutes(auth, pub)
 	s.inboxRoutes(auth)
+	s.notifyRoutes(auth)
+	s.codePlatformRoutes(auth, pub)
 
 	auth("GET /api/v1/events", s.events)
 	auth("GET /api/v1/notifications", s.notifications)
@@ -164,8 +170,23 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.Handler {
 		if sc := r.URL.Query().Get("scope"); sc != "" {
 			sess = sess.WithScope(sc)
 		}
+		sess.ClientIP = clientIP(r)
 		next(w, r.WithContext(context.WithValue(r.Context(), sessKey, sess)))
 	})
+}
+
+// clientIP 取请求的来源地址：优先反向代理给的 X-Forwarded-For 第一段，否则 RemoteAddr。
+// 只用来给进程内的尝试次数限制分桶，不做鉴权。
+func clientIP(r *http.Request) string {
+	if h := r.Header.Get("X-Forwarded-For"); h != "" {
+		if first, _, _ := strings.Cut(h, ","); strings.TrimSpace(first) != "" {
+			return strings.TrimSpace(first)
+		}
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -550,8 +571,30 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, v, err)
 }
 
+// task 读任务详情；{id} 也接受序号（123 或 #123）。
 func (s *Server) task(w http.ResponseWriter, r *http.Request) {
-	v, err := s.taskDetail(r, r.PathValue("id"))
+	id, err := s.App.ResolveTaskRef(r.Context(), sessionOf(r), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	v, err := s.taskDetail(r, id)
+	respond(w, r, v, err)
+}
+
+// taskByNumber 按组织内序号读任务详情。
+func (s *Server) taskByNumber(w http.ResponseWriter, r *http.Request) {
+	n := strings.TrimPrefix(r.PathValue("n"), "#")
+	id, err := s.App.ResolveTaskRef(r.Context(), sessionOf(r), "#"+n)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if id == "#"+n {
+		writeErr(w, r, app.NotFound("err.task_number", n))
+		return
+	}
+	v, err := s.taskDetail(r, id)
 	respond(w, r, v, err)
 }
 
@@ -1020,10 +1063,11 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	rf, _ := s.refsFor(r)
 	tasks, _ := s.App.ListTaskSummaries(r.Context(), sessionOf(r), store.TaskFilter{})
-	titles, goalOf := map[string]string{}, map[string]string{}
+	titles, goalOf, numbers := map[string]string{}, map[string]string{}, map[string]int{}
 	for _, t := range tasks {
 		titles[t.ID] = t.Title
 		goalOf[t.ID] = t.GoalID
+		numbers[t.ID] = t.Number
 	}
 	roles := map[string]i18n.Text{}
 	if rs, err := s.App.ListRoles(r.Context(), sessionOf(r)); err == nil {
@@ -1036,7 +1080,11 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		if e.Type == "AgentRevoked" {
 			e.Type = "AgentRemoved"
 		}
-		views = append(views, eventView(e, rf, titles, goalOf, roles, sessionOf(r).Loc()))
+		v := eventView(e, rf, titles, goalOf, roles, sessionOf(r).Loc())
+		if n, ok := numbers[e.TaskID]; ok && n > 0 {
+			v.TaskNumber = &n
+		}
+		views = append(views, v)
 	}
 	writeJSON(w, 200, views)
 }

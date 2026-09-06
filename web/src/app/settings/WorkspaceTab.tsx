@@ -7,7 +7,8 @@ import { WorkspaceEditorDialog } from "@/components/blocks/WorkspaceEditor";
 import { SizeChip } from "@/components/blocks/WorkspaceGrid";
 import { IconEdit } from "@/components/icons";
 import { useToast } from "@/components/toast";
-import { Button, ConfirmDialog, Empty, ErrorBox, Panel, Select, Table, TableSkeleton, Tag } from "@/components/ui";
+import { Button, ConsequenceDialog, Empty, ErrorBox, Panel, Select, Table, TableSkeleton, Tag } from "@/components/ui";
+import { RolePreferencesPanel } from "./RolePreferences";
 
 /*
  * 组织设置 → 工作台（ADR 0015 与补记二）：每个角色进来先看到什么。
@@ -154,6 +155,9 @@ export function WorkspaceTab() {
         )}
       </Panel>
 
+      {/* 显示偏好的角色默认（DESIGN.md §20）：与工作台同一思路，个人 → 角色 → 默认 */}
+      <RolePreferencesPanel index={3} />
+
       <WorkspaceEditorDialog
         open={!!editing}
         onClose={() => setEditing(null)}
@@ -167,10 +171,11 @@ export function WorkspaceTab() {
         busy={saving}
         withPresets
       />
-      <ConfirmDialog
+      <ConsequenceDialog
         open={!!resetting}
-        title={t("settings.workspace.resetDefault")}
-        message={resetting ? t("settings.workspace.resetConfirm", { role: resetting.role_title }) : null}
+        title={resetting ? t("settings.workspace.resetTitle", { role: resetting.role_title }) : ""}
+        effects={[t("settings.workspace.resetEffect.role"), t("settings.workspace.resetEffect.personal")]}
+        danger={false}
         confirmLabel={t("settings.workspace.resetDefault")}
         busy={!!busy}
         onConfirm={() => resetting && void reset(resetting)}

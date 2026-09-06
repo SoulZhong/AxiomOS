@@ -1,6 +1,7 @@
 package directory
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,6 +37,18 @@ func init() {
 		},
 		New:        func(creds map[string]string, opts Options) (Directory, error) { return NewWeCom(creds, opts) },
 		ConsoleURL: func(creds map[string]string) string { return wecomConsoleHome },
+		// 发消息（ADR 0019）：通讯录同步的 Secret 发不了消息，要用一个自建应用的 AgentId 与 Secret。
+		MessagingFields: []CredentialField{
+			{Key: "agent_id", Title: i18n.T("应用 AgentId", "App AgentId"), Placeholder: "1000002",
+				Hint: i18n.T("管理后台 → 应用管理 → 自建应用 → 该应用页面上的 AgentId", "Admin console → App Management → the custom app → AgentId on its page")},
+			{Key: "app_secret", Title: i18n.T("应用 Secret", "App Secret"), Secret: true,
+				Hint: i18n.T("同一页的 Secret（不是通讯录同步的 Secret）；保存后只显示是否已设置", "The Secret on the same page (not the contacts-sync Secret); only whether it is set is shown after saving")},
+		},
+		MessagingPrerequisites: []i18n.Text{
+			i18n.T("在企业微信管理后台创建一个自建应用，把要接收提醒的人加进它的可见范围", "Create a custom app in the WeCom admin console and add the people who should receive reminders to its visible range"),
+			i18n.T("把本系统的出网 IP 加进该应用的企业可信 IP", "Add this system's outbound IP to that app's trusted IPs"),
+		},
+		NewMessenger: func(creds map[string]string, opts Options) (Messenger, error) { return NewWeComMessenger(creds, opts) },
 	})
 }
 
@@ -54,6 +67,7 @@ type WeCom struct {
 	BaseURL    string
 	corpID     string
 	corpSecret string
+	agentID    string // 发消息用的自建应用 AgentId（只在消息客户端上有）
 	http       *http.Client
 
 	mu       sync.Mutex
@@ -75,11 +89,33 @@ type wecomEnvelope struct {
 	ErrMsg  string `json:"errmsg"`
 }
 
+// NewWeComMessenger 创建发消息客户端：令牌用自建应用的 Secret（app_secret）换，touser 用 userid，agentid 是应用的 AgentId。
+func NewWeComMessenger(creds map[string]string, opts Options) (*WeCom, error) {
+	w, err := NewWeCom(creds, opts)
+	if err != nil {
+		return nil, err
+	}
+	if s := strings.TrimSpace(creds["app_secret"]); s != "" {
+		w.corpSecret = s
+	}
+	w.agentID = strings.TrimSpace(creds["agent_id"])
+	return w, nil
+}
+
 // 令牌失效类错误码：40014 不合法的 access_token，42001 access_token 已过期；遇到就重取一次令牌再试。
 func wecomTokenExpired(code int) bool { return code == 40014 || code == 42001 }
 
 // get 发一次 GET，把 JSON 解到 out（out 里要嵌 wecomEnvelope）；auth 为真时带 access_token。
 func (w *WeCom) get(ctx context.Context, path string, q url.Values, out any, auth bool) error {
+	return w.call(ctx, http.MethodGet, path, q, nil, out, auth)
+}
+
+// post 发一次 JSON POST（发消息用）。
+func (w *WeCom) post(ctx context.Context, path string, body any, out any) error {
+	return w.call(ctx, http.MethodPost, path, nil, body, out, true)
+}
+
+func (w *WeCom) call(ctx context.Context, method, path string, q url.Values, body any, out any, auth bool) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		q2 := url.Values{}
 		for k, v := range q {
@@ -92,9 +128,17 @@ func (w *WeCom) get(ctx context.Context, path string, q url.Values, out any, aut
 			}
 			q2.Set("access_token", tok)
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.BaseURL+path+"?"+q2.Encode(), nil)
+		var rd io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			rd = bytes.NewReader(b)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, w.BaseURL+path+"?"+q2.Encode(), rd)
 		if err != nil {
 			return err
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json; charset=utf-8")
 		}
 		resp, err := w.http.Do(req)
 		if err != nil {
@@ -283,6 +327,7 @@ const (
 	wecomConsoleHome     = "https://work.weixin.qq.com/wework_admin/frame"
 	wecomConsoleProfile  = "https://work.weixin.qq.com/wework_admin/frame#profile"
 	wecomConsoleContacts = "https://work.weixin.qq.com/wework_admin/frame#apps/contactsApi"
+	wecomConsoleApps     = "https://work.weixin.qq.com/wework_admin/frame#apps"
 )
 
 // wecomIPNotTrusted 是"不在企业可信 IP 里"的错误码；errmsg 里带着我们的出网 IP。
@@ -395,4 +440,90 @@ func (w *WeCom) Diagnose(ctx context.Context, rootID string) ([]Check, error) {
 		}
 	}
 	return finishChecks(checks), nil
+}
+
+// ---------- 发消息（ADR 0019） ----------
+
+// SendDirect 给一个人发应用消息：POST /cgi-bin/message/send，有链接时用 textcard（标题、一句话、按钮「详情」），
+// 没有链接时用 text。touser 是 userid。
+func (w *WeCom) SendDirect(ctx context.Context, userID string, msg Message) error {
+	if w.agentID == "" {
+		return &RejectedError{Code: -1, Msg: "missing agent_id"}
+	}
+	body := map[string]any{"touser": userID, "agentid": w.agentID}
+	if msg.URL != "" {
+		open := msg.Open
+		if open == "" {
+			open = "打开"
+		}
+		desc := msg.Text
+		if desc == "" {
+			desc = msg.Title
+		}
+		body["msgtype"] = "textcard"
+		body["textcard"] = map[string]string{"title": msg.Title, "description": desc, "url": msg.URL, "btntxt": open}
+	} else {
+		text := msg.Title
+		if msg.Text != "" && msg.Text != msg.Title {
+			text += "\n" + msg.Text
+		}
+		body["msgtype"] = "text"
+		body["text"] = map[string]string{"content": text}
+	}
+	var out struct {
+		wecomEnvelope
+		InvalidUser string `json:"invaliduser"`
+	}
+	if err := w.post(ctx, "/cgi-bin/message/send", body, &out); err != nil {
+		return err
+	}
+	if out.InvalidUser != "" {
+		return &RejectedError{Code: 81013, Msg: fmt.Sprintf("invaliduser: %s（这个人不在应用的可见范围里）", out.InvalidUser)}
+	}
+	return nil
+}
+
+// DiagnoseMessaging 检查「能以应用身份发消息」：用应用的 Secret 读它自己的信息（agent/get），
+// 能读到说明 AgentId 与 Secret 配对且可信 IP 通过；不真的发消息。
+func (w *WeCom) DiagnoseMessaging(ctx context.Context) Check {
+	c := Check{Key: MessagingCheckKey, Title: T("能以应用身份发消息", "Can send messages as the app")}
+	if w.agentID == "" {
+		c.Status = CheckTodo
+		c.Detail = T("还没填自建应用的 AgentId 与 Secret；通讯录同步的 Secret 发不了消息。", "The custom app's AgentId and Secret are not set; the contacts-sync Secret cannot send messages.")
+		c.Fix = T("在「组织设置 → 通知」的企业微信通道里填自建应用的 AgentId 与 Secret。", "Under “Organization settings → Notifications”, fill in the custom app's AgentId and Secret for the WeCom channel.")
+		c.FixURL = wecomConsoleApps
+		return c
+	}
+	var out struct {
+		wecomEnvelope
+		Name string `json:"name"`
+	}
+	err := w.get(ctx, "/cgi-bin/agent/get", url.Values{"agentid": {w.agentID}}, &out, true)
+	if err == nil {
+		c.Status = CheckOK
+		c.Detail = rawText("应用「%s」的凭据可用，可以发消息。", "The credentials of app “%s” work; messages can be sent.", out.Name)
+		return c
+	}
+	var un *UnreachableError
+	if errors.As(err, &un) {
+		c.Status = CheckTodo
+		c.Detail = rawText("连不上企业微信：%s。", "Could not reach WeCom: %s.", un.Err.Error())
+		c.Fix = T("检查服务器的网络或出网代理设置，然后重新检查。", "Check the server's network or outbound proxy setting, then re-check.")
+		return c
+	}
+	code, msg, _ := rejectedCode(err)
+	c.Status = CheckTodo
+	if code == wecomIPNotTrusted {
+		ip := "?"
+		if m := wecomFromIP.FindStringSubmatch(msg); m != nil {
+			ip = m[1]
+		}
+		c.Detail = rawText("企业微信说：%s。服务器的出网 IP 是 %s。", "WeCom said: %s. The server's outbound IP is %s.", msg, ip)
+		c.Fix = rawText("在该应用页面的企业可信 IP 里加入 %s。", "On the app's page, add %s to the trusted IPs.", ip)
+	} else {
+		c.Detail = rawText("用应用的 Secret 读应用信息时企业微信说：%s。没有它时待确认操作与验收提醒发不到企业微信，只在站内。", "Reading the app with its Secret, WeCom said: %s. Without it, reminders stay in-app only.", msg)
+		c.Fix = T("到「应用管理 → 自建应用」核对 AgentId 与 Secret，重新填写；不需要 IM 提醒也可以先跳过。", "Under “App Management → Custom apps” check the AgentId and Secret and enter them again; skip it if IM reminders are not needed.")
+	}
+	c.FixURL = wecomConsoleApps
+	return c
 }

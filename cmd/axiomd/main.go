@@ -97,6 +97,18 @@ func main() {
 					log.Printf("组织 %s：%d 条待确认操作因超过七天没人确认而作废", id, n)
 				}
 			}
+			// 通知外发（ADR 0019）：刚逾期的任务、刚到期的里程碑排一次提醒（同一事项只一次）
+			for _, id := range orgs {
+				if err := a.EnqueueDueReminders(ctx, id, time.Now()); err != nil {
+					log.Printf("逾期提醒 %s: %v", id, err)
+				}
+			}
+			// Agent 设备码（ADR 0018）：过期的申请标为过期，旧记录清理
+			if n, err := a.ExpireDeviceCodes(ctx); err != nil {
+				log.Printf("设备码巡检: %v", err)
+			} else if n > 0 {
+				log.Printf("%d 条 Agent 接入申请因超过 15 分钟没人批准而过期", n)
+			}
 			// 外部目录定时同步（ADR 0017）：每小时 / 每天到点的组织跑一次
 			for _, res := range a.RunScheduledDirectorySyncs(ctx, time.Now()) {
 				if res.Err != nil {
@@ -104,6 +116,20 @@ func main() {
 				} else if res.Run != nil {
 					log.Printf("组织 %s：外部目录同步%s（新增 %d 团队 / %d 成员，停用 %d 成员）", res.OrgID, res.Run.Status, res.Run.AddedTeams, res.Run.AddedMembers, res.Run.DeactivatedMembers)
 				}
+			}
+		}
+	}()
+
+	// 通知外发（ADR 0019）：每 15 秒把到点的投递发出去（3 次、退避、安静时段顺延；多实例时数据库建议锁保证只有一个在发）
+	go func() {
+		for {
+			time.Sleep(15 * time.Second)
+			st, err := a.RunNotificationDeliveries(ctx, time.Now())
+			if err != nil {
+				log.Printf("通知外发: %v", err)
+			}
+			if st.Sent+st.Failed+st.Skipped > 0 {
+				log.Printf("通知外发：发出 %d，重试 %d，失败 %d，未发 %d", st.Sent, st.Retried, st.Failed, st.Skipped)
 			}
 		}
 	}()

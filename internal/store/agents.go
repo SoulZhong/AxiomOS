@@ -9,12 +9,12 @@ import (
 	"github.com/teemo/axiomos/internal/i18n"
 )
 
-const agentCols = `id,org_id,owner_member_id,name,runtime,capabilities,grants,max_concurrent,shared,last_seen_at,revoked_at,created_at`
+const agentCols = `id,org_id,owner_member_id,name,runtime,capabilities,grants,max_concurrent,shared,last_seen_at,revoked_at,created_at,coalesce(last_tool,''),last_tool_at`
 
 func scanAgent(r interface{ Scan(...any) error }) (*domain.Agent, error) {
 	a := &domain.Agent{}
 	var grants []byte
-	err := r.Scan(&a.ID, &a.OrgID, &a.OwnerMemberID, &a.Name, &a.Runtime, &a.Capabilities, &grants, &a.MaxConcurrent, &a.Shared, &a.LastSeenAt, &a.RevokedAt, &a.CreatedAt)
+	err := r.Scan(&a.ID, &a.OrgID, &a.OwnerMemberID, &a.Name, &a.Runtime, &a.Capabilities, &grants, &a.MaxConcurrent, &a.Shared, &a.LastSeenAt, &a.RevokedAt, &a.CreatedAt, &a.LastTool, &a.LastToolAt)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -85,6 +85,12 @@ func (s *Store) UpdateAgent(ctx context.Context, q Querier, a *domain.Agent) err
 
 func (s *Store) TouchAgent(ctx context.Context, q Querier, id string) error {
 	_, err := q.Exec(ctx, `update agents set last_seen_at=now() where id=$1`, id)
+	return err
+}
+
+// RecordAgentTool 记下 Agent 最近一次调用的 MCP 工具（连接检查用）。
+func (s *Store) RecordAgentTool(ctx context.Context, q Querier, id, tool string) error {
+	_, err := q.Exec(ctx, `update agents set last_seen_at=now(), last_tool=$2, last_tool_at=now() where id=$1`, id, tool)
 	return err
 }
 

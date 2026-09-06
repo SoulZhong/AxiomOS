@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -550,6 +551,44 @@ func taskDescendants(tasks []*domain.Task, rootID string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// ResolveTaskRef 把「#123」「123」这样的序号换成任务 ID；其他写法原样返回。
+func (a *App) ResolveTaskRef(ctx context.Context, sess *Session, ref string) (string, error) {
+	n, ok := parseTaskNumber(ref)
+	if !ok {
+		return ref, nil
+	}
+	var id string
+	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+		t, err := a.Store.TaskByNumber(ctx, tx, n)
+		if err != nil {
+			return NotFound("err.task_number", strings.TrimPrefix(strings.TrimSpace(ref), "#"))
+		}
+		id = t.ID
+		return nil
+	})
+	return id, err
+}
+
+// parseTaskNumber 认「#123」「123」（可带空白）。
+func parseTaskNumber(ref string) (int, bool) {
+	s := strings.TrimSpace(ref)
+	s = strings.TrimPrefix(s, "#")
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+		if n > 1<<30 {
+			return 0, false
+		}
+	}
+	return n, n > 0
 }
 
 // GetTask 读取任务。

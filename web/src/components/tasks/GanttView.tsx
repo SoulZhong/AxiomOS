@@ -20,12 +20,12 @@ const asBool = (raw: unknown) => (typeof raw === "boolean" ? raw : undefined);
 const asDensity = (raw: unknown) => (raw === "compact" || raw === "comfortable" ? raw : undefined);
 const asKeys = (raw: unknown) => (Array.isArray(raw) && raw.every((x) => typeof x === "string") ? (raw as string[]) : undefined);
 
-/** GET /gantt 只认分组与范围：筛选栏的 goal / team / assignee / type / state 在这里按行内任务过滤；筛掉后空了的行不再显示（目标筛选时保留子树里的目标行）。 */
+/** GET /gantt 只认分组与范围：筛选栏的 goal / team / assignee / type / state / 截止日 / 关键词在这里按行内任务过滤（甘特数据里没有优先级与迭代）；筛掉后空了的行不再显示（目标筛选时保留子树里的目标行）。 */
 function applyFilters(data: GanttData, f: TaskFilters, ctx: MatchCtx): GanttData {
-  if (!FILTER_KEYS.some((k) => k !== "sprint" && f[k])) return data;
+  if (!FILTER_KEYS.some((k) => k !== "sprint" && k !== "priority" && f[k])) return data;
   const keep = new Set<string>();
   const rows = data.rows
-    .map((r) => ({ ...r, tasks: r.tasks.filter((x) => matchTask({ goalId: x.goal_id, assigneeId: x.assignee?.id ?? null, type: x.type, label: x.state.label, sprintId: null }, f, ctx, ["sprint"])) }))
+    .map((r) => ({ ...r, tasks: r.tasks.filter((x) => matchTask({ id: x.id, number: x.number, title: x.title, goalId: x.goal_id, assigneeId: x.assignee?.id ?? null, type: x.type, label: x.state.label, sprintId: null, priority: "normal", plannedEnd: x.planned_end }, f, ctx, ["sprint", "priority"])) }))
     .filter((r) => r.tasks.length > 0 || (data.group === "goal" && !!f.goal && !!ctx.subtree?.has(r.key)));
   for (const r of rows) for (const x of r.tasks) keep.add(x.id);
   return { ...data, rows, dependencies: data.dependencies.filter((d) => keep.has(d.from_task_id) && keep.has(d.to_task_id)) };

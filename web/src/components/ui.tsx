@@ -510,6 +510,49 @@ export function ConfirmDialog({ open, title, message, confirmLabel, danger, busy
   );
 }
 
+/**
+ * 后果对话框（DESIGN.md §6）：不可逆或影响他人的动作（放弃目标、停用成员、吊销 Agent、结束迭代……）在确认前
+ * 用一句话一条地写清会发生什么，能数的就带数字（「名下 3 个未结束任务需要重新指派」）。
+ * effects 里的 null 会被跳过（没有影响的那条不用写）；counting 为真时先显示「正在统计影响范围…」再列出。
+ */
+export function ConsequenceDialog({ open, title, subject, effects, note, counting, confirmLabel, danger = true, busy, onConfirm, onClose }: { open: boolean; title: ReactNode; /** 对象那一行（可选，标题里已经带名字时不用） */ subject?: ReactNode; effects: Array<ReactNode | null | undefined | false>; /** 末尾一句补充（如「随时可以恢复」） */ note?: ReactNode; counting?: boolean; confirmLabel?: string; danger?: boolean; busy?: boolean; onConfirm: () => void; onClose: () => void }) {
+  const list = effects.filter((e): e is ReactNode => !!e);
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={title}
+      width={440}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
+          <Button variant={danger ? "danger" : "primary"} disabled={busy || counting} onClick={onConfirm} autoFocus>
+            {confirmLabel ?? t("common.confirm")}
+          </Button>
+        </>
+      }
+    >
+      {subject && <p className="text-ink-muted">{subject}</p>}
+      <div data-consequences>
+        <p className="eyebrow mb-1.5 text-ink-subtle">{t("consequence.lead")}</p>
+        {counting ? (
+          <p className="text-caption text-ink-subtle">{t("consequence.counting")}</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {list.map((e, i) => (
+              <li key={i} className="flex items-start gap-2 text-ink">
+                <span className={cx("mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full", danger ? "bg-danger" : "bg-accent")} aria-hidden="true" />
+                <span className="min-w-0">{e}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {note && <p className="text-caption text-ink-subtle">{note}</p>}
+    </Dialog>
+  );
+}
+
 /** 右侧抽屉：480px，创建 / 编辑表单用这个而不是居中弹窗（不打断当前页面）。头部只有标题 + 一行短提示。 */
 export function Drawer({ open, onClose, title, description, children, footer }: { open: boolean; onClose: () => void; title: ReactNode; description?: ReactNode; children: ReactNode; footer?: ReactNode }) {
   const [ref, shown] = useNativeDialog(open);
@@ -559,21 +602,55 @@ export function DescList({ items, className }: { items: Array<[string, ReactNode
   );
 }
 
-/** 任务标题链接：一行、超出省略；ID 不再印在列表里（只在详情页面包屑和侧栏的"ID"行）。 */
-export function TaskLink({ id, title, className, inline = false }: { id: string; title: string; className?: string; inline?: boolean }) {
+/** 任务可读序号 `#123`（DESIGN.md §20）：等宽小字，放在标题前；copy 时点一下复制「#123」。 */
+export function TaskNumber({ n, className, copy = false }: { n: number | null | undefined; className?: string; copy?: boolean }) {
+  const [done, setDone] = useState(false);
+  if (n === null || n === undefined) return null;
+  const text = `#${n}`;
+  if (!copy) return <span className={cx("task-no", className)} data-task-number={n}>{text}</span>;
+  return (
+    <button
+      type="button"
+      className={cx("task-no task-no-copy pressable", className)}
+      data-task-number={n}
+      title={t("task.copyNumber")}
+      aria-label={t("task.copyNumber")}
+      onClick={(e) => {
+        e.stopPropagation();
+        void navigator.clipboard?.writeText(text).catch(() => {});
+        setDone(true);
+        window.setTimeout(() => setDone(false), 1500);
+      }}
+    >
+      {done ? t("common.copied") : text}
+    </button>
+  );
+}
+
+/** 任务标题链接：一行、超出省略；序号 `#123` 印在标题前（有的话），ID 不再印在列表里（只在详情页面包屑和侧栏的"ID"行）。 */
+export function TaskLink({ id, number, title, className, inline = false }: { id: string; number?: number | null; title: string; className?: string; inline?: boolean }) {
   if (inline) {
     return (
       <Link href={`/tasks/${encodeURIComponent(id)}/`} className={cx("hover:text-accent-hover", className)}>
+        <TaskNumber n={number} className="mr-1" />
         {title}
       </Link>
     );
   }
   return (
-    <span className={cx("block min-w-0", className)}>
-      <Link href={`/tasks/${encodeURIComponent(id)}/`} className="block truncate font-medium text-ink hover:text-accent-hover" title={title}>
+    <span className={cx("flex min-w-0 items-baseline gap-1.5", className)}>
+      <TaskNumber n={number} />
+      <Link href={`/tasks/${encodeURIComponent(id)}/`} className="block min-w-0 truncate font-medium text-ink hover:text-accent-hover" title={title}>
         {title}
       </Link>
     </span>
+  );
+}
+
+/** 开关：role=switch 的按钮（显示偏好里的紧凑 / 侧栏默认收起）。 */
+export function Switch({ checked, onChange, label, disabled, className }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean; className?: string }) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange(!checked)} className={cx("switch pressable", className)} />
   );
 }
 

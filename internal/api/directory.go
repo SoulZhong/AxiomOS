@@ -14,6 +14,7 @@ func (s *Server) directoryRoutes(auth func(string, http.HandlerFunc)) {
 	auth("GET /api/v1/org/directory/providers", s.directoryProviders)
 	auth("GET /api/v1/org/directory", s.directoryGet)
 	auth("PUT /api/v1/org/directory", s.directoryPut)
+	auth("DELETE /api/v1/org/directory", s.directoryDisconnect)
 	auth("POST /api/v1/org/directory/test", s.directoryTest)
 	auth("GET /api/v1/org/directory/checklist", s.directoryChecklist)
 	auth("POST /api/v1/org/directory/sync", s.directorySync)
@@ -64,6 +65,11 @@ func (s *Server) directoryProviders(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) directoryGet(w http.ResponseWriter, r *http.Request) {
 	v, err := s.App.GetDirectoryConfig(r.Context(), sessionOf(r))
+	respond(w, r, v, err)
+}
+
+func (s *Server) directoryDisconnect(w http.ResponseWriter, r *http.Request) {
+	v, err := s.App.DisconnectDirectory(r.Context(), sessionOf(r))
 	respond(w, r, v, err)
 }
 

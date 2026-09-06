@@ -15,7 +15,7 @@ import { Button, ConfirmDialog, DateInput, Input, Panel, Tag, Tip, cx, type Tone
 
 const TONE: Record<MilestoneStatus, Tone> = { upcoming: "neutral", reached: "success", overdue: "danger" };
 
-export function MilestonePanel({ goal, index, onChanged }: { goal: Goal; index: number; onChanged: () => void }) {
+export function MilestonePanel({ goal, index, onChanged }: { goal: Goal; index?: number; onChanged: () => void }) {
   const list = [...(goal.milestones ?? [])].sort((a, b) => (a.due_on < b.due_on ? -1 : a.due_on > b.due_on ? 1 : 0));
   const { busy, run } = useAction();
   const [editing, setEditing] = useState<{ id: string; title: string; due_on: string; description: string } | null>(null);

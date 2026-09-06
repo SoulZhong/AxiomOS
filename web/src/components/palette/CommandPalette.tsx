@@ -1,21 +1,23 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type SyntheticEvent } from "react";
-import { api, type Agent, type Goal, type Task } from "@/lib/api";
+import { api, type Agent, type Goal, type Member, type Task } from "@/lib/api";
 import { LOCALES, setLocale, t, useLocale } from "@/lib/i18n";
 import { keyboardIntent, markKeyboardIntent } from "@/lib/motion";
 import { THEMES, useTheme } from "@/lib/theme";
-import { IconAgent, IconBacklog, IconGoal, IconKeyboard, IconPlus, IconTask } from "@/components/icons";
+import { setScope, useScopeState } from "@/lib/useScope";
+import { IconAgent, IconBacklog, IconEdit, IconGoal, IconHome, IconKeyboard, IconMember, IconOrg, IconPlus, IconTask } from "@/components/icons";
 import { Kbd, cx } from "@/components/ui";
 
 /**
  * 指令台（DESIGN.md「舰内系统 v3」§4）：⌘K / Ctrl+K 或侧栏按钮打开的全局命令面板。等宽提示符 `›`，模糊搜索页面、任务、目标、Agent
- * （现有列表接口，打开时拉一次、30s 内复用；输入 120ms 防抖）；动作：新建任务、领取任务、切换主题、切换语言、快捷键。
+ * （现有列表接口，打开时拉一次、30s 内复用；输入 120ms 防抖）；动作：新建任务 / 目标、领取任务、打开待我处理、编辑布局、切换主题、切换语言、快捷键；
+ * 范围：会话给的档位逐个列出（当前那档带「当前」）；成员：有组织设置入口的人可以跳到成员与团队页并定位到那个人（DESIGN.md §19）。
  * 上下键选择、回车执行、Esc 关闭、Tab 不离开输入框（焦点留在面板内）。结果分组带等宽眉标。
  * 进场：原生 dialog + @starting-style，120ms 从 scale(0.98) 淡入，退场 80ms；键盘打开（⌘K）时按「键盘触发的动作不动画」直接出现。
  * 面板在浅色主题下也是深色（data-theme="dark"），和舷窗带一样是舱内的全息屏。
  */
-export type PaletteGroup = "actions" | "pages" | "tasks" | "goals" | "agents";
+export type PaletteGroup = "actions" | "scopes" | "pages" | "tasks" | "goals" | "agents" | "members";
 export interface PaletteItem {
   id: string;
   group: PaletteGroup;
@@ -32,7 +34,7 @@ export interface PalettePage {
   icon?: ReactNode;
 }
 
-const GROUP_ORDER: PaletteGroup[] = ["actions", "pages", "tasks", "goals", "agents"];
+const GROUP_ORDER: PaletteGroup[] = ["actions", "scopes", "pages", "tasks", "goals", "agents", "members"];
 const CACHE_MS = 30_000;
 const DEBOUNCE_MS = 120;
 const MAX_PER_GROUP = 8;
@@ -56,11 +58,11 @@ export function fuzzyScore(query: string, text: string): number | null {
   return qi === q.length ? score : null;
 }
 
-let cache: { at: number; tasks: Task[]; goals: Goal[]; agents: Agent[] } | null = null;
+let cache: { at: number; tasks: Task[]; goals: Goal[]; agents: Agent[]; members: Member[] } | null = null;
 async function loadIndex() {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache;
-  const [tasks, goals, agents] = await Promise.all([api.tasks.list().catch(() => [] as Task[]), api.goals.list().catch(() => [] as Goal[]), api.agents.list().catch(() => [] as Agent[])]);
-  cache = { at: Date.now(), tasks, goals, agents };
+  const [tasks, goals, agents, members] = await Promise.all([api.tasks.list().catch(() => [] as Task[]), api.goals.list().catch(() => [] as Goal[]), api.agents.list().catch(() => [] as Agent[]), api.members.list().catch(() => [] as Member[])]);
+  cache = { at: Date.now(), tasks, goals, agents, members };
   return cache;
 }
 const flattenGoals = (gs: Goal[], out: Goal[] = []): Goal[] => {
@@ -80,10 +82,11 @@ function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
-export function CommandPalette({ open, onClose, onHelp, pages, loggedIn }: { open: boolean; onClose: () => void; onHelp: () => void; pages: PalettePage[]; loggedIn: boolean }) {
+export function CommandPalette({ open, onClose, onHelp, pages, loggedIn, canManageOrg = false }: { open: boolean; onClose: () => void; onHelp: () => void; pages: PalettePage[]; loggedIn: boolean; canManageOrg?: boolean }) {
   const router = useRouter();
   const { locale } = useLocale();
   const [theme, setTheme] = useTheme();
+  const scopeState = useScopeState();
   const ref = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -164,21 +167,29 @@ export function CommandPalette({ open, onClose, onHelp, pages, loggedIn }: { ope
     const nextTheme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
     const nextLocale = LOCALES[(LOCALES.indexOf(locale) + 1) % LOCALES.length];
     const actions: PaletteItem[] = [
-      { id: "a:new", group: "actions", title: t("palette.newTask"), hint: "n", keywords: "new task create", icon: <IconPlus />, run: () => go("/tasks/?new=1") },
-      { id: "a:claim", group: "actions", title: t("palette.claim"), keywords: "claim backlog", icon: <IconBacklog />, run: () => go("/tasks/?view=backlog") },
+      { id: "a:new", group: "actions", title: t("palette.newTask"), hint: "t c", keywords: "new task create", icon: <IconPlus />, run: () => go("/tasks/?new=1") },
+      { id: "a:newGoal", group: "actions", title: t("palette.newGoal"), hint: "g c", keywords: "new goal create", icon: <IconGoal />, run: () => go("/goals/?new=1") },
+      { id: "a:inbox", group: "actions", title: t("palette.goInbox"), hint: "n o", keywords: "inbox waiting home", icon: <IconHome />, run: () => go("/") },
+      { id: "a:claim", group: "actions", title: t("palette.claim"), hint: "v k", keywords: "claim backlog", icon: <IconBacklog />, run: () => go("/tasks/?view=backlog") },
+      { id: "a:layout", group: "actions", title: t("palette.editLayout"), keywords: "layout workspace edit blocks", icon: <IconEdit />, run: () => go("/?edit=1") },
       { id: "a:theme", group: "actions", title: t("palette.theme"), hint: t(`theme.${nextTheme}`), keywords: "theme dark light", run: () => { close(); setTheme(nextTheme); } },
       { id: "a:lang", group: "actions", title: t("palette.lang"), hint: nextLocale === "zh-CN" ? "中文" : "English", keywords: "language english 中文", run: () => { close(); if (loggedIn) void api.auth.updateMe({ locale: nextLocale }).catch(() => {}); setLocale(nextLocale); } },
       { id: "a:keys", group: "actions", title: t("palette.shortcuts"), hint: "?", keywords: "shortcuts keys help", icon: <IconKeyboard />, run: () => { close(); onHelp(); } },
     ];
+    const scopeItems: PaletteItem[] = scopeState.options.map((o) => ({ id: `s:${o.id}`, group: "scopes", title: t("palette.scope", { name: o.title }), hint: o.id === scopeState.scope ? t("palette.scopeCurrent") : undefined, keywords: "scope 范围 team", icon: <IconOrg />, run: () => { close(); setScope(o.id); } }));
     const pageItems: PaletteItem[] = pages.map((p) => ({ id: `p:${p.href}`, group: "pages", title: p.label, keywords: p.href, icon: p.icon, run: () => go(p.href) }));
-    const taskItems: PaletteItem[] = (index?.tasks ?? []).map((tk) => ({ id: `t:${tk.id}`, group: "tasks", title: tk.title, hint: tk.state.title, keywords: `${tk.type_title} ${tk.assignee?.name ?? ""}`, icon: <IconTask />, run: () => go(`/tasks/${encodeURIComponent(tk.id)}/`) }));
+    const taskItems: PaletteItem[] = (index?.tasks ?? []).map((tk) => ({ id: `t:${tk.id}`, group: "tasks", title: tk.number != null ? `#${tk.number} ${tk.title}` : tk.title, hint: tk.state.title, keywords: `${tk.number != null ? `#${tk.number} ${tk.number}` : ""} ${tk.type_title} ${tk.assignee?.name ?? ""}`, icon: <IconTask />, run: () => go(`/tasks/${encodeURIComponent(tk.id)}/`) }));
     const goalItems: PaletteItem[] = flattenGoals(index?.goals ?? []).map((g) => ({ id: `g:${g.id}`, group: "goals", title: g.title, hint: `${Math.round(g.progress)}%`, keywords: g.owner?.name ?? "", icon: <IconGoal stage={g.achieved ? "grown" : "bud"} />, run: () => go(`/goals/${encodeURIComponent(g.id)}/`) }));
     const agentItems: PaletteItem[] = (index?.agents ?? []).map((a) => ({ id: `ag:${a.id}`, group: "agents", title: a.name, hint: a.online ? t("agents.online") : t("agents.offlineShort"), keywords: a.owner.name, icon: <IconAgent />, run: () => go("/agents/") }));
-    return [...actions, ...pageItems, ...taskItems, ...goalItems, ...agentItems];
-  }, [theme, locale, pages, index, go, close, setTheme, loggedIn, onHelp]);
+    const memberItems: PaletteItem[] = canManageOrg ? (index?.members ?? []).map((m) => ({ id: `m:${m.id}`, group: "members", title: m.name, hint: m.email, keywords: `${m.email} ${m.roles.join(" ")}`, icon: <IconMember />, run: () => go(`/settings/?tab=people&member=${encodeURIComponent(m.id)}`) })) : [];
+    return [...actions, ...scopeItems, ...pageItems, ...taskItems, ...goalItems, ...agentItems, ...memberItems];
+  }, [theme, locale, pages, index, go, close, setTheme, loggedIn, onHelp, scopeState, canManageOrg]);
 
   const results = useMemo(() => {
     const qq = q.trim();
+    // 输入 `#123` / `123`：第一项就是「打开任务 #123」，回车走 /task-by-number/123/（找不到时那一页会说没有这个序号）
+    const num = /^#?(\d+)$/.exec(qq)?.[1];
+    const jump: PaletteItem[] = num ? [{ id: `n:${num}`, group: "actions", title: t("palette.openNumber", { n: num }), hint: "#", icon: <IconTask />, run: () => go(`/task-by-number/${num}/`) }] : [];
     const scored = items
       .map((it) => ({ it, score: qq ? Math.max(fuzzyScore(qq, it.title) ?? -1, it.keywords ? (fuzzyScore(qq, it.keywords) ?? -1) - 1 : -1) : 0 }))
       .filter((x) => x.score >= 0);
@@ -186,11 +197,12 @@ export function CommandPalette({ open, onClose, onHelp, pages, loggedIn }: { ope
     for (const g of GROUP_ORDER) {
       const list = scored.filter((x) => x.it.group === g);
       if (qq) list.sort((a, b) => b.score - a.score);
-      const take = qq || g === "actions" || g === "pages" ? list.slice(0, MAX_PER_GROUP) : list.slice(0, 5);
-      if (take.length) groups.set(g, take.map((x) => x.it));
+      const take = qq || g === "actions" || g === "pages" ? list.slice(0, MAX_PER_GROUP) : g === "scopes" ? list.slice(0, 3) : list.slice(0, 5);
+      const picked = g === "actions" ? [...jump, ...take.map((x) => x.it)] : take.map((x) => x.it);
+      if (picked.length) groups.set(g, picked);
     }
     return groups;
-  }, [items, q]);
+  }, [items, q, go]);
   const flat = useMemo(() => [...results.values()].flat(), [results]);
   useEffect(() => {
     const el = listRef.current?.querySelector<HTMLElement>(`[data-i="${sel}"]`);
@@ -224,7 +236,7 @@ export function CommandPalette({ open, onClose, onHelp, pages, loggedIn }: { ope
     markKeyboardIntent();
     close();
   };
-  const groupLabel: Record<PaletteGroup, string> = { actions: t("palette.groupActions"), pages: t("palette.groupPages"), tasks: t("palette.groupTasks"), goals: t("palette.groupGoals"), agents: t("palette.groupAgents") };
+  const groupLabel: Record<PaletteGroup, string> = { actions: t("palette.groupActions"), scopes: t("palette.groupScopes"), pages: t("palette.groupPages"), tasks: t("palette.groupTasks"), goals: t("palette.groupGoals"), agents: t("palette.groupAgents"), members: t("palette.groupMembers") };
   let i = -1;
   return (
     <dialog ref={ref} onClose={close} onCancel={onCancel} className="modal palette" data-theme="dark" aria-label={t("palette.title")} onClick={(e) => e.target === ref.current && close()}>

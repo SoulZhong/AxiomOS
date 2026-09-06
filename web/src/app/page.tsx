@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { api, type BlockKey, type LayoutBlock, type Workspace } from "@/lib/api";
-import { errorMessage, useLoad } from "@/lib/hooks";
+import { errorMessage, setQueryParams, useLoad, useQueryParam } from "@/lib/hooks";
 import { t, useLocale } from "@/lib/i18n";
 import { useSession } from "@/components/AppShell";
 import { WorkspaceGrid } from "@/components/blocks/WorkspaceGrid";
@@ -34,6 +34,17 @@ export default function HomePage() {
   const [busy, setBusy] = useState(false);
   const workspace = override && override.base === ws.data ? override.value : ws.data;
   const editing = draft !== null;
+  // ?edit=1（快速命令「编辑工作台布局」）：布局一到就进编辑态，参数随即清掉
+  const qEdit = useQueryParam("edit");
+  const [seenEdit, setSeenEdit] = useState<string | null>(null);
+  if (qEdit !== seenEdit) {
+    setSeenEdit(qEdit);
+  }
+  if (qEdit && workspace && draft === null) {
+    setDraft(workspace.blocks.map(({ key, x, y, w, h }) => ({ key, x, y, w, h })));
+    setWanted(true);
+    setQueryParams({ edit: null });
+  }
 
   const roleTitle = (name: string) => session?.roles.find((r) => r.name === name)?.title ?? name;
   const joiner = locale === "en-US" ? ", " : "、";

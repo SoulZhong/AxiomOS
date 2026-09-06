@@ -3,7 +3,7 @@
 ## 先读什么
 
 - `CONTEXT.md`：唯一的词汇表。界面、通知、报错、MCP 工具描述里只能出现它定义的中文名；英文只做代码标识符（ADR 0007）。
-- `docs/adr/`：十七条架构决策。改动触碰到其中任何一条时先读它；尤其 0014 定义了"什么可配、什么写死"的边界，0017 定义了外部目录（飞书、企业微信；提供方是 `internal/directory` 里的插件）作为组织架构来源时的规则。
+- `docs/adr/`：二十条架构决策。改动触碰到其中任何一条时先读它；尤其 0014 定义了"什么可配、什么写死"的边界，0017 定义了外部目录（飞书、企业微信；提供方是 `internal/directory` 里的插件）作为组织架构来源时的规则。 0018–0020 定义了 Agent 设备码授权、通知外发与外部事件触发迁移。`internal/directory` 的注册表现在带三种能力：读组织结构（`Providers()`）、发消息（`MessagingProviders()`）、代码平台（`CodeHostProviders()`，GitHub / GitLab / Gitee）；三个列表互不重叠，新增平台仍然只是新增一个文件。
 - `docs/spec/workflow-definition.md`：流程定义规格，内核 `internal/domain` 的实现依据。
 - `web/DESIGN.md`：界面设计规范 v2（以 Linear 为蓝本 + 克制的 Axiom 科幻层，ADR 0010）。改任何界面前先读它，新 token 与新装饰先加进规范。
 
@@ -22,6 +22,9 @@
 - 任何写操作都要产生动态（`events` 表）；没有动态的写入视为 bug。
 - Agent 的有效权限 = 所有者权限 ∩ 授权；`manage_workflows` 对 Agent 只能是 `with_approval`。
 - 拒绝理由必须是完整的中文句子，人和 Agent 都直接读它。
+- 出网默认只许公网：组织自己填的地址（通知 webhook、代码平台 `api_base`、出网代理）都要过 `internal/directory` 的出网守卫（`egress.go`），内网 / 回环 / 云元数据一律拒；私有化部署设 `AXIOMOS_ALLOW_PRIVATE_EGRESS=1` 才放行内网，云元数据地址任何时候都不放。保存时查一遍、连接前按解析出的地址再查一遍。
+- 密钥不随便回显：代码平台的回调密钥只在显式要看的那一次返回（`?reveal=secret`，`Cache-Control: no-store` + 一条动态）；配置变更的动态只记改了哪些字段的名字，不记配置值。
+- 外部事件（代码平台的 PR / CI）只能通过流程定义里的 `triggered_by` 推进状态，走的是与人和 Agent 同一段内核实现；它永远不开执行记录，也不参与 `by` 与授权判定（ADR 0020）。
 
 ## 本地开发
 

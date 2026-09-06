@@ -5,7 +5,7 @@ import { fmtDate, fmtDateTime, parseDate } from "@/lib/format";
 import { eventSummary } from "@/lib/fieldChange";
 import { eventTitle } from "@/lib/terms";
 import { t } from "@/lib/i18n";
-import { IconAgent, IconApprove, IconBacklog, IconBlocks, IconComment, IconEdit, IconExternal, IconGoal, IconMilestone, IconRun, IconTask, IconTaskActive, IconUsage } from "./icons";
+import { IconAgent, IconApprove, IconBacklog, IconBlocks, IconComment, IconEdit, IconExternal, IconGoal, IconLink, IconMilestone, IconNotify, IconRun, IconTask, IconTaskActive, IconUsage } from "./icons";
 import { Avatar, Button, Empty, TaskLink, cx } from "./ui";
 
 /*
@@ -33,6 +33,7 @@ const LED_OF: Partial<Record<Event["kind"], Led>> = {
   MilestoneReached: "success",
   MilestoneDeleted: "warning",
   AgentRegistered: "success",
+  AgentConnected: "success",
   RelationRemoved: "warning",
   ProposalCreated: "warning",
   ProposalApproved: "success",
@@ -60,6 +61,20 @@ function kindIcon(kind: Event["kind"]): ReactNode {
     case "TasksLinked":
     case "RelationRemoved":
       return <IconBlocks {...p} />;
+    // 外部链接与外部事件（ADR 0020）：链环；通知外发（ADR 0019）：小铃铛
+    case "ExternalLinkAdded":
+    case "ExternalLinkUpdated":
+    case "ExternalLinkRemoved":
+    case "ExternalEventApplied":
+    case "ExternalEventIgnored":
+    case "CodePlatformConfigured":
+    case "CodePlatformDisconnected":
+    case "CodeIdentityBound":
+      return <IconLink {...p} />;
+    case "NotificationChannelConfigured":
+    case "NotificationPolicyChanged":
+    case "NotificationPreferencesUpdated":
+      return <IconNotify {...p} />;
     case "GoalCreated":
     case "GoalUpdated":
     case "GoalDeleted":
@@ -71,6 +86,7 @@ function kindIcon(kind: Event["kind"]): ReactNode {
     case "MilestoneDeleted":
       return <IconMilestone {...p} />;
     case "AgentRegistered":
+    case "AgentConnected":
     case "AgentUpdated":
     case "AgentRemoved":
       return <IconAgent {...p} />;
@@ -261,7 +277,7 @@ export function EventList({ events, showTask = true, currentTaskId, poll, onNew 
     return (
       <div>
         {head}
-        <Empty text={t("events.empty")} illustration={false} className="py-6" />
+        <Empty text={t("events.emptyHint")} illustration={false} className="py-6" />
       </div>
     );
   }
@@ -303,7 +319,7 @@ export function EventList({ events, showTask = true, currentTaskId, poll, onNew 
             {withoutActor(eventSummary(e), g.actor?.name)}
             {suffix && (
               <span className="ml-2 text-ink-muted">
-                · <TaskLink id={e.task_id!} title={e.task_title!} inline className="text-ink-muted" />
+                · <TaskLink id={e.task_id!} number={e.task_number ?? undefined} title={e.task_title!} inline className="text-ink-muted" />
               </span>
             )}
           </span>

@@ -139,6 +139,15 @@ func Validate(tt *TaskType) []error {
 				add("val.tr_bad_cond", tr.Name, c)
 			}
 		}
+		// 外部事件触发（ADR 0020）：来源与事件名必须是内核认识的
+		if tg := tr.TriggeredBy; tg != nil {
+			if !IsExternalSource(tg.Source) {
+				add("val.tr_bad_trigger_source", tr.Name, tg.Source)
+			}
+			if !IsExternalEvent(tg.Event) {
+				add("val.tr_bad_trigger_event", tr.Name, tg.Event)
+			}
+		}
 		if strings.HasPrefix(tr.AssignTo, "participant:") {
 			if !slots[strings.TrimPrefix(tr.AssignTo, "participant:")] {
 				add("val.tr_bad_assign", tr.Name, tr.AssignTo)

@@ -6,7 +6,7 @@ import { isTerminal } from "@/lib/api";
 import { addDays, parseDate, toISODate, today } from "@/lib/format";
 import { stateLabel } from "@/lib/terms";
 import { t as tt } from "@/lib/i18n";
-import { Avatar } from "@/components/ui";
+import { Avatar, TaskNumber } from "@/components/ui";
 import { IconChevronRight } from "@/components/icons";
 import { alpha, BAR_H, C, clipToWidth, GanttFrame, LABEL_MAX, LABEL_MIN, LABEL_NARROW, MONO, ROW_H, textW, type Density, type GanttFrameCtx, type GanttHandle } from "./GanttFrame";
 import { MilestoneMarks } from "./MilestoneMarks";
@@ -520,6 +520,7 @@ const TaskRow = memo(function TaskRow({ t, groupKey, origin, rowH, barH, width, 
         <i className="gantt-dot" style={{ background: STATE_DOT[t.state.label] }} aria-hidden="true" />
         {!narrow && (
           <Link href={`/tasks/${encodeURIComponent(t.id)}/`} className="min-w-0 flex-1 truncate text-ink-muted hover:text-accent-hover">
+            <TaskNumber n={t.number} className="mr-1" />
             {t.title}
             {origin && <span className="ml-1.5 text-caption text-ink-tertiary">{origin}</span>}
           </Link>

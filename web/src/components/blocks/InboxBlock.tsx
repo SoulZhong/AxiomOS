@@ -1,10 +1,11 @@
 "use client";
+import Link from "next/link";
 import { t } from "@/lib/i18n";
 import { IconInbox } from "@/components/icons";
 import { InboxGroups, compactRows, liveCount, useInbox } from "@/components/inbox/InboxList";
 import { RejectDialog } from "@/components/proposals/RejectDialog";
 import { Odometer } from "@/components/ship-status/Odometer";
-import { cx } from "@/components/ui";
+import { Button, cx } from "@/components/ui";
 import { BlockPanel, CompactList, type BlockProps } from "./BlockPanel";
 
 /**
@@ -37,7 +38,8 @@ export function InboxBlock({ index, title, noLink, compact, dense }: BlockProps)
         error={data ? null : ib.inbox.error}
         onRetry={ib.inbox.reload}
         empty={ib.allEmpty}
-        emptyText={data?.empty || t("inbox.empty")}
+        emptyText={data?.empty || t("inbox.emptyHint")}
+        emptyAction={<Link href="/tasks/?view=backlog" className="inline-flex"><Button size="sm" tabIndex={-1}>{t("inbox.emptyGo")}</Button></Link>}
       >
         {dense ? (
           <div className="flex h-full flex-wrap content-center items-center gap-2 px-4 py-2">

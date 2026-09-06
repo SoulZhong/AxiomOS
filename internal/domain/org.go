@@ -177,6 +177,9 @@ type Agent struct {
 	LastSeenAt    *time.Time          `json:"last_seen_at,omitempty"`
 	RevokedAt     *time.Time          `json:"revoked_at,omitempty"`
 	CreatedAt     time.Time           `json:"created_at"`
+	// LastTool / LastToolAt 是最近一次调用的 MCP 工具（接入向导的连接检查用）。
+	LastTool   string     `json:"last_tool,omitempty"`
+	LastToolAt *time.Time `json:"last_tool_at,omitempty"`
 }
 
 // Online 判断 Agent 最近是否有心跳（仅用于展示）。

@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { api, type Goal, type GoalInput } from "@/lib/api";
 import { fmtDate, fmtMoney, fmtNumber } from "@/lib/format";
@@ -8,15 +9,16 @@ import { t } from "@/lib/i18n";
 import { useSession } from "@/components/AppShell";
 import { isAcceptanceWait, useTaskTypeIndex } from "@/lib/states";
 import { goalSummary, tallyGoals } from "../goalStatus";
+import { BriefSection } from "@/components/BriefSection";
 import { EventList } from "@/components/EventList";
 import { flattenGoals } from "@/components/GoalDrawer";
-import { IconCheck, IconGoal, IconLog, IconTask } from "@/components/icons";
+import { IconCancel, IconCheck, IconGoal, IconLog, IconPlus, IconTask, IconTrash } from "@/components/icons";
 import { InlineDate, InlineField, InlineNumber, InlineSelect, InlineTable, InlineText, InlineTitle, useInlineSaves } from "@/components/inline";
 import { ArcGauge } from "@/components/instruments/ArcGauge";
 import { Odometer } from "@/components/instruments/Odometer";
 import { TaskTable } from "@/components/TaskTable";
 import { MilestonePanel } from "./MilestonePanel";
-import { Avatar, Button, DetailSkeleton, EnergyLine, ErrorBox, IdLine, ListSkeleton, Panel, ProgressBar, TableSkeleton, Tag, cx } from "@/components/ui";
+import { Avatar, Button, ConsequenceDialog, DetailSkeleton, EnergyLine, ErrorBox, IdLine, ListSkeleton, Panel, ProgressBar, TableSkeleton, Tag, Tip, cx } from "@/components/ui";
 
 export function GoalDetail() {
   const id = useRouteId();
@@ -26,8 +28,17 @@ export function GoalDetail() {
 /** 货币符号（¥ / $ …）：预算输入框前缀 */
 const currencySymbol = (currency?: string) => fmtMoney(0, currency).replace(/[\d.,\s]/g, "");
 
+/*
+ * 目标详情 = 执行简报的目标版（DESIGN.md §17）：
+ *   ① 目标是什么：标题、描述、进度与状态摘要句、动作（确认达成 / 放弃 / 重新开始 / 删除）
+ *   ② 上级目标与里程碑：目标链（可点）、上级目标、里程碑面板
+ *   ③ 任务与动态：子目标、任务表、动态
+ *   ④ 负责人、预算与成本：负责人、团队、计划、截止日、预算 / 已花
+ * 右栏只留次要的「基本信息」。放弃与删除都走后果对话框（§6），写清会影响几个子目标和任务。
+ */
 function GoalDetailBody({ id }: { id: string | null }) {
   const { session } = useSession();
+  const router = useRouter();
   const goal = useLoad(() => (id ? api.goals.get(id) : Promise.reject(new Error(t("goal.missing")))), [id]);
   // 进度与任务数是整棵子树的汇总，任务表也要跟着看整棵子树（接口的 goal= 是精确匹配），否则两处对不上
   const tasks = useLoad(() => api.tasks.list({ limit: 500 }), [id]);
@@ -41,6 +52,7 @@ function GoalDetailBody({ id }: { id: string | null }) {
   const currency = session?.organization.currency;
   const types = useTaskTypeIndex();
   const saves = useInlineSaves();
+  const [confirming, setConfirming] = useState<"abandon" | "delete" | null>(null);
 
   // ---------- 就地编辑（DESIGN.md §15）：乐观更新后的目标；服务端返回即以它为准，重新加载时清掉 ----------
   const [local, setLocal] = useState<Goal | null>(null);
@@ -72,13 +84,23 @@ function GoalDetailBody({ id }: { id: string | null }) {
     if (!shown) return [];
     return flat.filter((f) => !subtree.has(f.goal.id)).map((f) => ({ value: f.goal.id, label: f.goal.title, depth: f.depth }));
   }, [flat, subtree, shown]);
+  // 目标链（②）：上级一路向上，根在前
+  const parents = useMemo(() => {
+    const out: Goal[] = [];
+    for (let g = shown?.parent_id ? byId.get(shown.parent_id) : undefined; g; g = g.parent_id ? byId.get(g.parent_id) : undefined) out.unshift(g);
+    return out;
+  }, [shown?.parent_id, byId]);
 
   if (!id || (goal.loading && !goal.data)) return <DetailSkeleton />;
   if (goal.error || !goal.data || !shown) return <ErrorBox message={goal.error ?? t("goal.notFound")} onRetry={goal.reload} />;
   const g = shown;
   const over = g.budget !== null && g.cost > g.budget;
   const grown = g.achieved || g.progress >= 100;
+  const abandoned = g.status === "abandoned";
   const sum = goalSummary(g, tally.get(g.id));
+  const childCount = subtree.size - 1;
+  const openTasks = mine.filter((x) => x.state.label !== "terminal_success" && x.state.label !== "terminal_failure").length;
+  const empty = g.children.length === 0 && g.task_count === 0;
 
   /** 乐观更新 + 一个请求；失败回退这几个字段并抛出（标题 / 描述控件自己显示原因） */
   const save = async (body: Partial<GoalInput>, optimisticFields: Partial<Goal>) => {
@@ -102,6 +124,14 @@ function GoalDetailBody({ id }: { id: string | null }) {
   const toggleAchieved = async () => {
     if (await run("achieve", () => api.goals.update(g.id, { achieved: !g.achieved }), g.achieved ? t("toast.unachieved") : t("toast.achieved"))) { goal.reload(); events.reload(); }
   };
+  // 放弃 / 重新开始：保留全部历史，只是从"在做的事"里拿掉；删除只对空目标开放
+  const abandon = async () => {
+    const next = abandoned ? "active" : "abandoned";
+    if (await run("abandon", () => api.goals.update(g.id, { status: next }), next === "abandoned" ? t("goals.abandonedToast", { title: g.title }) : t("goals.resumedToast", { title: g.title }))) { setConfirming(null); goal.reload(); events.reload(); tree.reload(); }
+  };
+  const remove = async () => {
+    if (await run("delete", () => api.goals.remove(g.id), t("goals.deletedToast", { title: g.title }))) { setConfirming(null); router.push("/goals/"); }
+  };
   const members = ex.data?.members ?? [];
   const memberOptions = members.map((m) => ({ value: m.id, label: m.name, icon: <Avatar name={m.name} size={16} /> }));
   // 团队按层级缩进
@@ -110,9 +140,7 @@ function GoalDetailBody({ id }: { id: string | null }) {
   const teamOptions = [...teams].sort((a, b) => teamDepth(a.id) - teamDepth(b.id)).map((tm) => ({ value: tm.id, label: tm.name, depth: teamDepth(tm.id) }));
   const teamName = g.team_id ? teams.find((x) => x.id === g.team_id)?.name ?? g.team_id : null;
   const parent = g.parent_id ? byId.get(g.parent_id) : undefined;
-  // 面板序号眉标：01 进度、02 基本信息（右栏顶部，视觉上与进度并列），其余按 DOM 顺序从 03 起递增（子目标面板是条件渲染）
-  let n = 2;
-  const idx = () => ++n;
+  const newTaskHref = `/tasks/?goal=${encodeURIComponent(g.id)}&new=1`;
 
   return (
     <div>
@@ -124,107 +152,170 @@ function GoalDetailBody({ id }: { id: string | null }) {
             <span className={cx("inline-flex shrink-0", grown ? "text-success" : "text-ink-subtle")} data-motion={sprout ? "sprout" : undefined} aria-hidden="true"><IconGoal size={22} stage={grown ? "grown" : "bud"} /></span>
             <InlineTitle value={g.title} editable={editPlan} caption={canEdit && g.achieved ? t("inline.achievedGoal") : undefined} onSave={(v) => save({ title: v }, { title: v })} />
             {g.achieved && <Tag tone="success">{t("goals.achieved")}</Tag>}
+            {abandoned && <Tag>{t("goals.abandonedTag")}</Tag>}
             {over && <Tag tone="danger">{t("goals.overBudget")}</Tag>}
           </div>
           <EnergyLine className="mt-2" />
-          <div className="mt-2 max-w-[768px] text-ink-subtle">
-            <InlineText value={g.description} editable={editNotes} placeholder={t("goal.noDescription")} onSave={(v) => save({ description: v }, { description: v })} />
-          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           <Link href={`/tasks/?goal=${encodeURIComponent(g.id)}`} className="inline-flex"><Button icon={<IconTask />} tabIndex={-1}>{t("goal.viewTasks")}</Button></Link>
-          {canEdit && <Button variant={g.achieved ? "default" : "primary"} icon={g.achieved ? undefined : <IconCheck />} onClick={() => void toggleAchieved()} disabled={busy === "achieve"}>{g.achieved ? t("goal.unachieve") : t("goal.achieve")}</Button>}
+          {canEdit && (
+            <>
+              <Button variant="ghost" icon={<IconCancel />} disabled={busy === "abandon"} onClick={() => (abandoned ? void abandon() : setConfirming("abandon"))}>{abandoned ? t("goals.resume") : t("goals.abandon")}</Button>
+              <Tip tip={empty ? null : t("goals.deleteBlocked")} placement="bottom">
+                <Button variant="ghost" icon={<IconTrash />} disabled={!empty || busy === "delete"} onClick={() => setConfirming("delete")}>{t("common.delete")}</Button>
+              </Tip>
+              <Button variant={g.achieved ? "default" : "primary"} icon={g.achieved ? undefined : <IconCheck />} onClick={() => void toggleAchieved()} disabled={busy === "achieve"}>{g.achieved ? t("goal.unachieve") : t("goal.achieve")}</Button>
+            </>
+          )}
         </div>
       </div>
 
       {/* 主栏自适应，侧栏固定 380px（≥1920 时 420px） */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px] 3xl:grid-cols-[minmax(0,1fr)_420px]">
-        <div className="space-y-4">
-          <Panel index={1} title={t("goals.progress")}>
-            {/* 进度 = 96px 弧形仪表（舰内系统 v3 §3），旁边是完成数；预算仍用刻度进度条（可能超过 100%） */}
-            <div className="flex items-center gap-4">
-              <ArcGauge size={96} value={g.progress} tone={g.achieved ? "success" : "accent"} label={t("goals.progress")} delay={sprout ? 480 : 0} />
-              <span className="min-w-0">
-                <span className="block text-body text-ink-muted">{t("goal.tasksDone", { done: g.done_task_count, total: g.task_count })}</span>
-                {/* 下一步该干什么（DESIGN.md §9），与目标列表同一套判定 */}
-                <span className={cx("mt-1 block text-body", sum.tone === "danger" ? "text-danger" : sum.tone === "warning" ? "text-warning" : sum.tone === "accent" ? "text-accent-hover" : "text-ink-subtle")}>{sum.text}</span>
-              </span>
-            </div>
-            {g.budget !== null && (
-              <div className="mt-4">
-                <div className="mb-1 flex justify-between text-body">
-                  <span className="text-ink-muted">{t("goal.budget")}</span>
-                  <span className={cx("tabular-nums", over && "text-danger")}><Odometer value={fmtMoney(g.cost, currency)} /> / <Odometer value={fmtMoney(g.budget, currency)} /></span>
-                </div>
-                <ProgressBar value={g.budget ? (g.cost / g.budget) * 100 : 0} tone={over ? "danger" : "accent"} />
-                {over && <p className="mt-1 text-caption text-danger">{t("goal.overBudgetHint")}</p>}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] 3xl:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="space-y-6">
+          {/* ① 目标是什么 */}
+          <BriefSection n="01" title={t("goal.brief.what")} hint={t("goal.brief.whatHint")}>
+            <Panel title={t("goals.progress")}>
+              {/* 进度 = 96px 弧形仪表（舰内系统 v3 §3），旁边是完成数；预算仍用刻度进度条（可能超过 100%） */}
+              <div className="flex items-center gap-4">
+                <ArcGauge size={96} value={g.progress} tone={g.achieved ? "success" : "accent"} label={t("goals.progress")} delay={sprout ? 480 : 0} />
+                <span className="min-w-0">
+                  <span className="block text-body text-ink-muted">{t("goal.tasksDone", { done: g.done_task_count, total: g.task_count })}</span>
+                  {/* 下一步该干什么（DESIGN.md §9），与目标列表同一套判定 */}
+                  <span className={cx("mt-1 block text-body", sum.tone === "danger" ? "text-danger" : sum.tone === "warning" ? "text-warning" : sum.tone === "accent" ? "text-accent-hover" : "text-ink-subtle")}>{sum.text}</span>
+                </span>
               </div>
-            )}
-          </Panel>
-
-          {/* 里程碑（ADR 0016）：按日期列出，确认 / 撤销 / 编辑 / 删除，末尾一行内联新增 */}
-          <MilestonePanel goal={g} index={idx()} onChanged={goal.reload} />
-
-          {g.children.length > 0 && (
-            <Panel index={idx()} icon={<IconGoal />} title={t("goal.children")} telemetry={t("panel.rows", { n: g.children.length })} padded={false}>
-              <ul>
-                {g.children.map((c) => (
-                  <li key={c.id} className="flex h-10 items-center gap-4 border-b border-hairline px-4 last:border-b-0 hover:bg-surface-2">
-                    <Link href={`/goals/${encodeURIComponent(c.id)}/`} className="min-w-0 flex-1 truncate font-medium hover:text-accent-hover" title={c.title}>{c.title}</Link>
-                    <span className="inline-flex w-28 items-center gap-1.5 text-caption text-ink-muted"><Avatar name={c.owner.name} size={16} /><span className="truncate">{c.owner.name}</span></span>
-                    <div className="hidden w-32 sm:block"><ProgressBar value={c.progress} tone={c.achieved ? "success" : "accent"} /></div>
-                    <span className="w-9 text-right text-caption tabular-nums text-ink-muted">{c.progress}%</span>
-                  </li>
-                ))}
-              </ul>
+              <div className="mt-4 border-t border-hairline pt-4 text-ink-muted">
+                <InlineText value={g.description} editable={editNotes} placeholder={t("goal.noDescription")} onSave={(v) => save({ description: v }, { description: v })} />
+              </div>
             </Panel>
-          )}
+          </BriefSection>
 
-          <Panel index={idx()} icon={<IconTask />} title={t("goal.tasks")} telemetry={tasks.data ? t("panel.rows", { n: mine.length }) : undefined} padded={false} actions={<Link href={`/tasks/?goal=${encodeURIComponent(g.id)}`} className="text-caption text-ink-muted hover:text-accent-hover">{t("goal.filterTasks")}</Link>}>
-            {tasks.loading && !tasks.data ? <TableSkeleton rows={3} cols={6} /> : tasks.error ? <div className="p-4"><ErrorBox message={tasks.error} onRetry={tasks.reload} /></div> : <TaskTable tasks={mine} currency={currency} showGoal={g.children.length > 0} emptyText={t("goal.noTasks")} onChanged={tasks.reload} />}
-          </Panel>
+          {/* ② 上级目标与里程碑 */}
+          <BriefSection n="02" title={t("goal.brief.parents")} hint={t("goal.brief.parentsHint")}>
+            <Panel>
+              <InlineTable>
+                <InlineField label={t("goal.parent")} status={st("parent").status} error={st("parent").error}>
+                  <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
+                    {parents.slice(0, -1).map((p) => (
+                      <span key={p.id} className="inline-flex items-center gap-1 text-ink-muted">
+                        <Link href={`/goals/${encodeURIComponent(p.id)}/`} className="hover:text-accent-hover">{p.title}</Link>
+                        <span className="text-ink-tertiary">›</span>
+                      </span>
+                    ))}
+                    <InlineSelect value={g.parent_id} options={parentOptions} editable={editPlan} nullable nullLabel={t("inline.topGoal")} ariaLabel={t("goal.parent")} loading={tree.loading && !tree.data}
+                      display={g.parent_id ? <Link href={`/goals/${encodeURIComponent(g.parent_id)}/`} className="inl-text hover:text-accent-hover" onClick={(e) => editPlan && e.preventDefault()}>{parent?.title ?? g.parent_id}</Link> : <span className="text-ink-subtle">{t("inline.topGoal")}</span>}
+                      onChange={(pid) => patch("parent", { parent_id: pid ?? "" }, { parent_id: pid })} />
+                  </span>
+                </InlineField>
+                <InlineField label={t("goal.plannedStart")} status={st("planned_start").status} error={st("planned_start").error}>
+                  <InlineDate value={g.planned_start} editable={editPlan} withYear ariaLabel={t("goal.plannedStart")} onChange={(d) => patch("planned_start", { planned_start: d }, { planned_start: d })} />
+                </InlineField>
+                <InlineField label={t("goal.plannedEnd")} status={st("planned_end").status} error={st("planned_end").error}>
+                  <InlineDate value={g.planned_end} editable={editPlan} withYear ariaLabel={t("goal.plannedEnd")} onChange={(d) => patch("planned_end", { planned_end: d }, { planned_end: d })} />
+                </InlineField>
+                <InlineField label={t("goal.deadline")} status={st("deadline").status} error={st("deadline").error}>
+                  <InlineDate value={g.deadline ?? null} editable={editPlan} withYear ariaLabel={t("goal.deadline")} onChange={(d) => patch("deadline", { deadline: d }, { deadline: d })} />
+                </InlineField>
+              </InlineTable>
+            </Panel>
+            {/* 里程碑（ADR 0016）：按日期列出，确认 / 撤销 / 编辑 / 删除，末尾一行内联新增 */}
+            <MilestonePanel goal={g} onChanged={goal.reload} />
+          </BriefSection>
+
+          {/* ③ 任务与动态 */}
+          <BriefSection n="03" title={t("goal.brief.work")} hint={t("goal.brief.workHint")}>
+            {g.children.length > 0 && (
+              <Panel icon={<IconGoal />} title={t("goal.children")} telemetry={t("panel.rows", { n: g.children.length })} padded={false}>
+                <ul>
+                  {g.children.map((c) => (
+                    <li key={c.id} className="flex h-10 items-center gap-4 border-b border-hairline px-4 last:border-b-0 hover:bg-surface-2">
+                      <Link href={`/goals/${encodeURIComponent(c.id)}/`} className="min-w-0 flex-1 truncate font-medium hover:text-accent-hover" title={c.title}>{c.title}</Link>
+                      <span className="inline-flex w-28 items-center gap-1.5 text-caption text-ink-muted"><Avatar name={c.owner.name} size={16} /><span className="truncate">{c.owner.name}</span></span>
+                      <div className="hidden w-32 sm:block"><ProgressBar value={c.progress} tone={c.achieved ? "success" : "accent"} /></div>
+                      <span className="w-9 text-right text-caption tabular-nums text-ink-muted">{c.progress}%</span>
+                    </li>
+                  ))}
+                </ul>
+              </Panel>
+            )}
+            <Panel icon={<IconTask />} title={t("goal.tasks")} telemetry={tasks.data ? t("panel.rows", { n: mine.length }) : undefined} padded={false} actions={<span className="inline-flex items-center gap-2"><Link href={`/tasks/?goal=${encodeURIComponent(g.id)}`} className="text-caption text-ink-muted hover:text-accent-hover">{t("goal.filterTasks")}</Link><Link href={newTaskHref} className="inline-flex"><Button size="sm" icon={<IconPlus />} tabIndex={-1}>{t("tasks.new")}</Button></Link></span>}>
+              {tasks.loading && !tasks.data ? <TableSkeleton rows={3} cols={6} /> : tasks.error ? <div className="p-4"><ErrorBox message={tasks.error} onRetry={tasks.reload} /></div> : (
+                <TaskTable tasks={mine} currency={currency} showGoal={g.children.length > 0} emptyText={t("goal.noTasksHint")} emptyAction={<Link href={newTaskHref} className="inline-flex"><Button variant="primary" icon={<IconPlus />} tabIndex={-1}>{t("goal.newTask")}</Button></Link>} onChanged={tasks.reload} />
+              )}
+            </Panel>
+            <Panel icon={<IconLog />} title={t("goal.events")}>
+              {events.loading && !events.data ? <ListSkeleton rows={4} /> : <EventList events={(events.data ?? []).filter((e) => e.goal_id === g.id)} poll={{ limit: 200, filter: (e) => e.goal_id === g.id }} />}
+            </Panel>
+          </BriefSection>
+
+          {/* ④ 负责人、预算与成本 */}
+          <BriefSection n="04" title={t("goal.brief.owner")} hint={t("goal.brief.ownerHint")}>
+            <Panel>
+              <InlineTable>
+                <InlineField label={t("goal.owner")} status={st("owner").status} error={st("owner").error}>
+                  <InlineSelect value={g.owner.id} options={memberOptions} editable={editPlan} ariaLabel={t("goal.owner")} loading={ex.loading && !ex.data}
+                    display={<span className="inline-flex min-w-0 items-center gap-1.5"><Avatar name={g.owner.name} /><span className="inl-text">{g.owner.name}</span></span>}
+                    onChange={(mid) => { const m = members.find((x) => x.id === mid); if (mid && m) patch("owner", { owner_id: mid }, { owner: { id: m.id, kind: "member", name: m.name } }); }} />
+                </InlineField>
+                <InlineField label={t("goal.team")} status={st("team").status} error={st("team").error}>
+                  <InlineSelect value={g.team_id} options={teamOptions} editable={editPlan} nullable nullLabel={t("goalDialog.noTeam")} ariaLabel={t("goal.team")}
+                    display={teamName ? <span className="inl-text">{teamName}</span> : <span className="text-ink-subtle">{t("goalDialog.noTeam")}</span>}
+                    onChange={(tid) => patch("team", { team_id: tid ?? "" }, { team_id: tid })} />
+                </InlineField>
+                <InlineField label={t("goal.budget")} status={st("budget").status} error={st("budget").error}>
+                  <InlineNumber value={g.budget} editable={editPlan} min={0} step={0.01} prefix={currencySymbol(currency)} format={(v) => fmtNumber(v)} placeholder={t("goal.budgetUnset")} ariaLabel={t("goal.budget")} onChange={(v) => patch("budget", { budget: v }, { budget: v })} />
+                </InlineField>
+                <InlineField label={t("goal.cost")}>
+                  <span className="flex min-w-0 flex-col gap-1">
+                    <span className={cx("tabular-nums", over && "text-danger")}><Odometer value={fmtMoney(g.cost, currency)} />{g.budget !== null && <> / <Odometer value={fmtMoney(g.budget, currency)} /></>}</span>
+                    {g.budget !== null && <ProgressBar value={g.budget ? (g.cost / g.budget) * 100 : 0} tone={over ? "danger" : "accent"} className="w-40" />}
+                    {over && <span className="text-caption text-danger">{t("goal.overBudgetHint")}</span>}
+                  </span>
+                </InlineField>
+              </InlineTable>
+            </Panel>
+          </BriefSection>
         </div>
 
         <div className="space-y-4">
-          <Panel index={2} title={t("goal.info")}>
+          <Panel title={t("goal.info")}>
             <InlineTable>
               <InlineField label={t("common.id")}><IdLine id={g.id} /></InlineField>
-              <InlineField label={t("goal.owner")} status={st("owner").status} error={st("owner").error}>
-                <InlineSelect value={g.owner.id} options={memberOptions} editable={editPlan} ariaLabel={t("goal.owner")} loading={ex.loading && !ex.data}
-                  display={<span className="inline-flex min-w-0 items-center gap-1.5"><Avatar name={g.owner.name} /><span className="inl-text">{g.owner.name}</span></span>}
-                  onChange={(mid) => { const m = members.find((x) => x.id === mid); if (mid && m) patch("owner", { owner_id: mid }, { owner: { id: m.id, kind: "member", name: m.name } }); }} />
-              </InlineField>
-              <InlineField label={t("goal.team")} status={st("team").status} error={st("team").error}>
-                <InlineSelect value={g.team_id} options={teamOptions} editable={editPlan} nullable nullLabel={t("goalDialog.noTeam")} ariaLabel={t("goal.team")}
-                  display={teamName ? <span className="inl-text">{teamName}</span> : <span className="text-ink-subtle">{t("goalDialog.noTeam")}</span>}
-                  onChange={(tid) => patch("team", { team_id: tid ?? "" }, { team_id: tid })} />
-              </InlineField>
-              <InlineField label={t("goal.parent")} status={st("parent").status} error={st("parent").error}>
-                <InlineSelect value={g.parent_id} options={parentOptions} editable={editPlan} nullable nullLabel={t("inline.topGoal")} ariaLabel={t("goal.parent")} loading={tree.loading && !tree.data}
-                  display={g.parent_id ? <Link href={`/goals/${encodeURIComponent(g.parent_id)}/`} className="inl-text hover:text-accent-hover" onClick={(e) => editPlan && e.preventDefault()}>{parent?.title ?? g.parent_id}</Link> : <span className="text-ink-subtle">{t("inline.topGoal")}</span>}
-                  onChange={(pid) => patch("parent", { parent_id: pid ?? "" }, { parent_id: pid })} />
-              </InlineField>
-              <InlineField label={t("goal.plannedStart")} status={st("planned_start").status} error={st("planned_start").error}>
-                <InlineDate value={g.planned_start} editable={editPlan} withYear ariaLabel={t("goal.plannedStart")} onChange={(d) => patch("planned_start", { planned_start: d }, { planned_start: d })} />
-              </InlineField>
-              <InlineField label={t("goal.plannedEnd")} status={st("planned_end").status} error={st("planned_end").error}>
-                <InlineDate value={g.planned_end} editable={editPlan} withYear ariaLabel={t("goal.plannedEnd")} onChange={(d) => patch("planned_end", { planned_end: d }, { planned_end: d })} />
-              </InlineField>
-              <InlineField label={t("goal.deadline")} status={st("deadline").status} error={st("deadline").error}>
-                <InlineDate value={g.deadline ?? null} editable={editPlan} withYear ariaLabel={t("goal.deadline")} onChange={(d) => patch("deadline", { deadline: d }, { deadline: d })} />
-              </InlineField>
               <InlineField label={t("goal.actual")}>{`${fmtDate(g.actual_start, true)} – ${g.actual_end ? fmtDate(g.actual_end, true) : t("common.inProgress")}`}</InlineField>
-              <InlineField label={t("goal.cost")}><Odometer value={fmtMoney(g.cost, currency)} /></InlineField>
-              <InlineField label={t("goal.budget")} status={st("budget").status} error={st("budget").error}>
-                <InlineNumber value={g.budget} editable={editPlan} min={0} step={0.01} prefix={currencySymbol(currency)} format={(v) => fmtNumber(v)} placeholder={t("goal.budgetUnset")} ariaLabel={t("goal.budget")} onChange={(v) => patch("budget", { budget: v }, { budget: v })} />
-              </InlineField>
+              <InlineField label={t("goals.tasksLabel")}>{`${g.done_task_count}/${g.task_count}`}</InlineField>
+              <InlineField label={t("goal.children")}>{childCount > 0 ? t("goals.childCount", { n: childCount }) : <span className="text-ink-subtle">{t("common.none")}</span>}</InlineField>
             </InlineTable>
-          </Panel>
-          <Panel index={idx()} icon={<IconLog />} title={t("goal.events")}>
-            {events.loading && !events.data ? <ListSkeleton rows={4} /> : <EventList events={(events.data ?? []).filter((e) => e.goal_id === g.id)} poll={{ limit: 200, filter: (e) => e.goal_id === g.id }} />}
           </Panel>
         </div>
       </div>
+
+      {/* 放弃：写清会影响几个子目标和任务；删除只对空目标开放 */}
+      <ConsequenceDialog
+        open={confirming === "abandon"}
+        title={t("goals.abandonTitle", { title: g.title })}
+        effects={[
+          childCount > 0 ? t("goals.abandonEffect.children", { n: childCount }) : null,
+          openTasks > 0 ? t("goals.abandonEffect.tasks", { n: openTasks }) : t("goals.abandonEffect.noOpenTasks"),
+          t("goals.abandonEffect.kept"),
+        ]}
+        confirmLabel={t("goals.abandon")}
+        danger
+        busy={busy === "abandon"}
+        onConfirm={() => void abandon()}
+        onClose={() => setConfirming(null)}
+      />
+      <ConsequenceDialog
+        open={confirming === "delete"}
+        title={t("goals.deleteTitle")}
+        effects={[t("goals.deleteMessage", { title: g.title })]}
+        confirmLabel={t("common.delete")}
+        danger
+        busy={busy === "delete"}
+        onConfirm={() => void remove()}
+        onClose={() => setConfirming(null)}
+      />
     </div>
   );
 }

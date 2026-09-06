@@ -27,6 +27,7 @@ const (
 	ActionTaskNote          = "task.note"
 	ActionTaskArtifact      = "task.artifact"
 	ActionTaskLink          = "task.link"
+	ActionTaskExternalLink  = "task.external_link"
 	ActionTaskCreate        = "task.create"
 	ActionTaskCreateSubtask = "task.create_subtask"
 	ActionTaskUpdate        = "task.update"
@@ -161,7 +162,8 @@ func (a *App) createProposal(ctx context.Context, tx pgx.Tx, sess *Session, d pr
 	if p.TargetKind == "task" {
 		n.TaskID = p.TargetID
 	}
-	if err := a.Store.InsertNotification(ctx, tx, sess.OrgID, n); err != nil {
+	// 外发（ADR 0019）：待确认操作按所有者的规则排进投递表，链接指向首页（在「待我处理」里确认）
+	if err := a.notifyAndDeliver(ctx, tx, sess.OrgID, domain.NotifyProposal, n, a.deliveryLink("", "")); err != nil {
 		return nil, err
 	}
 	return a.proposalView(ctx, tx, sess, p)
@@ -484,6 +486,8 @@ func (a *App) runProposal(ctx context.Context, sess *Session, p *domain.Proposal
 		return a.AddArtifact(ctx, sess, p.TargetID, art)
 	case ActionTaskLink:
 		return a.Link(ctx, sess, p.TargetID, domain.RelationType(payloadStr(p.Payload, "type")), payloadStr(p.Payload, "other_id"))
+	case ActionTaskExternalLink:
+		return a.AddTaskLink(ctx, sess, p.TargetID, LinkInput{Kind: payloadStr(p.Payload, "kind"), URL: payloadStr(p.Payload, "url"), Title: payloadStr(p.Payload, "title")})
 	case ActionTaskUpdate:
 		var in UpdateTaskInput
 		if err := fromPayload(p.Payload, &in); err != nil {

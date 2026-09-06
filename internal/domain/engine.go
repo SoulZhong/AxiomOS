@@ -349,7 +349,10 @@ func CanBegin(c *Context, actor *Executor) []Reason {
 	t := c.Task
 	s := c.Type.Workflow.State(t.State)
 	var reasons []Reason
-	if s == nil || s.Label != LabelActive {
+	switch {
+	case s != nil && s.Label.IsTerminal():
+		reasons = append(reasons, i18n.M("reject.task_closed"))
+	case s == nil || s.Label != LabelActive:
 		reasons = append(reasons, i18n.M("reject.not_active"))
 	}
 	if !isPrincipal(actor, t.AssigneeID) {
@@ -380,7 +383,9 @@ func CanClaim(c *Context, actor *Executor) []Reason {
 	if t.AssigneeID != "" {
 		reasons = append(reasons, i18n.M("reject.has_assignee"))
 	}
-	if s == nil || (!s.Claimable && s.Label != LabelActive) {
+	if s != nil && s.Label.IsTerminal() {
+		reasons = append(reasons, i18n.M("reject.task_closed"))
+	} else if s == nil || (!s.Claimable && s.Label != LabelActive) {
 		var title any = t.State
 		if s != nil {
 			title = s.Title
@@ -449,6 +454,9 @@ func (c *Context) closeRun(o *Outcome, actorID string, outcome RunOutcome) {
 // Apply 触发流程里的一步。失败返回 *Rejection。
 func Apply(c *Context, actor *Executor, name string, p Payload) (*Outcome, error) {
 	t, wf := c.Task, &c.Type.Workflow
+	if cur := wf.State(t.State); cur != nil && cur.Label.IsTerminal() {
+		return nil, reject("reject.task_closed")
+	}
 	var found *Availability
 	for _, a := range Available(c, actor, p) {
 		if a.Transition.Name == name {
@@ -465,13 +473,27 @@ func Apply(c *Context, actor *Executor, name string, p Payload) (*Outcome, error
 	if found.NeedsApproval {
 		return nil, needsApproval(grantOf(found.Transition))
 	}
-	tr := found.Transition
+	// 进入进行中且会为自己开执行记录的 Agent，同样受最多同时任务数约束（与领取、开始执行一致）
+	if toDef := wf.State(found.Transition.To); toDef != nil && toDef.Label == LabelActive && actor.Kind == ExecutorAgent &&
+		isPrincipal(actor, t.AssigneeID) && !t.HumanOnly && c.ActiveRun == nil && c.ActorRuns >= maxConcurrent(actor) {
+		return nil, reject("reject.concurrency")
+	}
+	return applyStep(c, actor, found.Transition, p)
+}
+
+// applyStep 走完一步的全部副作用：评论与结果、结束 / 开始执行记录、改状态、切负责人、发动态。
+// 调用方已经做完可用性判断（Apply 与外部事件触发共用这一段，ADR 0020）。
+func applyStep(c *Context, actor *Executor, tr Transition, p Payload) (*Outcome, error) {
+	t, wf := c.Task, &c.Type.Workflow
 	from := t.State
 	to := tr.To
 	if to == "$previous" {
 		to = t.PreviousState
 	}
 	fromDef, toDef := wf.State(from), wf.State(to)
+	if fromDef == nil {
+		return nil, reject("reject.bad_state", from)
+	}
 	if toDef == nil {
 		return nil, reject("reject.bad_state", to)
 	}
@@ -549,8 +571,9 @@ func Apply(c *Context, actor *Executor, name string, p Payload) (*Outcome, error
 		o.emit(c, "TaskSentToBacklog", actor.ID, nil)
 	}
 
-	// 进入进行中：只有触发者本人就是（或代表）负责人时才开始执行记录（ADR 0006）
-	if toDef.Label == LabelActive && isPrincipal(actor, t.AssigneeID) && !(actor.Kind == ExecutorAgent && t.HumanOnly) {
+	// 进入进行中：只有触发者本人就是（或代表）负责人时才开始执行记录（ADR 0006）。
+	// 外部事件不是执行者，永远不为谁开执行记录。
+	if toDef.Label == LabelActive && actor.Kind != ExecutorExternal && isPrincipal(actor, t.AssigneeID) && !(actor.Kind == ExecutorAgent && t.HumanOnly) {
 		c.openRun(o, actor.ID)
 	}
 	return o, nil

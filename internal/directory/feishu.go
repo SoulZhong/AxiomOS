@@ -36,6 +36,12 @@ func init() {
 		},
 		New:        func(creds map[string]string, opts Options) (Directory, error) { return NewFeishu(creds, opts) },
 		ConsoleURL: func(creds map[string]string) string { return feishuConsoleURL(creds["app_id"], "baseinfo") },
+		// 发消息（ADR 0019）：同一个应用，不用多填凭据；要开通「以应用的身份发消息」权限并发布版本。
+		MessagingPrerequisites: []i18n.Text{
+			i18n.T("为应用开通「以应用的身份发消息」权限（获取与发送单聊、群组消息），并发布版本", "Grant the app the “Send messages as the app” permission and release a version"),
+			i18n.T("在「应用能力」里启用机器人", "Enable the bot capability under “App capabilities”"),
+		},
+		NewMessenger: func(creds map[string]string, opts Options) (Messenger, error) { return NewFeishu(creds, opts) },
 	})
 }
 
@@ -626,4 +632,86 @@ func firstNamed(items []feishuDept) string {
 		}
 	}
 	return ""
+}
+
+// ---------- 发消息（ADR 0019） ----------
+
+// feishuCard 拼一张只有一句话和一个按钮的消息卡片；没有链接时退化成纯文本消息。
+func feishuCard(msg Message) (msgType, content string) {
+	if msg.URL == "" {
+		text := msg.Title
+		if msg.Text != "" && msg.Text != msg.Title {
+			text += "\n" + msg.Text
+		}
+		b, _ := json.Marshal(map[string]string{"text": text})
+		return "text", string(b)
+	}
+	open := msg.Open
+	if open == "" {
+		open = "打开"
+	}
+	elements := []any{}
+	if msg.Text != "" && msg.Text != msg.Title {
+		elements = append(elements, map[string]any{"tag": "div", "text": map[string]string{"tag": "plain_text", "content": msg.Text}})
+	}
+	elements = append(elements, map[string]any{"tag": "action", "actions": []any{
+		map[string]any{"tag": "button", "type": "primary", "url": msg.URL, "text": map[string]string{"tag": "plain_text", "content": open}},
+	}})
+	card := map[string]any{
+		"config":   map[string]any{"wide_screen_mode": true},
+		"header":   map[string]any{"title": map[string]string{"tag": "plain_text", "content": msg.Title}},
+		"elements": elements,
+	}
+	b, _ := json.Marshal(card)
+	return "interactive", string(b)
+}
+
+// SendDirect 以应用身份给一个人发私聊：POST /open-apis/im/v1/messages?receive_id_type=open_id，
+// 消息是一张只有一句话和一个「打开」按钮的卡片（需要「以应用的身份发消息」权限）。
+func (f *Feishu) SendDirect(ctx context.Context, openID string, msg Message) error {
+	msgType, content := feishuCard(msg)
+	_, err := f.do(ctx, http.MethodPost, "/open-apis/im/v1/messages", url.Values{"receive_id_type": {"open_id"}},
+		map[string]string{"receive_id": openID, "msg_type": msgType, "content": content}, true)
+	return err
+}
+
+// feishuBotNotEnabled 是"应用没有启用机器人能力"的错误码。
+const feishuBotNotEnabled = 230002
+
+// DiagnoseMessaging 检查「能以应用身份发消息」：往一个不存在的收件人发一条消息试探——没有发消息权限时飞书报
+// 权限类错误码（99991672 一类），机器人没启用时报 230002，其余拒绝（收件人不存在之类）说明权限已经有了。
+// 这样不会真的给任何人发出消息。
+func (f *Feishu) DiagnoseMessaging(ctx context.Context) Check {
+	c := Check{Key: MessagingCheckKey, Title: T("能以应用身份发消息", "Can send messages as the app")}
+	authURL := feishuConsoleURL(f.appID, "auth")
+	err := f.SendDirect(ctx, "ou_axiomos_probe_no_such_user", Message{Title: "AxiomOS", Text: "probe"})
+	if err == nil {
+		c.Status = CheckOK
+		c.Detail = T("飞书接受了以应用身份发出的消息。", "Feishu accepted a message sent as the app.")
+		return c
+	}
+	var un *UnreachableError
+	if errors.As(err, &un) {
+		c.Status = CheckTodo
+		c.Detail = rawText("连不上飞书：%s。", "Could not reach Feishu: %s.", un.Err.Error())
+		c.Fix = T("检查服务器的网络或出网代理设置，然后重新检查。", "Check the server's network or outbound proxy setting, then re-check.")
+		return c
+	}
+	code, msg, _ := rejectedCode(err)
+	switch {
+	case feishuPermissionCode(code):
+		c.Status = CheckTodo
+		c.Detail = rawText("试发一条消息时飞书说：%s。缺少的权限：以应用的身份发消息（im:message）。没有它时待确认操作与验收提醒发不到飞书，只在站内。", "Trying to send a message, Feishu said: %s. Missing permission: send messages as the app (im:message). Without it, reminders stay in-app only.", msg)
+		c.Fix = T("在「权限管理」搜索并开通「以应用的身份发消息」，然后发布版本；不需要 IM 提醒也可以先跳过。", "Under “Permissions” search for and enable “Send messages as the app”, then release a version; skip it if IM reminders are not needed.")
+		c.FixURL = authURL
+	case code == feishuBotNotEnabled:
+		c.Status = CheckTodo
+		c.Detail = rawText("试发一条消息时飞书说：%s。应用还没有启用机器人能力。", "Trying to send a message, Feishu said: %s. The app's bot capability is not enabled.", msg)
+		c.Fix = T("在「应用能力」里添加机器人，然后发布版本。", "Under “App capabilities” add the bot, then release a version.")
+		c.FixURL = feishuConsoleURL(f.appID, "bot")
+	default:
+		c.Status = CheckOK
+		c.Detail = rawText("飞书认可了发消息的权限（试发给一个不存在的人时它说：%s）。", "Feishu recognised the messaging permission (sending to a non-existent user, it said: %s).", msg)
+	}
+	return c
 }

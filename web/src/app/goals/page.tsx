@@ -6,6 +6,7 @@ import { t } from "@/lib/i18n";
 import { useFadeOnChange } from "@/lib/useFadeOnChange";
 import { flattenGoals, GoalDrawer } from "@/components/GoalDrawer";
 import { IconGanttFlight, IconGoal, IconPlus } from "@/components/icons";
+import { useShortcutHandler } from "@/components/shortcuts";
 import { Button, PageHeader, Tabs } from "@/components/ui";
 import { GoalGanttView } from "./GoalGanttView";
 import { TreeView } from "./TreeView";
@@ -21,6 +22,7 @@ const isView = (v: unknown): v is GoalView => typeof v === "string" && (VIEWS as
 
 export default function GoalsPage() {
   const qView = useQueryParam("view");
+  const qNew = useQueryParam("new");
   const view: GoalView = isView(qView) ? qView : "tree";
   const switchView = useCallback((v: GoalView) => setQueryParams({ view: v === "tree" ? null : v }), []);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -33,6 +35,13 @@ export default function GoalsPage() {
   const goals = useLoad(() => api.goals.list(), [reloadKey]);
   const flat = useMemo(() => flattenGoals(goals.data ?? []), [goals.data]);
   const openNew = useCallback(() => setCreating(null), []);
+  // 新建目标：页头按钮、g c 快捷键、?new=1（快速命令 / 快捷键跨页跳来）都开同一个抽屉
+  useShortcutHandler("new-goal", openNew);
+  const [seenNew, setSeenNew] = useState<string | null>(null);
+  if (qNew !== seenNew) {
+    setSeenNew(qNew);
+    if (qNew) setCreating(null);
+  }
 
   return (
     <div>
@@ -41,7 +50,7 @@ export default function GoalsPage() {
       <div ref={bodyRef} data-view={view}>
         {view === "tree" ? <TreeView reloadKey={reloadKey} highlight={highlight} onAddChild={(id) => setCreating(id)} onNew={openNew} /> : <GoalGanttView reloadKey={reloadKey} highlight={highlight} onNew={openNew} />}
       </div>
-      <GoalDrawer open={creating !== false} parentId={creating === false ? null : creating} goals={flat} onClose={() => setCreating(false)} onCreated={(g) => { mark(g.id); setReloadKey((k) => k + 1); }} />
+      <GoalDrawer open={creating !== false} parentId={creating === false ? null : creating} goals={flat} onClose={() => { setCreating(false); if (qNew) setQueryParams({ new: null }); }} onCreated={(g) => { mark(g.id); setReloadKey((k) => k + 1); }} />
     </div>
   );
 }

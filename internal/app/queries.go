@@ -26,11 +26,14 @@ type TaskDetail struct {
 	Subtasks []TaskSummary     `json:"subtasks"`
 	Names    map[string]string `json:"names"`
 	Overdue  bool              `json:"overdue"`
+	// Links 是任务上的外部链接（ADR 0020），详情③段显示。
+	Links []LinkView `json:"links"`
 }
 
 // TaskSummary 是列表里的任务摘要。
 type TaskSummary struct {
 	ID           string     `json:"id"`
+	Number       int        `json:"number"`
 	Title        string     `json:"title"`
 	TypeName     string     `json:"type_name"`
 	TypeTitle    string     `json:"type_title"`
@@ -56,10 +59,40 @@ type TaskSummary struct {
 	Points       *int       `json:"points,omitempty"`   // 工作量
 	SprintID     string     `json:"sprint_id,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
+	// PR 是列表行上的 PR 小标（ADR 0020）：最近一条 PR 类外部链接的状态。
+	PR *TaskPR `json:"pr,omitempty"`
+}
+
+// TaskPR 是任务卡片 / 列表行上的 PR 小标。
+type TaskPR struct {
+	Status      string `json:"status"`
+	StatusTitle string `json:"status_title"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	Count       int    `json:"count"` // 这个任务上一共挂了几条 PR
+}
+
+// prOf 从一个任务的外部链接里挑出 PR 小标：优先最近更新的那条。
+func prOf(links []*store.ExternalLink, loc i18n.Locale) *TaskPR {
+	var best *store.ExternalLink
+	n := 0
+	for _, l := range links {
+		if l.Kind != "pr" {
+			continue
+		}
+		n++
+		if best == nil || l.UpdatedAt.After(best.UpdatedAt) {
+			best = l
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return &TaskPR{Status: best.Status, StatusTitle: LinkStatusTitle(best.Status, loc), URL: best.URL, Title: best.Title, Count: n}
 }
 
 func summarize(t *domain.Task, tt *domain.TaskType, names map[string]string, cost float64, now time.Time, loc i18n.Locale) TaskSummary {
-	s := TaskSummary{ID: t.ID, Title: t.Title, TypeName: t.TypeName, AssigneeID: t.AssigneeID, Assignee: names[t.AssigneeID], CreatorID: t.CreatorID, ReviewerID: t.ReviewerID, GoalID: t.GoalID, ParentID: t.ParentID, Priority: t.Priority,
+	s := TaskSummary{ID: t.ID, Number: t.Number, Title: t.Title, TypeName: t.TypeName, AssigneeID: t.AssigneeID, Assignee: names[t.AssigneeID], CreatorID: t.CreatorID, ReviewerID: t.ReviewerID, GoalID: t.GoalID, ParentID: t.ParentID, Priority: t.Priority,
 		PlannedStart: t.PlannedStart, PlannedEnd: t.PlannedEnd, ActualStart: t.ActualStart, ActualEnd: t.ActualEnd, RequiredRole: t.RequiredRole, Cost: cost, HumanOnly: t.HumanOnly, Points: t.Points, SprintID: t.SprintID, CreatedAt: t.CreatedAt}
 	if tt != nil {
 		s.TypeTitle = tt.Title.In(loc)
@@ -95,7 +128,14 @@ func (a *App) GetTaskDetail(ctx context.Context, sess *Session, id string) (*Tas
 		for _, r := range runs {
 			cost += r.Cost
 		}
-		d = &TaskDetail{Task: c.Task, Type: c.Type, Progress: domain.Progress(c.Task, c.Type), Runs: runs, Cost: cost, Workflow: a.workflowView(c, sess), Names: names, Related: []TaskSummary{}, Subtasks: []TaskSummary{}}
+		d = &TaskDetail{Task: c.Task, Type: c.Type, Progress: domain.Progress(c.Task, c.Type), Runs: runs, Cost: cost, Workflow: a.workflowView(c, sess), Names: names, Related: []TaskSummary{}, Subtasks: []TaskSummary{}, Links: []LinkView{}}
+		links, err := a.Store.LinksOfTask(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		for _, l := range links {
+			d.Links = append(d.Links, linkView(l, sess.Loc()))
+		}
 		d.State = d.Workflow.State
 		now := time.Now()
 		d.Overdue = c.Task.PlannedEnd != nil && c.Task.PlannedEnd.Before(now) && !d.State.Label.IsTerminal()
@@ -160,6 +200,8 @@ type TaskBrief struct {
 	PredecessorResults []PredecessorResult `json:"predecessor_results"`
 	Workflow           *WorkflowView       `json:"workflow"`
 	Names              map[string]string   `json:"names"`
+	// Links 是任务上的外部链接（ADR 0020）。
+	Links []LinkView `json:"links"`
 }
 
 // PredecessorResult 是前置任务的结果与交付物。
@@ -179,8 +221,15 @@ func (a *App) Brief(ctx context.Context, sess *Session, id string) (*TaskBrief, 
 			return err
 		}
 		names, _ := a.Store.ExecutorNames(ctx, tx)
-		b = &TaskBrief{Task: c.Task, TypeTitle: c.Type.Title.In(sess.Loc()), AgentInstructions: c.Type.AgentInstructions, TaskSchema: c.Type.TaskSchema, ResultSchema: c.Type.ResultSchema, Workflow: a.workflowView(c, sess), Names: names, GoalChain: []string{}, Predecessors: []TaskSummary{}, PredecessorResults: []PredecessorResult{}}
+		b = &TaskBrief{Task: c.Task, TypeTitle: c.Type.Title.In(sess.Loc()), AgentInstructions: c.Type.AgentInstructions, TaskSchema: c.Type.TaskSchema, ResultSchema: c.Type.ResultSchema, Workflow: a.workflowView(c, sess), Names: names, GoalChain: []string{}, Predecessors: []TaskSummary{}, PredecessorResults: []PredecessorResult{}, Links: []LinkView{}}
 		b.State = b.Workflow.State
+		links, err := a.Store.LinksOfTask(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		for _, l := range links {
+			b.Links = append(b.Links, linkView(l, sess.Loc()))
+		}
 		for gid := c.Task.GoalID; gid != ""; {
 			g, err := a.Store.GoalByID(ctx, tx, gid)
 			if err != nil {
@@ -228,12 +277,18 @@ func (a *App) ListTaskSummaries(ctx context.Context, sess *Session, f store.Task
 		for _, r := range runs {
 			cost[r.TaskID] += r.Cost
 		}
+		ids := make([]string, 0, len(tasks))
+		for _, t := range tasks {
+			ids = append(ids, t.ID)
+		}
+		links, err := a.Store.LinksOfTasks(ctx, tx, ids)
+		if err != nil {
+			return err
+		}
 		now := time.Now()
 		for _, t := range tasks {
 			s := summarize(t, types[t.TypeName], names, cost[t.ID], now, sess.Loc())
-			for _, r := range t.Relations {
-				_ = r
-			}
+			s.PR = prOf(links[t.ID], sess.Loc())
 			out = append(out, s)
 		}
 		return nil

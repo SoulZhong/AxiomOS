@@ -11,7 +11,7 @@ import { IconApprove, IconChevronRight, IconPlay } from "@/components/icons";
 import { HELM_MS } from "@/components/proposals/RejectDialog";
 import { refreshShipTelemetry } from "@/components/ship-status/telemetry";
 import { useToast } from "@/components/toast";
-import { Avatar, Button, RelativeTime, Tag, Tip, cx } from "@/components/ui";
+import { Avatar, Button, RelativeTime, Tag, Tip, cx, TaskNumber } from "@/components/ui";
 import type { CompactRow } from "@/components/blocks/BlockPanel";
 
 /*
@@ -249,7 +249,7 @@ export function compactRows(ib: ReturnType<typeof useInbox>): CompactRow[] {
         title = n.task_id ? <Link href={taskHref(n.task_id)} className="block truncate hover:text-accent-hover">{n.title}</Link> : <span className="block truncate">{n.title}</span>;
       } else {
         const task = it as InboxTask;
-        title = <Link href={taskHref(task.id)} className="block truncate hover:text-accent-hover">{task.title}</Link>;
+        title = <Link href={taskHref(task.id)} className="block truncate hover:text-accent-hover"><TaskNumber n={task.number} className="mr-1" />{task.title}</Link>;
       }
       rows.push({ key, title, meta });
     }
@@ -380,7 +380,7 @@ function TaskRow({ kind, task, onBegin }: { kind: "overdue" | "review" | "unstar
   return (
     <>
       <Link href={taskHref(task.id)} className="min-w-0 flex-1 hover:text-accent-hover">
-        <span className="block truncate text-body text-ink">{task.title}</span>
+        <span className="block truncate text-body text-ink"><TaskNumber n={task.number} className="mr-1" />{task.title}</span>
         <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-caption text-ink-subtle">
           {meta.map((m, i) => (
             <span key={i} className="inline-flex min-w-0 items-center gap-1.5">

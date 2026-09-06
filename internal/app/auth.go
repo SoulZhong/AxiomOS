@@ -228,13 +228,13 @@ type RegisterAgentInput struct {
 	OwnerMemberID string                            `json:"owner_member_id"` // 公共 Agent 由组织负责人注册
 }
 
-// RegisterAgent 注册 Agent，返回一次性令牌。授权不得超出所有者权限（ADR 0003）。
-func (a *App) RegisterAgent(ctx context.Context, sess *Session, in RegisterAgentInput) (*domain.Agent, string, error) {
+// validateRegisterAgent 是注册前的输入整理：名称必填、默认授权、并发上限、运行时。
+func (a *App) validateRegisterAgent(sess *Session, in *RegisterAgentInput) error {
 	if sess.IsAgent() {
-		return nil, "", Forbidden("err.agent_cant_register")
+		return Forbidden("err.agent_cant_register")
 	}
 	if strings.TrimSpace(in.Name) == "" {
-		return nil, "", Bad("err.agent_name")
+		return Bad("err.agent_name")
 	}
 	if in.Grants == nil {
 		in.Grants = map[domain.Grant]domain.GrantMode{domain.GrantExecute: domain.GrantDirect, domain.GrantComment: domain.GrantDirect}
@@ -245,35 +245,53 @@ func (a *App) RegisterAgent(ctx context.Context, sess *Session, in RegisterAgent
 	if in.Runtime == "" {
 		in.Runtime = "custom"
 	}
+	return nil
+}
+
+// createAgent 在事务里创建 Agent 并返回一次性令牌；不写动态，由调用方按场景记（注册 / 设备码接入）。
+func (a *App) createAgent(ctx context.Context, tx pgx.Tx, sess *Session, in RegisterAgentInput) (*domain.Agent, string, error) {
+	org, err := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
+	if err != nil {
+		return nil, "", err
+	}
+	owner := sess.MemberID
+	if in.Shared {
+		if org.OwnerMemberID != sess.MemberID {
+			return nil, "", Forbidden("err.shared_owner_only")
+		}
+		owner = org.OwnerMemberID
+	}
+	// 管理流程只能是需要人确认
+	if _, ok := in.Grants[domain.GrantManageWorkflows]; ok {
+		in.Grants[domain.GrantManageWorkflows] = domain.GrantWithApproval
+	}
+	caps, err := a.Store.ListCapabilities(ctx, tx)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, c := range in.Capabilities {
+		if _, ok := caps[c]; !ok {
+			return nil, "", Bad("err.cap_unknown", c)
+		}
+	}
+	ag := &domain.Agent{OrgID: sess.OrgID, OwnerMemberID: owner, Name: strings.TrimSpace(in.Name), Runtime: in.Runtime, Capabilities: in.Capabilities, Grants: in.Grants, MaxConcurrent: in.MaxConcurrent, Shared: in.Shared}
+	token, err := a.Store.CreateAgent(ctx, tx, ag)
+	if err != nil {
+		return nil, "", err
+	}
+	return ag, token, nil
+}
+
+// RegisterAgent 注册 Agent，返回一次性令牌。授权不得超出所有者权限（ADR 0003）。
+func (a *App) RegisterAgent(ctx context.Context, sess *Session, in RegisterAgentInput) (*domain.Agent, string, error) {
+	if err := a.validateRegisterAgent(sess, &in); err != nil {
+		return nil, "", err
+	}
 	var ag *domain.Agent
 	var token string
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
-		org, err := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
-		if err != nil {
-			return err
-		}
-		owner := sess.MemberID
-		if in.Shared {
-			if org.OwnerMemberID != sess.MemberID {
-				return Forbidden("err.shared_owner_only")
-			}
-			owner = org.OwnerMemberID
-		}
-		// 管理流程只能是需要人确认
-		if _, ok := in.Grants[domain.GrantManageWorkflows]; ok {
-			in.Grants[domain.GrantManageWorkflows] = domain.GrantWithApproval
-		}
-		caps, err := a.Store.ListCapabilities(ctx, tx)
-		if err != nil {
-			return err
-		}
-		for _, c := range in.Capabilities {
-			if _, ok := caps[c]; !ok {
-				return Bad("err.cap_unknown", c)
-			}
-		}
-		ag = &domain.Agent{OrgID: sess.OrgID, OwnerMemberID: owner, Name: in.Name, Runtime: in.Runtime, Capabilities: in.Capabilities, Grants: in.Grants, MaxConcurrent: in.MaxConcurrent, Shared: in.Shared}
-		token, err = a.Store.CreateAgent(ctx, tx, ag)
+		var err error
+		ag, token, err = a.createAgent(ctx, tx, sess, in)
 		if err != nil {
 			return err
 		}

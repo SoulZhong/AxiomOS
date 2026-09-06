@@ -90,6 +90,41 @@ type TenantNamer interface {
 	TenantName(ctx context.Context) (string, error)
 }
 
+// ---------- 发消息（ADR 0019） ----------
+
+// Message 是一条要外发的通知：一句话正文 + 一个直达链接，不含成本与他人信息（ADR 0019 第 4 条）。
+// Kind 是事件类型代码名（proposal、review…），Recipient 是收件人在本系统里的编号与姓名（webhook 载荷用）。
+type Message struct {
+	Kind      string
+	Title     string
+	Text      string
+	URL       string
+	Recipient Recipient
+	At        time.Time
+	// Open 是按钮 / 链接上的字，按收件人语言，如「打开」。
+	Open string
+}
+
+// Recipient 是收件人。
+type Recipient struct {
+	ID   string
+	Name string
+}
+
+// Messenger 是可选能力：以应用身份给一个人发私聊消息。externalUserID 是收件人在提供方那边的编号
+// （飞书 open_id、企业微信 userid、邮件地址；webhook 不用它）。发不出去时返回 RejectedError / UnreachableError。
+type Messenger interface {
+	SendDirect(ctx context.Context, externalUserID string, msg Message) error
+}
+
+// MessagingDiagnoser 是可选能力：检查「能以应用身份发消息」，返回一项 key 为 messaging 的检查（todo，不阻塞同步）。
+type MessagingDiagnoser interface {
+	DiagnoseMessaging(ctx context.Context) Check
+}
+
+// MessagingCheckKey 是发消息检查项的键。
+const MessagingCheckKey = "messaging"
+
 // RejectedError 是提供方明确拒绝（凭据错、权限不足等），带提供方返回的原话。
 type RejectedError struct {
 	Code int
@@ -106,6 +141,66 @@ type UnreachableError struct{ Err error }
 func (e *UnreachableError) Error() string { return "provider unreachable: " + e.Err.Error() }
 func (e *UnreachableError) Unwrap() error { return e.Err }
 
+// ---------- 代码平台（ADR 0020） ----------
+
+// Repo 是代码平台上的一个仓库。
+type Repo struct {
+	ID       string // 提供方的仓库编号
+	FullName string // owner/name
+	URL      string
+	Private  bool
+}
+
+// CodeEvent 是从一次 webhook 请求里解出来的一件事。Kind 为空表示"认识这个请求但它不对应六种外部事件"
+// （比如 PR 改了标题），这时只更新外部链接、不触发迁移。
+type CodeEvent struct {
+	Provider   string
+	Kind       string // pr_opened | pr_ready | pr_merged | pr_closed | ci_passed | ci_failed，可为空
+	DeliveryID string // 提供方的投递编号，去重用
+	Repo       string // owner/name
+	Number     int    // PR / MR 序号
+	Title      string
+	Branch     string // 源分支名
+	Body       string // PR 描述
+	URL        string // PR 网页地址
+	ExternalID string // 平台上的唯一编号，如 github:owner/name#12
+	Status     string // open | draft | merged | closed | passed | failed
+	ActorName  string // 外部操作者的登录名
+	// LinkKind 是要挂到任务上的外部链接种类（PR 事件是 pr）；为空表示这次不动链接（如 CI 事件没带 PR）。
+	LinkKind string
+}
+
+// Ref 是这件事在句子里的说法，如「PR #12」；没有序号时用仓库名。
+func (e CodeEvent) Ref() string {
+	if e.Number > 0 {
+		return fmt.Sprintf("PR #%d", e.Number)
+	}
+	if e.Branch != "" {
+		return e.Repo + " " + e.Branch
+	}
+	return e.Repo
+}
+
+// CodeHost 是可选能力：代码平台（GitHub、GitLab、Gitee）。
+// VerifyWebhook 校验签名并把载荷翻译成统一的事件；不是这个平台的请求、签名不对时返回错误。
+type CodeHost interface {
+	VerifyWebhook(headers http.Header, body []byte, secret string) (CodeEvent, error)
+	ListRepos(ctx context.Context) ([]Repo, error)
+	EnsureWebhook(ctx context.Context, repo, callbackURL, secret string) error
+}
+
+// CodeDiagnoser 是可选能力：代码平台的接入检查（凭据可用 → 能读仓库 → webhook 已建）。
+// repos 是组织选中的仓库全名，callbackURL 是本系统的回调地址。
+type CodeDiagnoser interface {
+	DiagnoseCode(ctx context.Context, repos []string, callbackURL string) ([]Check, error)
+}
+
+// ErrBadSignature 表示签名或密钥对不上。
+var ErrBadSignature = errors.New("bad webhook signature")
+
+// ErrNotForUs 表示这个请求不是我们要处理的事件（心跳、ping、无关事件类型）。
+var ErrNotForUs = errors.New("webhook event not handled")
+
 // ---------- 注册表 ----------
 
 // CredentialField 是提供方声明的一个凭据字段；前端表单按它渲染，应用层按它校验。
@@ -113,6 +208,7 @@ type CredentialField struct {
 	Key         string    // 存储与接口里的键，如 app_id
 	Title       i18n.Text // 显示名，如「App ID」
 	Secret      bool      // 保密字段：加密入库，界面只显示是否已设置
+	Optional    bool      // 可以留空（如 GitHub 企业版才要填的接口地址）
 	Placeholder string
 	Hint        i18n.Text // 到哪里去拿这个值
 }
@@ -126,10 +222,12 @@ type Options struct {
 }
 
 // Provider 是一个已接入的平台的声明：怎么叫、要哪些凭据、根部门编号是什么、怎么建客户端。
+// 一个提供方可以只有部分能力：New 非空表示能当 IM 集成（读组织结构），NewMessenger 非空表示能发消息（ADR 0019）；
+// 邮件与 webhook 只有后者，飞书、企业微信两者都有。注册表对只实现部分能力的提供方一视同仁。
 type Provider struct {
 	Key              string    // 代码名，如 feishu、wecom；也是外部身份与成员来源里存的值
 	Title            i18n.Text // 显示名（zh/en）
-	RootDepartmentID string    // 提供方的根部门编号（飞书 "0"，企业微信 "1"）
+	RootDepartmentID string    // 提供方的根部门编号（飞书 "0"，企业微信 "1"）；只发消息的提供方为空
 	Fields           []CredentialField
 	Prerequisites    []i18n.Text // 接入前置条件，逐条给人看
 	Tip              GuideStep   // 一句话提醒凭据在哪儿找，可带控制台链接
@@ -137,7 +235,54 @@ type Provider struct {
 	// ConsoleURL 按凭据算出这个应用在提供方控制台里的首页（可选），前端的「打开控制台」用它。
 	ConsoleURL func(creds map[string]string) string
 
+	// MessagingFields 是发消息比读通讯录多要的凭据（企业微信要应用的 AgentId 与 Secret；飞书同一个应用，不用多填）。
+	// 只发消息的提供方（邮件、webhook）把全部字段放这里，Fields 留空。
+	MessagingFields []CredentialField
+	// MessagingPrerequisites 是发消息的前置条件（如飞书要开通「以应用的身份发消息」权限）。
+	MessagingPrerequisites []i18n.Text
+	// NewMessenger 用全部凭据（Fields + MessagingFields 的值）建一个发消息客户端。
+	NewMessenger func(creds map[string]string, opts Options) (Messenger, error)
+	// MessagingConfigured 判断发消息的凭据是否齐全（可选）；不给时按 MessagingFields 每个字段都有值判断。
+	// 邮件用它表达"组织没填就用服务端环境变量"。
+	MessagingConfigured func(creds map[string]string, secretsSet map[string]bool) bool
+
+	// NewCodeHost 用 Fields 的值建一个代码平台客户端（ADR 0020）。非空即表示这是个代码平台提供方；
+	// 它不参与 IM 集成（Providers）与通知通道（MessagingProviders），只出现在 CodeHostProviders 里。
+	NewCodeHost func(creds map[string]string, opts Options) (CodeHost, error)
+
 	hidden bool // 测试注册的提供方：Lookup 能找到，Providers 不列出
+}
+
+// CanSync 判断能否作为 IM 集成读组织结构。
+func (p Provider) CanSync() bool { return p.New != nil }
+
+// CanMessage 判断能否发消息。
+func (p Provider) CanMessage() bool { return p.NewMessenger != nil }
+
+// CanHostCode 判断是不是代码平台（ADR 0020）。
+func (p Provider) CanHostCode() bool { return p.NewCodeHost != nil }
+
+// MessagingField 按键找发消息凭据字段。
+func (p Provider) MessagingField(key string) (CredentialField, bool) {
+	for _, f := range p.MessagingFields {
+		if f.Key == key {
+			return f, true
+		}
+	}
+	return CredentialField{}, false
+}
+
+// MessagingReady 判断发消息的凭据是否齐全：creds 是非保密字段的值，secretsSet 是保密字段是否已设置。
+func (p Provider) MessagingReady(creds map[string]string, secretsSet map[string]bool) bool {
+	if p.MessagingConfigured != nil {
+		return p.MessagingConfigured(creds, secretsSet)
+	}
+	for _, f := range p.MessagingFields {
+		if f.Secret && !secretsSet[f.Key] || !f.Secret && strings.TrimSpace(creds[f.Key]) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // Field 按键找凭据字段。
@@ -195,11 +340,17 @@ func validateProvider(p Provider) error {
 	if strings.TrimSpace(p.Key) == "" || p.Key != strings.ToLower(strings.TrimSpace(p.Key)) {
 		return fmt.Errorf("provider key %q must be a non-empty lower-case code", p.Key)
 	}
-	if p.Title.In(i18n.ZhCN) == "" || p.RootDepartmentID == "" || p.New == nil {
-		return fmt.Errorf("provider %s must declare Title, RootDepartmentID and New", p.Key)
+	if p.Title.In(i18n.ZhCN) == "" {
+		return fmt.Errorf("provider %s must declare Title", p.Key)
+	}
+	if p.New == nil && p.NewMessenger == nil && p.NewCodeHost == nil {
+		return fmt.Errorf("provider %s must declare New (directory), NewMessenger (messaging) or NewCodeHost (code platform)", p.Key)
+	}
+	if p.New != nil && p.RootDepartmentID == "" {
+		return fmt.Errorf("provider %s must declare RootDepartmentID", p.Key)
 	}
 	seen := map[string]bool{}
-	for _, f := range p.Fields {
+	for _, f := range append(append([]CredentialField{}, p.Fields...), p.MessagingFields...) {
 		if f.Key == "" || f.Title.In(i18n.ZhCN) == "" || seen[f.Key] {
 			return fmt.Errorf("provider %s has a bad or duplicate field %q", p.Key, f.Key)
 		}
@@ -208,13 +359,47 @@ func validateProvider(p Provider) error {
 	return nil
 }
 
-// Providers 列出全部生产提供方，顺序即注册顺序（包内文件按文件名初始化：feishu、wecom…）。
+// Providers 列出全部能当 IM 集成的生产提供方，顺序即注册顺序（包内文件按文件名初始化：feishu、wecom…）。
+// 只发消息的提供方（邮件、webhook）不在这里，见 MessagingProviders。
 func Providers() []Provider {
 	regMu.RLock()
 	defer regMu.RUnlock()
 	out := make([]Provider, 0, len(registry))
 	for _, p := range registry {
-		if !p.hidden {
+		if !p.hidden && p.CanSync() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// CodeHostProviders 列出全部代码平台提供方（ADR 0020），顺序即注册顺序（gitee、github、gitlab 按文件名）。
+// 它们不出现在 Providers 与 MessagingProviders 里。
+func CodeHostProviders() []Provider {
+	regMu.RLock()
+	defer regMu.RUnlock()
+	out := make([]Provider, 0, len(registry))
+	for _, p := range registry {
+		if !p.hidden && p.CanHostCode() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// MessagingProviders 列出全部能发消息的生产提供方：先是既能同步又能发的 IM 平台（飞书、企业微信），再是只发消息的（邮件、webhook），
+// 各自按注册顺序。
+func MessagingProviders() []Provider {
+	regMu.RLock()
+	defer regMu.RUnlock()
+	out := make([]Provider, 0, len(registry))
+	for _, p := range registry {
+		if !p.hidden && p.CanMessage() && p.CanSync() {
+			out = append(out, p)
+		}
+	}
+	for _, p := range registry {
+		if !p.hidden && p.CanMessage() && !p.CanSync() {
 			out = append(out, p)
 		}
 	}
@@ -239,19 +424,25 @@ func Lookup(key string) (Provider, bool) {
 var ErrBadProxy = errors.New("bad proxy url")
 
 // newHTTPClient 按选项建 HTTP 客户端：优先用注入的，否则按 ProxyURL（或环境变量）出网。
+// 出网默认只许公网（egress.go）：拨号前按解析出的地址再查一遍，重定向也要过同一道守卫。
 func newHTTPClient(opts Options) (*http.Client, error) {
 	if opts.HTTPClient != nil {
 		return opts.HTTPClient, nil
 	}
-	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSHandshakeTimeout: 10 * time.Second}
+	eg := DefaultEgress()
+	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSHandshakeTimeout: 10 * time.Second,
+		DialContext: egressDialer(eg).DialContext}
 	if p := strings.TrimSpace(opts.ProxyURL); p != "" {
-		u, err := url.Parse(p)
+		if err := CheckProxyURL(p, EgressOpts{AllowPrivate: eg.AllowPrivate, AllowHTTP: true}); err != nil {
+			return nil, fmt.Errorf("%w: %q: %v", ErrBadProxy, p, err)
+		}
+		u, err := url.Parse(strings.TrimSpace(p))
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			return nil, fmt.Errorf("%w: %q", ErrBadProxy, p)
 		}
 		tr.Proxy = http.ProxyURL(u)
 	}
-	return &http.Client{Transport: tr, Timeout: 30 * time.Second}, nil
+	return &http.Client{Transport: tr, Timeout: 30 * time.Second, CheckRedirect: egressRedirect(eg)}, nil
 }
 
 func trim(s string, n int) string {

@@ -36,16 +36,53 @@ func (a *App) EnsureGlobals(ctx context.Context) error {
 	return nil
 }
 
+// upgradeBuiltinTriggers 给老组织补上内置流程后来才有的外部事件触发（ADR 0020）：内置类型第一次写入之后
+// 系统才增加了 `triggered_by`，老组织的流程定义里没有它。补的条件很紧：这个类型仍然是内置的、
+// 组织一条触发都没配过、步骤名对得上——组织改过流程时一律不动，触发条件本来就归组织自己配。
+// 补上后由调用方存成新版本；进行中的任务钉在旧版本上不受影响（规格 §6）。
+func upgradeBuiltinTriggers(cur, builtin *domain.TaskType) bool {
+	if cur == nil || !cur.BuiltIn {
+		return false
+	}
+	for i := range cur.Workflow.Transitions {
+		if cur.Workflow.Transitions[i].TriggeredBy != nil {
+			return false
+		}
+	}
+	changed := false
+	for _, want := range builtin.Workflow.Transitions {
+		if want.TriggeredBy == nil {
+			continue
+		}
+		for i := range cur.Workflow.Transitions {
+			if cur.Workflow.Transitions[i].Name == want.Name {
+				tg := *want.TriggeredBy
+				cur.Workflow.Transitions[i].TriggeredBy = &tg
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
 // EnsureOrgDefaults 为组织写入内置任务类型、能力标签、汇率（幂等）。
 func (a *App) EnsureOrgDefaults(ctx context.Context, orgID string) error {
 	return a.Store.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		for _, tt := range domain.BuiltinTaskTypes() {
-			if _, err := a.Store.CurrentTaskType(ctx, tx, tt.Name); err == store.ErrNotFound {
+			cur, err := a.Store.CurrentTaskType(ctx, tx, tt.Name)
+			if err == store.ErrNotFound {
 				if err := a.Store.SaveTaskType(ctx, tx, orgID, tt); err != nil {
 					return err
 				}
-			} else if err != nil {
+				continue
+			}
+			if err != nil {
 				return err
+			}
+			if upgradeBuiltinTriggers(cur, tt) {
+				if err := a.Store.SaveTaskType(ctx, tx, orgID, cur); err != nil {
+					return err
+				}
 			}
 		}
 		existing, err := a.Store.ListCapabilities(ctx, tx)

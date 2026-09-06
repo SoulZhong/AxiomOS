@@ -6,3 +6,6 @@
 .env.local
 *.log
 .DS_Store
+
+# 本地临时文件（曾经把 Agent 令牌提交进来过，别再犯）
+scratchpad/

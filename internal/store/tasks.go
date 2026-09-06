@@ -10,12 +10,12 @@ import (
 	"github.com/teemo/axiomos/internal/domain"
 )
 
-const taskCols = `id,org_id,coalesce(goal_id,''),coalesce(parent_id,''),type_name,type_version,title,description,creator_id,reviewer_id,coalesce(assignee_id,''),coalesce(required_role,''),coalesce(pending_slot,''),required_capabilities,human_only,state,coalesce(previous_state,''),last_weight,participants,fields,priority,estimate_hours,planned_start,planned_end,actual_start,actual_end,created_at,updated_at,points,coalesce(sprint_id,'')`
+const taskCols = `id,org_id,coalesce(goal_id,''),coalesce(parent_id,''),type_name,type_version,title,description,creator_id,reviewer_id,coalesce(assignee_id,''),coalesce(required_role,''),coalesce(pending_slot,''),required_capabilities,human_only,state,coalesce(previous_state,''),last_weight,participants,fields,priority,estimate_hours,planned_start,planned_end,actual_start,actual_end,created_at,updated_at,points,coalesce(sprint_id,''),number`
 
 func scanTask(r interface{ Scan(...any) error }) (*domain.Task, error) {
 	t := &domain.Task{}
 	var participants, fields []byte
-	err := r.Scan(&t.ID, &t.OrgID, &t.GoalID, &t.ParentID, &t.TypeName, &t.TypeVersion, &t.Title, &t.Description, &t.CreatorID, &t.ReviewerID, &t.AssigneeID, &t.RequiredRole, &t.PendingSlot, &t.RequiredCapabilities, &t.HumanOnly, &t.State, &t.PreviousState, &t.LastWeight, &participants, &fields, &t.Priority, &t.EstimateHours, &t.PlannedStart, &t.PlannedEnd, &t.ActualStart, &t.ActualEnd, &t.CreatedAt, &t.UpdatedAt, &t.Points, &t.SprintID)
+	err := r.Scan(&t.ID, &t.OrgID, &t.GoalID, &t.ParentID, &t.TypeName, &t.TypeVersion, &t.Title, &t.Description, &t.CreatorID, &t.ReviewerID, &t.AssigneeID, &t.RequiredRole, &t.PendingSlot, &t.RequiredCapabilities, &t.HumanOnly, &t.State, &t.PreviousState, &t.LastWeight, &participants, &fields, &t.Priority, &t.EstimateHours, &t.PlannedStart, &t.PlannedEnd, &t.ActualStart, &t.ActualEnd, &t.CreatedAt, &t.UpdatedAt, &t.Points, &t.SprintID, &t.Number)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -37,6 +37,12 @@ func (s *Store) InsertTask(ctx context.Context, q Querier, t *domain.Task) error
 	if t.ID == "" {
 		t.ID = NewID("tsk")
 	}
+	if t.Number == 0 {
+		// 组织内递增序号：update … returning 带行锁，同一组织并发创建也不会重号
+		if err := q.QueryRow(ctx, `update organizations set next_task_number = next_task_number + 1 where id=$1 returning next_task_number - 1`, t.OrgID).Scan(&t.Number); err != nil {
+			return err
+		}
+	}
 	now := time.Now()
 	t.CreatedAt, t.UpdatedAt = now, now
 	participants, _ := json.Marshal(t.Participants)
@@ -44,9 +50,9 @@ func (s *Store) InsertTask(ctx context.Context, q Querier, t *domain.Task) error
 	if t.RequiredCapabilities == nil {
 		t.RequiredCapabilities = []string{}
 	}
-	_, err := q.Exec(ctx, `insert into tasks(id,org_id,goal_id,parent_id,type_name,type_version,title,description,creator_id,reviewer_id,assignee_id,required_role,pending_slot,required_capabilities,human_only,state,previous_state,last_weight,participants,fields,priority,estimate_hours,planned_start,planned_end,actual_start,actual_end,created_at,updated_at,points,sprint_id)
-		values($1,$2,nullif($3,''),nullif($4,''),$5,$6,$7,$8,$9,$10,nullif($11,''),nullif($12,''),nullif($13,''),$14,$15,$16,nullif($17,''),$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,nullif($30,''))`,
-		t.ID, t.OrgID, t.GoalID, t.ParentID, t.TypeName, t.TypeVersion, t.Title, t.Description, t.CreatorID, t.ReviewerID, t.AssigneeID, t.RequiredRole, t.PendingSlot, t.RequiredCapabilities, t.HumanOnly, t.State, t.PreviousState, t.LastWeight, participants, fields, t.Priority, t.EstimateHours, t.PlannedStart, t.PlannedEnd, t.ActualStart, t.ActualEnd, t.CreatedAt, t.UpdatedAt, t.Points, t.SprintID)
+	_, err := q.Exec(ctx, `insert into tasks(id,org_id,goal_id,parent_id,type_name,type_version,title,description,creator_id,reviewer_id,assignee_id,required_role,pending_slot,required_capabilities,human_only,state,previous_state,last_weight,participants,fields,priority,estimate_hours,planned_start,planned_end,actual_start,actual_end,created_at,updated_at,points,sprint_id,number)
+		values($1,$2,nullif($3,''),nullif($4,''),$5,$6,$7,$8,$9,$10,nullif($11,''),nullif($12,''),nullif($13,''),$14,$15,$16,nullif($17,''),$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,nullif($30,''),$31)`,
+		t.ID, t.OrgID, t.GoalID, t.ParentID, t.TypeName, t.TypeVersion, t.Title, t.Description, t.CreatorID, t.ReviewerID, t.AssigneeID, t.RequiredRole, t.PendingSlot, t.RequiredCapabilities, t.HumanOnly, t.State, t.PreviousState, t.LastWeight, participants, fields, t.Priority, t.EstimateHours, t.PlannedStart, t.PlannedEnd, t.ActualStart, t.ActualEnd, t.CreatedAt, t.UpdatedAt, t.Points, t.SprintID, t.Number)
 	return err
 }
 
@@ -58,6 +64,18 @@ func (s *Store) UpdateTask(ctx context.Context, q Querier, t *domain.Task) error
 	_, err := q.Exec(ctx, `update tasks set goal_id=nullif($2,''),parent_id=nullif($3,''),title=$4,description=$5,reviewer_id=$6,assignee_id=nullif($7,''),required_role=nullif($8,''),pending_slot=nullif($9,''),required_capabilities=$10,human_only=$11,state=$12,previous_state=nullif($13,''),last_weight=$14,participants=$15,fields=$16,priority=$17,estimate_hours=$18,planned_start=$19,planned_end=$20,actual_start=$21,actual_end=$22,updated_at=$23,points=$24,sprint_id=nullif($25,'') where id=$1`,
 		t.ID, t.GoalID, t.ParentID, t.Title, t.Description, t.ReviewerID, t.AssigneeID, t.RequiredRole, t.PendingSlot, t.RequiredCapabilities, t.HumanOnly, t.State, t.PreviousState, t.LastWeight, participants, fields, t.Priority, t.EstimateHours, t.PlannedStart, t.PlannedEnd, t.ActualStart, t.ActualEnd, t.UpdatedAt, t.Points, t.SprintID)
 	return err
+}
+
+// TaskByNumber 按组织内序号装载任务（行级安全已限定在当前组织）。
+func (s *Store) TaskByNumber(ctx context.Context, q Querier, number int) (*domain.Task, error) {
+	t, err := scanTask(q.QueryRow(ctx, `select `+taskCols+` from tasks where number=$1`, number))
+	if err != nil {
+		return nil, err
+	}
+	if err := s.loadTaskChildren(ctx, q, []*domain.Task{t}); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 // TaskByID 装载任务及其关联、交付物、评论。

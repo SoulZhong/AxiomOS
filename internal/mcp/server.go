@@ -5,6 +5,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -37,14 +38,23 @@ func Handler(a *app.App, auth Authenticator) http.Handler {
 
 func unauthenticatedServer(loc i18n.Locale, err error) *sdk.Server {
 	s := sdk.NewServer(&sdk.Implementation{Name: "axiomos", Version: "0.2.0"}, nil)
-	msg := err.Error()
-	if ue, ok := err.(*app.UserError); ok {
-		msg = ue.Render(loc)
-	}
 	sdk.AddTool(s, &sdk.Tool{Name: "whoami", Description: i18n.T("查看当前身份。", "Show the current identity.").In(loc)}, func(ctx context.Context, req *sdk.CallToolRequest, in struct{}) (*sdk.CallToolResult, any, error) {
-		return textResult(i18n.Trf(loc, "mcp.unauth", msg)), nil, nil
+		return textResult(i18n.Trf(loc, "mcp.unauth", RenderError(loc, err))), nil, nil
 	})
 	return s
+}
+
+// RenderError 把任何错误渲染成请求者语言的一句话，与 HTTP 接口的 error.message 完全一致：
+// 用户错误按词条渲染，「没有找到」也按词条，其余（内部错误）用通用句子而不是泄漏内部细节。
+func RenderError(loc i18n.Locale, err error) string {
+	var ue *app.UserError
+	if errors.As(err, &ue) {
+		return ue.Render(loc)
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return i18n.Tr(loc, "err.not_found")
+	}
+	return i18n.Tr(loc, "err.internal")
 }
 
 func textResult(s string) *sdk.CallToolResult {
@@ -75,21 +85,17 @@ func fail(loc i18n.Locale, err error) (*sdk.CallToolResult, any, error) {
 		b, _ := json.MarshalIndent(out, "", "  ")
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}, &sdk.TextContent{Text: string(b)}}}, out, nil
 	}
-	msg := err.Error()
-	if ue, ok := err.(*app.UserError); ok {
-		msg = ue.Render(loc)
-	}
-	return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: msg}}}, nil, nil
+	return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: RenderError(loc, err)}}}, nil, nil
 }
 
 // ---------- 工具输入 ----------
 
 type taskIDIn struct {
-	TaskID string `json:"task_id" jsonschema:"Task ID"`
+	TaskID string `json:"task_id" jsonschema:"Task ID (tsk_...) or task number (#123 / 123)"`
 }
 
 type transitionIn struct {
-	TaskID  string         `json:"task_id" jsonschema:"Task ID"`
+	TaskID  string         `json:"task_id" jsonschema:"Task ID (tsk_...) or task number (#123 / 123)"`
 	Name    string         `json:"name" jsonschema:"Step code name, e.g. submit or dev_done; use get_workflow to list available steps"`
 	Comment string         `json:"comment,omitempty" jsonschema:"Comment attached to this step; required for ask_for_input, reject and similar steps"`
 	Result  map[string]any `json:"result,omitempty" jsonschema:"Structured result fields when submitting, per result_schema in the task brief"`
@@ -204,15 +210,15 @@ var toolDescs = map[string]i18n.Text{
 	"whoami":          i18n.T("查看当前身份：我是谁、所有者是谁、有哪些授权与能力标签。", "Show who I am: identity, owner, grants and capabilities."),
 	"list_my_tasks":   i18n.T("列出分配给我（或我的所有者）的、还没结束的任务。", "List open tasks assigned to me (or my owner)."),
 	"list_backlog":    i18n.T("列出待领取任务（没有负责人、符合我的角色与能力标签的任务）。", "List unclaimed tasks (no assignee, matching my role and capabilities)."),
-	"get_task_brief":  i18n.T("获取任务说明：描述、所属目标链、评论、前置任务的结果与交付物、任务类型给 Agent 的执行指令、当前可用步骤。开始任何任务前先调用它。", "Get the task brief: description, goal chain, comments, predecessor results and deliverables, agent instructions for the task type, and available steps. Call this before starting any task."),
-	"get_workflow":    i18n.T("查看某任务现在处于什么状态、我能走哪些步骤、不能走的原因，以及能否领取/开始执行。", "See the task's current state, which steps I can take, why others are unavailable, and whether I can claim or begin."),
-	"claim_task":      i18n.T("从待领取任务里领取一个任务。领取后我就是负责人；若任务处于进行中阶段会立即开始一段执行记录。", "Claim an unclaimed task. I become the assignee; if the task is in an in-progress stage an execution record starts immediately."),
-	"begin_task":      i18n.T("开始执行：在任务的进行中阶段开启一段执行记录。上报用量前必须先调用它。", "Begin executing: open an execution record in the task's in-progress stage. Required before reporting usage."),
-	"transition_task": i18n.T("推进流程：触发一个步骤（如 start、submit、dev_done、ask_for_input）。步骤名与前提用 get_workflow 查看。", "Advance the workflow: trigger a step (start, submit, dev_done, ask_for_input, ...). Use get_workflow for step names and preconditions."),
-	"heartbeat":       i18n.T("心跳并上报累计用量。执行中每 60 秒调用一次；usage 里按模型填累计 token 数（幂等，取最大值）。", "Heartbeat and report cumulative usage. Call every 60 seconds while executing; usage holds cumulative tokens per model (idempotent, max wins)."),
-	"add_comment":     i18n.T("在任务上发一条评论（会通知人）。要提问并等待答复请用 transition_task 的 ask_for_input 步骤。", "Post a comment on the task (notifies people). To ask and wait for a reply use the ask_for_input step via transition_task."),
-	"add_note":        i18n.T("在任务上写一条工作日志（不打扰人，默认折叠）。用于记录过程与中间结论。", "Write a work note on the task (collapsed by default, no notifications). Use it for process and intermediate findings."),
-	"attach_artifact": i18n.T("给任务附上交付物（PR、文档、报表、结果摘要等）。很多步骤要求先附上特定类型的交付物。", "Attach a deliverable (PR, document, report, result summary...). Many steps require a specific deliverable type first."),
+	"get_task_brief":  i18n.T("获取任务说明：描述、所属目标链、评论、前置任务的结果与交付物、任务类型给 Agent 的执行指令、当前可用步骤。开始任何任务前先调用它；task_id 也可以写序号（#123）。", "Get the task brief: description, goal chain, comments, predecessor results and deliverables, agent instructions for the task type, and available steps. Call this before starting any task; task_id also accepts the task number (#123)."),
+	"get_workflow":    i18n.T("查看某任务现在处于什么状态、我能走哪些步骤、不能走的原因，以及能否领取 / 开始执行。被拒绝前先看它：reasons 里的句子和网页上显示的一样。", "See the task's current state, which steps I can take, why others are unavailable, and whether I can claim or begin. Check it before acting: the sentences in reasons are the same ones the web app shows."),
+	"claim_task":      i18n.T("从待领取任务里领取一个任务。先用 list_backlog 看 can_claim 与 reasons（需要的角色、能力标签、并发上限），能领再领。领取后我就是负责人；若任务处于进行中阶段会立即开始一段执行记录。", "Claim an unclaimed task. First check can_claim and reasons in list_backlog (required role, capabilities, concurrency limit), then claim. I become the assignee; if the task is in an in-progress stage an execution record starts immediately."),
+	"begin_task":      i18n.T("开始执行：在任务的进行中阶段开启一段执行记录。先用 get_task_brief 拿到任务说明、get_workflow 确认 can_begin 为真，再 begin；上报用量前必须先调用它。前置任务未完成、任务已结束、并发已满时会被拒绝并给出原因。", "Begin executing: open an execution record in the task's in-progress stage. First read the brief with get_task_brief and confirm can_begin in get_workflow, then begin; required before reporting usage. Rejected with a reason when predecessors are unfinished, the task is closed, or the concurrency limit is reached."),
+	"transition_task": i18n.T("推进流程：触发一个步骤（如 start、submit、dev_done、ask_for_input）。先用 get_workflow 看步骤名、前提（交付物、评论、前置任务）与 needs_approval，再推进；已结束的任务不能再推进。", "Advance the workflow: trigger a step (start, submit, dev_done, ask_for_input, ...). First use get_workflow for step names, preconditions (deliverables, comment, predecessors) and needs_approval, then advance; a finished task cannot be advanced."),
+	"heartbeat":       i18n.T("心跳并上报累计用量。先 begin_task 开启执行记录，执行中每 60 秒调用一次；usage 里按模型填累计 token 数（幂等，取最大值）。", "Heartbeat and report cumulative usage. Call begin_task first to open an execution record, then call this every 60 seconds while executing; usage holds cumulative tokens per model (idempotent, max wins)."),
+	"add_comment":     i18n.T("在任务上发一条评论（会通知人，需要「评论」授权）。要提问并等待答复请用 transition_task 的 ask_for_input 步骤。", "Post a comment on the task (notifies people; requires the Comment grant). To ask and wait for a reply use the ask_for_input step via transition_task."),
+	"add_note":        i18n.T("在任务上写一条工作日志（不打扰人，默认折叠，需要「评论」授权）。用于记录过程与中间结论。", "Write a work note on the task (collapsed by default, no notifications; requires the Comment grant). Use it for process and intermediate findings."),
+	"attach_artifact": i18n.T("给任务附上交付物（PR、文档、报表、结果摘要等）。先用 get_task_brief 或 get_workflow 看这一步要求哪种交付物类型，再附上。", "Attach a deliverable (PR, document, report, result summary...). First check in get_task_brief or get_workflow which deliverable type the next step requires, then attach it."),
 	"create_task":     i18n.T("创建任务（需要「创建任务」授权）；填 parent_id 则创建子任务（需要「创建子任务」授权）。", "Create a task (requires the Create tasks grant); set parent_id to create a subtask (requires Create subtasks)."),
 	"create_goal":     i18n.T("创建目标（需要「创建目标」授权）。", "Create a goal (requires the Create goals grant)."),
 	"link_tasks":      i18n.T("建立两个任务的关联：前置、发现于、相关。发现 Bug 时先 create_task（type_name=bug）再用 found_in 关联到被测任务。", "Link two tasks: blocks, found_in, relates_to. For a bug, create_task with type_name=bug then link it with found_in to the task under test."),
@@ -220,7 +226,7 @@ var toolDescs = map[string]i18n.Text{
 	"list_goals":      i18n.T("浏览目标树（含进度与成本）。", "Browse the goal tree (with progress and cost)."),
 	"list_task_types": i18n.T("列出任务类型及其流程定义（状态、步骤、参与角色、交付物要求）。", "List task types and their workflow definitions (states, steps, participant roles, deliverable requirements)."),
 	"list_members":    i18n.T("列出组织成员与 Agent 的 ID 和名字（指派、填参与角色时用）。", "List member and agent IDs and names (for assigning and filling participant roles)."),
-	"get_task":        i18n.T("读取任务详情（含执行记录、关联、子任务）。", "Read task details (execution records, relations, subtasks)."),
+	"get_task":        i18n.T("读取任务详情（含执行记录、关联、子任务）。task_id 也可以写序号（#123）。", "Read task details (execution records, relations, subtasks). task_id also accepts the task number (#123)."),
 	"list_tasks":      i18n.T("按条件列出任务。", "List tasks by filter."),
 
 	"list_sprints":            i18n.T("列出迭代（规划中 / 进行中 / 已结束），含任务数与工作量汇总。", "List sprints (planning / active / closed) with task counts and points totals."),
@@ -247,6 +253,20 @@ func newServer(a *app.App, sess *app.Session) *sdk.Server {
 	})
 	tool := func(name string) *sdk.Tool { return &sdk.Tool{Name: name, Description: toolDescs[name].In(loc)} }
 	f := func(err error) (*sdk.CallToolResult, any, error) { return fail(loc, err) }
+	// 任务参数接受序号（#123 / 123）：解析成 ID 再往下走
+	tid := func(ctx context.Context, ref string) (string, error) { return a.ResolveTaskRef(ctx, sess, ref) }
+	// 记下每次工具调用（连接检查用；遥测，不产生动态）
+	s.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+			res, err := next(ctx, method, req)
+			if method == "tools/call" {
+				if p, ok := req.GetParams().(*sdk.CallToolParamsRaw); ok && p != nil {
+					a.RecordAgentTool(ctx, sess, p.Name)
+				}
+			}
+			return res, err
+		}
+	})
 
 	sdk.AddTool(s, tool("whoami"), func(ctx context.Context, req *sdk.CallToolRequest, in struct{}) (*sdk.CallToolResult, any, error) {
 		me, err := a.Me(ctx, sess)
@@ -270,35 +290,55 @@ func newServer(a *app.App, sess *app.Session) *sdk.Server {
 		return jsonResult(out)
 	})
 	sdk.AddTool(s, tool("get_task_brief"), func(ctx context.Context, req *sdk.CallToolRequest, in taskIDIn) (*sdk.CallToolResult, any, error) {
-		b, err := a.Brief(ctx, sess, in.TaskID)
+		id, err := tid(ctx, in.TaskID)
+		if err != nil {
+			return f(err)
+		}
+		b, err := a.Brief(ctx, sess, id)
 		if err != nil {
 			return f(err)
 		}
 		return jsonResult(b)
 	})
 	sdk.AddTool(s, tool("get_workflow"), func(ctx context.Context, req *sdk.CallToolRequest, in taskIDIn) (*sdk.CallToolResult, any, error) {
-		v, err := a.Workflow(ctx, sess, in.TaskID)
+		id, err := tid(ctx, in.TaskID)
+		if err != nil {
+			return f(err)
+		}
+		v, err := a.Workflow(ctx, sess, id)
 		if err != nil {
 			return f(err)
 		}
 		return jsonResult(v)
 	})
 	sdk.AddTool(s, tool("claim_task"), func(ctx context.Context, req *sdk.CallToolRequest, in taskIDIn) (*sdk.CallToolResult, any, error) {
-		t, err := a.Claim(ctx, sess, in.TaskID)
+		id, err := tid(ctx, in.TaskID)
+		if err != nil {
+			return f(err)
+		}
+		t, err := a.Claim(ctx, sess, id)
 		if err != nil {
 			return f(err)
 		}
 		return jsonResult(t)
 	})
 	sdk.AddTool(s, tool("begin_task"), func(ctx context.Context, req *sdk.CallToolRequest, in taskIDIn) (*sdk.CallToolResult, any, error) {
-		t, err := a.Begin(ctx, sess, in.TaskID)
+		id, err := tid(ctx, in.TaskID)
+		if err != nil {
+			return f(err)
+		}
+		t, err := a.Begin(ctx, sess, id)
 		if err != nil {
 			return f(err)
 		}
 		return jsonResult(t)
 	})
 	sdk.AddTool(s, tool("transition_task"), func(ctx context.Context, req *sdk.CallToolRequest, in transitionIn) (*sdk.CallToolResult, any, error) {
-		t, err := a.Transition(ctx, sess, in.TaskID, in.Name, app.TransitionPayload{Comment: in.Comment, Result: in.Result})
+		id, err := tid(ctx, in.TaskID)
+		if err != nil {
+			return f(err)
+		}
+		t, err := a.Transition(ctx, sess, id, in.Name, app.TransitionPayload{Comment: in.Comment, Result: in.Result})
 		if err != nil {
 			return f(err)
 		}
@@ -425,7 +465,11 @@ func newServer(a *app.App, sess *app.Session) *sdk.Server {
 		return jsonResult(names)
 	})
 	sdk.AddTool(s, tool("get_task"), func(ctx context.Context, req *sdk.CallToolRequest, in taskIDIn) (*sdk.CallToolResult, any, error) {
-		d, err := a.GetTaskDetail(ctx, sess, in.TaskID)
+		id, err := tid(ctx, in.TaskID)
+		if err != nil {
+			return f(err)
+		}
+		d, err := a.GetTaskDetail(ctx, sess, id)
 		if err != nil {
 			return f(err)
 		}
@@ -514,7 +558,7 @@ var instructionsText = i18n.T(`你是 AxiomOS 里的执行者「%s」。%s
 3. 进入进行中阶段后先 begin_task 开启执行记录；执行中每 60 秒 heartbeat 并上报累计用量。
 4. 交付前用 attach_artifact 附上要求的交付物，再用 transition_task 推进（如 submit、dev_done）。
 5. 需求不清就用 transition_task 的 ask_for_input 步骤提问并等待；过程记录用 add_note。
-6. 被拒绝时读拒绝理由并据此行动，不要重试同一操作。
+6. 被拒绝时读拒绝理由并据此行动，不要重试同一操作。理由和网页上显示的是同一句话，只有六类：越权（缺授权）、范围不可见、需要人确认、前置未完成、并发已满、任务已结束。
 7. 要了解团队这段时间在做什么，用 list_sprints / get_sprint 看迭代待办与燃尽，用 get_board 看看板。
 8. 有些授权是「需要人确认」：这类操作调用后不会立刻生效，而是记成一条待确认操作，返回里会告诉你等谁确认、待确认操作 ID。别重试，用 list_my_proposals 看进展。`,
 	`You are the executor "%s" in AxiomOS.%s
@@ -524,7 +568,7 @@ How to work:
 3. After entering an in-progress stage call begin_task to open an execution record; heartbeat every 60 seconds with cumulative usage.
 4. Before delivering, attach the required deliverables with attach_artifact, then advance with transition_task (submit, dev_done, ...).
 5. If requirements are unclear, use the ask_for_input step via transition_task and wait; use add_note for process notes.
-6. When rejected, read the reason and act on it; do not retry the same call.
+6. When rejected, read the reason and act on it; do not retry the same call. Reasons are the very sentences the web app shows and fall into six kinds: missing grant, outside your visible scope, needs human confirmation, predecessors unfinished, concurrency limit reached, task already finished.
 7. To see what the team is working on right now, use list_sprints / get_sprint for the sprint backlog and burndown, and get_board for the board.
 8. Some grants require human confirmation: such a call does not take effect immediately but is recorded as a pending action, and the reply tells you who must confirm it and its ID. Do not retry; check progress with list_my_proposals.`)
 

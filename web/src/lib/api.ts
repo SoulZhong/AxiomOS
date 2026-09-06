@@ -318,6 +318,8 @@ export interface DirectoryField {
   title: string;
   /** 保密字段：只上传不回传，界面只知道有没有设过 */
   secret: boolean;
+  /** 选填字段：界面上标「选填」，留空不报错 */
+  optional?: boolean;
   placeholder: string;
   hint: string;
   /** 只在 GET /org/directory 的 providers[] 里、且是当前提供方时有意义 */
@@ -481,6 +483,141 @@ export interface DirectoryPreview {
   blocked_by_confirmations?: number;
 }
 
+// ---------- 通知外发（ADR 0019）：组织策略、个人规则、投递记录 ----------
+
+/** 一个通道最近的健康状况：连续失败 ≥ 3 次时 degraded，last_error 是提供方原话 */
+export interface NotifyHealth {
+  status: "ok" | "degraded";
+  streak: number;
+  last_error: string;
+  last_at?: ISODateTime;
+}
+/** 事件类型（顺序由后端固定） */
+export interface NotifyKind { key: string; title: string }
+/** 组织侧的一个通知通道：能不能用、要填什么、最近好不好 */
+export interface NotifyChannel {
+  key: string;
+  title: string;
+  enabled: boolean;
+  configured: boolean;
+  /** = enabled 且 configured */
+  available: boolean;
+  /** 是不是 IM 通道（复用 IM 集成的凭据与接入检查） */
+  im: boolean;
+  config: Record<string, string>;
+  secrets_set: Record<string, boolean>;
+  fields: DirectoryField[];
+  prerequisites: string[];
+  /** 为什么不可用（一句完整的话） */
+  hint?: string;
+  health: NotifyHealth;
+}
+export interface OrgNotifications {
+  channels: Record<string, NotifyChannel>;
+  channel_order: string[];
+  allowed_kinds: string[];
+  kinds: NotifyKind[];
+  health: Record<string, NotifyHealth>;
+}
+export interface OrgNotificationsInput {
+  channels?: Record<string, { enabled?: boolean; config?: Record<string, string> }>;
+  allowed_kinds?: string[];
+}
+export type DeliveryStatus = "queued" | "sent" | "failed" | "skipped";
+/** 一条外发投递：组织侧带收件人，个人侧不带 */
+export interface Delivery {
+  id: number;
+  kind: string;
+  kind_title: string;
+  channel: string;
+  channel_title: string;
+  status: DeliveryStatus;
+  status_title: string;
+  title: string;
+  text: string;
+  url: string;
+  error: string;
+  attempts: number;
+  created_at: ISODateTime;
+  sent_at?: ISODateTime;
+  recipient?: { id: ID; name: string };
+}
+/** 「发送测试」的结果：message 是一句可以直接显示的话 */
+export interface NotifyTestResult { ok: boolean; message: string; delivery?: Delivery }
+/** 个人能选的通道；bound 是我绑没绑这个 IM 的身份，没绑时 hint 说去哪儿绑 */
+export interface MyNotifyChannel { key: string; title: string; im: boolean; bound: boolean; hint?: string }
+export interface QuietHours { from: string; to: string }
+export interface MyNotifications {
+  rules: Record<string, string[]>;
+  sources: Record<string, "personal" | "default">;
+  quiet_hours: QuietHours | null;
+  available_channels: MyNotifyChannel[];
+  kinds: NotifyKind[];
+  allowed_kinds: string[];
+  defaults: Record<string, string[]>;
+  source: "personal" | "default";
+}
+export interface MyNotificationsInput { rules?: Record<string, string[]>; quiet_hours?: QuietHours | null }
+
+// ---------- 代码平台与外部事件（ADR 0020） ----------
+
+export interface CodeRepo { id: string; full_name: string; enabled: boolean; hook_ok: boolean; hook_error?: string }
+/** 六种外部事件，流程编辑器按它列候选 */
+export interface CodeEvent { key: string; title: string }
+export interface CodePlatform {
+  provider: string | null;
+  provider_title: string;
+  configured: boolean;
+  credentials: Record<string, string>;
+  secrets_set: Record<string, boolean>;
+  providers: DirectoryProviderInfo[];
+  repos: CodeRepo[];
+  webhook_url: string;
+  /** 回调签名密钥：本系统生成。平时不返回，只有显式索取（revealSecret / 换密钥）的那一次才带上，且那一次会记进审计 */
+  webhook_secret?: string;
+  webhook_secret_set: boolean;
+  proxy_url: string;
+  console_url?: string;
+  events: CodeEvent[];
+}
+export interface CodePlatformInput { provider?: string; credentials?: Record<string, string>; repos?: string[]; proxy_url?: string; /** 换一把回调密钥：返回的那一份带上新密钥，旧的立刻失效 */ rotate_webhook_secret?: boolean }
+export interface CodePlatformTest { ok: boolean; repos: number; error?: string; warnings?: string[] }
+export type CodeStep = "credentials" | "checks" | "repos" | "done";
+export interface CodeChecklist {
+  provider: string;
+  provider_title: string;
+  console_url?: string;
+  webhook_url: string;
+  checks: DirectoryCheck[];
+  ready: boolean;
+  next: { step: CodeStep; text: string };
+  repos: string[];
+}
+/** 我在代码平台上的登录名 */
+export interface CodeIdentity { provider: string; provider_title: string; login: string; bound: boolean }
+
+export type LinkKind = "pr" | "issue" | "doc" | "design" | "other";
+export const LINK_KINDS: LinkKind[] = ["pr", "issue", "doc", "design", "other"];
+export type LinkStatus = "open" | "draft" | "merged" | "closed" | "passed" | "failed";
+/** 任务上的一条外部链接（PR / Issue / 文档 / 设计稿 / 其它） */
+export interface ExternalLink {
+  id: ID;
+  kind: LinkKind;
+  kind_title: string;
+  provider: string;
+  url: string;
+  title: string;
+  status?: LinkStatus;
+  status_title?: string;
+  actor_name?: string;
+  external_id?: string;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+export interface LinkInput { kind?: LinkKind; url: string; title?: string }
+/** 列表行与看板卡片上的 PR 小标：最近更新的那条 PR 链接 */
+export interface TaskPR { status: LinkStatus; status_title: string; url: string; title: string; count: number }
+
 export interface Capability {
   name: string;
   title: string;
@@ -613,6 +750,68 @@ export interface AgentInput {
 export interface AgentRegistration {
   agent: Agent;
   token: string;
+}
+
+/** GET /agents/{id}/check：接入向导的连接检查，一句人话（ADR 0018）。 */
+export interface AgentCheck {
+  online: boolean;
+  /** 曾收到过它的请求 */
+  connected: boolean;
+  last_seen_at: ISODateTime | null;
+  last_tool?: string | null;
+  last_tool_at?: ISODateTime | null;
+  hint: string;
+}
+
+// ---------- 设备码接入（ADR 0018）：Agent 端申请验证码，人在网页里批准 ----------
+
+export type DeviceClient = "claude-code" | "cursor" | "codex" | "custom";
+export const DEVICE_CLIENTS: DeviceClient[] = ["claude-code", "cursor", "codex", "custom"];
+export type DeviceStatus = "pending" | "approved" | "denied" | "expired";
+
+/** POST /agent-auth/device 的返回（公开；device_code 只有 Agent 端知道） */
+export interface DeviceGrant {
+  device_code: string;
+  user_code: string;
+  verification_url: string;
+  expires_in: number;
+  interval: number;
+}
+
+/** GET /agent-auth/device/{user_code}：人在网页里看到的申请 */
+export interface DeviceRequest {
+  user_code: string;
+  client: DeviceClient | string;
+  client_title: string;
+  name: string;
+  status: DeviceStatus;
+  status_title: string;
+  created_at: ISODateTime;
+  expires_at: ISODateTime;
+  decided_at: ISODateTime | null;
+  agent: { id: ID; name: string } | null;
+  approved_by: { id: ID; name: string } | null;
+}
+
+export type DeviceGrantChoice = "allow" | "with_approval" | "deny";
+
+export interface DeviceApproveInput {
+  name?: string;
+  capabilities: string[];
+  grants: Partial<Record<GrantName, DeviceGrantChoice>>;
+  max_concurrency?: number;
+  shared?: boolean;
+}
+
+/** POST /agent-auth/token：Agent 端轮询；token 只在批准后的第一次成功轮询里出现 */
+export interface DeviceToken {
+  status: DeviceStatus;
+  token?: string;
+  agent?: { id: ID; name: string };
+  /** 组织名（后端返回的是一个名字，不是对象） */
+  organization?: string;
+  mcp_url?: string;
+  interval?: number;
 }
 
 // ---------- 待确认操作（ADR 0003：授权是「需要人确认」时，Agent 的动作先记成这一条，等人点确认才执行） ----------
@@ -780,6 +979,7 @@ export interface Relation {
 
 export interface TaskRef {
   id: ID;
+  number?: number;
   title: string;
   type: string;
   state: TaskState;
@@ -840,6 +1040,8 @@ export interface Participant {
 
 export interface Task {
   id: ID;
+  /** 组织内递增的可读序号，界面上写成 #123（老后端没有时缺省） */
+  number?: number;
   goal_id: ID | null;
   goal: { id: ID; title: string } | null;
   parent_id: ID | null;
@@ -863,6 +1065,10 @@ export interface Task {
   artifacts: Artifact[];
   comments: Comment[];
   runs: Run[];
+  /** 外部链接（ADR 0020）：详情给完整的一份，列表行是空数组 */
+  links?: ExternalLink[];
+  /** PR 小标（ADR 0020）：最近更新的那条 PR 链接，没有 PR 时不给 */
+  pr?: TaskPR;
   planned_start: ISODate | null;
   planned_end: ISODate | null;
   actual_start: ISODate | null;
@@ -964,7 +1170,7 @@ export interface Burndown {
 }
 
 /** 任务精简对象：看板卡片与迭代待办用，没有关联 / 评论 / 执行记录明细。 */
-export type TaskSummary = Pick<Task, "id" | "goal_id" | "goal" | "type" | "type_title" | "title" | "state" | "assignee" | "planned_start" | "planned_end" | "priority" | "progress" | "cost" | "points" | "sprint" | "estimate">;
+export type TaskSummary = Pick<Task, "id" | "number" | "goal_id" | "goal" | "type" | "type_title" | "title" | "state" | "assignee" | "planned_start" | "planned_end" | "priority" | "progress" | "cost" | "points" | "sprint" | "estimate" | "pr">;
 
 export interface SprintDetail extends Sprint {
   /** 后端返回的是完整任务对象（关联 / 交付物 / 评论 / 执行记录为空数组），见 docs/api.md */
@@ -1067,6 +1273,8 @@ export interface TransitionDef {
   requires: string[]; // deps_done / artifact:<类型> / comment / no_open_bugs / result
   grant?: GrantName; // 默认 execute
   assign_to?: string | null; // participant:<位置> / creator / null；缺省不变
+  /** 由外部事件触发（ADR 0020）：代码平台上发生这件事时自动走这一步 */
+  triggered_by?: { source: "git"; event: string } | null;
 }
 
 export interface WorkflowDef {
@@ -1087,6 +1295,29 @@ export interface TaskType {
   workflow: WorkflowDef;
 }
 
+/** 任务说明（CONTEXT.md「任务说明」，GET /tasks/{id}/brief）：执行者接到任务时看到的完整背景。任务详情的「执行简报」①②④段直接读它。 */
+export interface TaskBrief {
+  task: Task;
+  type_title: string;
+  state: TaskState;
+  /** 任务类型给执行者的做法说明 */
+  agent_instructions: string;
+  task_schema?: Record<string, unknown> | null;
+  result_schema?: Record<string, unknown> | null;
+  /** 自上而下的目标标题（根目标在前） */
+  goal_chain: string[];
+  predecessors: TaskSummary[];
+  predecessor_results: PredecessorResult[];
+  workflow: WorkflowAvailability | null;
+  names: Record<string, string>;
+}
+export interface PredecessorResult {
+  task_id: ID;
+  title: string;
+  result?: unknown;
+  artifacts: Artifact[];
+}
+
 // ---------- 待领取任务 ----------
 
 export interface BacklogItem {
@@ -1103,6 +1334,7 @@ export type GanttGroup = "goal" | "team" | "executor" | "type";
 
 export interface GanttTask {
   id: ID;
+  number?: number;
   title: string;
   type: string;
   type_title: string;
@@ -1177,6 +1409,7 @@ export type EventKind =
   | "MilestoneDeleted"
   | "AgentRegistered"
   | "DirectoryConfigured"
+  | "DirectoryDisconnected"
   | "DirectorySyncRan"
   | "DirectoryDecided"
   | "DirectoryUnbound"
@@ -1196,13 +1429,28 @@ export type EventKind =
   | "TeamCreated"
   | "TeamUpdated"
   | "TeamDeleted"
-  | "WorkspaceLayoutUpdated";
+  | "WorkspaceLayoutUpdated"
+  | "PreferencesUpdated"
+  | "AgentConnected"
+  // 通知外发（ADR 0019）与外部事件 / 外部链接（ADR 0020）
+  | "NotificationChannelConfigured"
+  | "NotificationPolicyChanged"
+  | "NotificationPreferencesUpdated"
+  | "CodePlatformConfigured"
+  | "CodePlatformDisconnected"
+  | "CodeIdentityBound"
+  | "ExternalLinkAdded"
+  | "ExternalLinkUpdated"
+  | "ExternalLinkRemoved"
+  | "ExternalEventApplied"
+  | "ExternalEventIgnored";
 
 export interface Event {
   id: ID;
   kind: EventKind;
   task_id: ID | null;
   task_title: string | null;
+  task_number?: number | null;
   goal_id: ID | null;
   actor: ExecutorRef | null; // 系统自动产生时为 null
   summary: string; // 一句中文
@@ -1572,6 +1820,66 @@ const layoutBody = (blocks: LayoutBlock[]) => ({ blocks: blocks.map(({ key, x, y
 /** 两份布局是否完全一样（键、坐标、宽高都相同，顺序无关）。 */
 export const sameLayout = (a: LayoutBlock[], b: LayoutBlock[]) => a.length === b.length && a.every((x) => b.some((y) => y.key === x.key && y.x === x.x && y.y === x.y && y.w === x.w && y.h === x.h));
 
+// ---------- 显示偏好（个人 → 角色 → 默认，逐字段解析；与工作台同一套思路） ----------
+
+export type PrefField = "task_list_columns" | "task_card_fields" | "default_task_view" | "compact" | "sidebar_collapsed";
+export const PREF_FIELDS: PrefField[] = ["task_list_columns", "task_card_fields", "default_task_view", "compact", "sidebar_collapsed"];
+export type PrefSource = "personal" | "role" | "default";
+
+export interface PrefValues {
+  /** 任务列表显示哪些列（键在目录里；必须含 title） */
+  task_list_columns: string[];
+  /** 看板卡片显示哪些字段 */
+  task_card_fields: string[];
+  /** 进「任务」默认打开哪个页签 */
+  default_task_view: string;
+  compact: boolean;
+  sidebar_collapsed: boolean;
+}
+
+/** GET /me/preferences：已解析，每个字段附带它来自哪一层 */
+export interface Preferences extends PrefValues {
+  source: PrefSource;
+  sources: Record<PrefField, PrefSource>;
+  /** source = role 时用到的角色代码名 */
+  roles_used: string[];
+  /** 个人明确设过的字段 */
+  overrides: PrefField[];
+}
+
+/** PUT 的请求体：字段的任意子集；null 表示清掉这一层的这一项 */
+export type PreferencesPatch = { [K in PrefField]?: PrefValues[K] | null };
+
+export interface PrefOption {
+  key: string;
+  title: string;
+}
+
+/** GET /me/preferences/catalog */
+export interface PreferencesCatalog {
+  columns: PrefOption[];
+  card_fields: PrefOption[];
+  views: PrefOption[];
+  defaults: PrefValues;
+}
+
+/** GET /org/preferences 的一行：一个角色的默认（只含设过的字段） */
+export interface RolePreferences {
+  role: string;
+  role_title: string;
+  data: Partial<PrefValues>;
+  fields: PrefField[];
+  member_count: number;
+}
+
+export const DEFAULT_PREFERENCES: PrefValues = {
+  task_list_columns: ["number", "title", "type", "state", "assignee", "goal", "priority", "due"],
+  task_card_fields: ["number", "assignee", "due", "priority"],
+  default_task_view: "list",
+  compact: false,
+  sidebar_collapsed: false,
+};
+
 // ---------- 待我处理（DESIGN.md §12，docs/api.md「待我处理」） ----------
 
 /** 六组事项，顺序就是紧急度：逾期 → 待确认 → 待验收 → 待答复 → 未开始 → 通知。 */
@@ -1698,6 +2006,9 @@ async function request<T>(method: string, path: string, body?: unknown, rawQuery
 const importBody = (csv: string, decisions?: MemberImportDecision[]): [unknown, Query | undefined, RawOptions | undefined] =>
   decisions && decisions.length ? [{ csv, decisions }, undefined, undefined] : [undefined, undefined, { text: { body: csv, type: "text/csv" } }];
 
+/** 对外可见的地址：浏览器里以当前页面来源为准（生产由 Go 进程同源托管），否则退回 API_BASE。 */
+export const publicBase = (): string => (typeof window !== "undefined" && window.location.origin && !/^https?:\/\/localhost:3\d{3}$/.test(window.location.origin) ? window.location.origin : API_BASE);
+
 export const api = {
   auth: {
     login: (email: string, password: string) => request<Session>("POST", "/auth/login", { email, password }),
@@ -1735,8 +2046,12 @@ export const api = {
     list: (q: TaskQuery = {}) => request<Task[]>("GET", "/tasks", undefined, q as Query),
     create: (input: TaskInput) => request<Task>("POST", "/tasks", input),
     get: (id: ID) => request<Task>("GET", `/tasks/${encodeURIComponent(id)}`),
+    /** 按可读序号找任务（`123` 或 `#123`）；找不到 → 404 整句 */
+    byNumber: (n: number | string) => request<Task>("GET", `/task-by-number/${encodeURIComponent(String(n).replace(/^#/, ""))}`),
     update: (id: ID, patch: Partial<TaskInput>) => request<Task>("PATCH", `/tasks/${encodeURIComponent(id)}`, patch),
     workflow: (id: ID) => request<WorkflowAvailability>("GET", `/tasks/${encodeURIComponent(id)}/workflow`),
+    /** 任务说明：目标链、前置任务的结果与交付物、任务类型的做法说明 */
+    brief: (id: ID) => request<TaskBrief>("GET", `/tasks/${encodeURIComponent(id)}/brief`),
     transition: (id: ID, name: string, body: TransitionBody = {}) =>
       request<Task>("POST", `/tasks/${encodeURIComponent(id)}/transitions/${encodeURIComponent(name)}`, body),
     claim: (id: ID) => request<Task>("POST", `/tasks/${encodeURIComponent(id)}/claim`, {}),
@@ -1749,6 +2064,10 @@ export const api = {
     /** from/to 之一必须是本任务；blocks: from 是前置；found_in: from 是 Bug。 */
     addRelation: (id: ID, input: { type: RelationType; from_task_id: ID; to_task_id: ID }) =>
       request<Relation>("POST", `/tasks/${encodeURIComponent(id)}/relations`, input),
+    /** 外部链接（ADR 0020）：同一任务同一地址只有一条，重复即更新 */
+    links: (id: ID) => request<ExternalLink[]>("GET", `/tasks/${encodeURIComponent(id)}/links`),
+    addLink: (id: ID, input: LinkInput) => request<ExternalLink>("POST", `/tasks/${encodeURIComponent(id)}/links`, input),
+    removeLink: (id: ID, linkId: ID) => request<void>("DELETE", `/tasks/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`),
   },
   backlog: {
     list: () => request<BacklogItem[]>("GET", "/backlog"),
@@ -1776,6 +2095,30 @@ export const api = {
     list: () => request<Agent[]>("GET", "/agents"),
     create: (input: AgentInput) => request<AgentRegistration>("POST", "/agents", input),
     remove: (id: ID) => request<void>("DELETE", `/agents/${encodeURIComponent(id)}`),
+    /** 连接检查：在线否、最近一次请求 / 工具，附一句现在该做什么 */
+    check: (id: ID) => request<AgentCheck>("GET", `/agents/${encodeURIComponent(id)}/check`),
+  },
+  /** 设备码接入（ADR 0018）。device / token 是公开接口（Agent 端调用），其余需登录。 */
+  agentAuth: {
+    device: (input: { client: DeviceClient; name?: string }) => request<DeviceGrant>("POST", "/agent-auth/device", input),
+    request: (userCode: string) => request<DeviceRequest>("GET", `/agent-auth/device/${encodeURIComponent(userCode)}`),
+    approve: (userCode: string, input: DeviceApproveInput) => request<{ agent: Agent; request: DeviceRequest }>("POST", `/agent-auth/device/${encodeURIComponent(userCode)}/approve`, input),
+    deny: (userCode: string) => request<DeviceRequest>("POST", `/agent-auth/device/${encodeURIComponent(userCode)}/deny`, {}),
+    token: (deviceCode: string) => request<DeviceToken>("POST", "/agent-auth/token", { device_code: deviceCode }),
+    /** 接入脚本的完整地址（在 Agent 所在机器上 `curl … | sh`）；浏览器里用页面自己的来源，避免把 localhost 写进命令 */
+    scriptUrl: (client: DeviceClient) => `${publicBase()}/api/v1/agent-auth/connect.sh?client=${encodeURIComponent(client)}`,
+  },
+  /** 显示偏好：个人 → 角色 → 默认（逐字段）。Agent 调用一律 403。 */
+  preferences: {
+    get: () => request<Preferences>("GET", "/me/preferences"),
+    update: (patch: PreferencesPatch) => request<Preferences>("PUT", "/me/preferences", patch),
+    /** 一键重置：清掉个人记录，返回解析后的偏好 */
+    reset: () => request<Preferences>("DELETE", "/me/preferences"),
+    catalog: () => request<PreferencesCatalog>("GET", "/me/preferences/catalog"),
+    /** 各角色的默认（需要 org_settings） */
+    org: () => request<RolePreferences[]>("GET", "/org/preferences"),
+    saveRole: (role: string, patch: PreferencesPatch) => request<RolePreferences>("PUT", `/org/preferences/${encodeURIComponent(role)}`, patch),
+    resetRole: (role: string) => request<RolePreferences>("DELETE", `/org/preferences/${encodeURIComponent(role)}`),
   },
   /** 待确认操作：Agent 发起、等人点确认才执行的动作（ADR 0003）。 */
   proposals: {
@@ -1840,6 +2183,19 @@ export const api = {
     /** 把这几条标为已读 → 剩下的未读数 */
     read: (ids: number[]) => request<{ count: number }>("POST", "/notifications/read", { ids }),
   },
+  /** 我的通知规则与我在代码平台上的身份（ADR 0019 / 0020）；Agent 403。 */
+  me: {
+    notifications: {
+      get: () => request<MyNotifications>("GET", "/me/notifications"),
+      update: (input: MyNotificationsInput) => request<MyNotifications>("PUT", "/me/notifications", input),
+      reset: () => request<MyNotifications>("DELETE", "/me/notifications"),
+      deliveries: (limit = 20) => request<Delivery[]>("GET", "/me/notifications/deliveries", undefined, { limit }),
+    },
+    codeIdentity: {
+      get: () => request<CodeIdentity>("GET", "/me/code-identity"),
+      save: (login: string) => request<CodeIdentity>("PUT", "/me/code-identity", { login }),
+    },
+  },
   /** 组织设置：组织负责人或持有 org_settings 权限的角色。 */
   org: {
     get: () => request<OrgInfo>("GET", "/org"),
@@ -1897,6 +2253,27 @@ export const api = {
       reconsider: (kind: DirectoryKind, externalId: string) => request<void>("DELETE", `/org/directory/decisions/${kind}/${encodeURIComponent(externalId)}`),
       mappings: () => request<DirectoryMappings>("GET", "/org/directory/mappings"),
       unbind: (kind: DirectoryKind, externalId: string) => request<void>("DELETE", `/org/directory/bindings/${kind}/${encodeURIComponent(externalId)}`),
+      /** 断开：删掉凭据与同步设置，已同步进来的团队 / 成员、对应关系与历次同步记录都留着。幂等。 */
+      disconnect: () => request<DirectoryConfig>("DELETE", "/org/directory"),
+    },
+    /** 通知外发（ADR 0019）：组织允许哪些通道与事件、发一条测试、最近投递 */
+    notifications: {
+      get: () => request<OrgNotifications>("GET", "/org/notifications"),
+      save: (input: OrgNotificationsInput) => request<OrgNotifications>("PUT", "/org/notifications", input),
+      test: (channel: string) => request<NotifyTestResult>("POST", "/org/notifications/test", { channel }),
+      deliveries: (q: { limit?: number; channel?: string; status?: string } = {}) => request<Delivery[]>("GET", "/org/notifications/deliveries", undefined, q),
+    },
+    /** 代码平台（ADR 0020）：与 IM 集成同一套提供方注册表，只是能力不同 */
+    codePlatform: {
+      get: () => request<CodePlatform>("GET", "/org/code-platform"),
+      /** 索取一次回调密钥：只有这一次的返回里带 webhook_secret，服务端会记一条审计 */
+      revealSecret: () => request<CodePlatform>("GET", "/org/code-platform", undefined, { reveal: "secret" }),
+      save: (input: CodePlatformInput) => request<CodePlatform>("PUT", "/org/code-platform", input),
+      test: () => request<CodePlatformTest>("POST", "/org/code-platform/test", {}),
+      checklist: () => request<CodeChecklist>("GET", "/org/code-platform/checklist"),
+      repos: () => request<CodeRepo[]>("GET", "/org/code-platform/repos"),
+      /** 断开：删掉凭据与仓库选择，已经挂上的外部链接与历史动态都留着。幂等。 */
+      disconnect: () => request<CodePlatform>("DELETE", "/org/code-platform"),
     },
   },
   /** 邀请接受（公开，不需要登录）。 */

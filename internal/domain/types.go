@@ -49,6 +49,16 @@ type Transition struct {
 	Grant         Grant     `json:"grant,omitempty"`          // Agent 触发所需授权，默认 execute
 	AssignTo      string    `json:"assign_to,omitempty"`      // participant:<slot> | creator | "" (不变)
 	ClearAssignee bool      `json:"clear_assignee,omitempty"` // 显式清空负责人
+	// TriggeredBy 声明这一步可以由外部事件触发（ADR 0020）：外部事件到达时，若任务当前状态有这样一条步骤
+	// 且它的其余前提满足，系统以「外部事件」为执行者走它。不填表示只能由人或 Agent 触发。
+	TriggeredBy *Trigger `json:"triggered_by,omitempty"`
+}
+
+// Trigger 是一条步骤的外部触发条件（ADR 0020）。Source 目前只有 "git"（代码平台）；
+// Event 是六种外部事件之一（见 ExternalEvents）。
+type Trigger struct {
+	Source string `json:"source"`
+	Event  string `json:"event"`
 }
 
 // Workflow 是绑定在任务类型上的流程声明。
@@ -114,6 +124,9 @@ const (
 	GrantManageWorkflows Grant = "manage_workflows"
 )
 
+// AllGrants 是全部授权，按界面上的顺序。
+var AllGrants = []Grant{GrantExecute, GrantClaimBacklog, GrantReview, GrantComment, GrantCreateSubtask, GrantCreateTask, GrantCreateGoal, GrantAssign, GrantLink, GrantManageWorkflows}
+
 // GrantTitle 返回授权在某语言下的名称。
 func GrantTitle(g Grant, loc i18n.Locale) string { return i18n.Tr(loc, "grant."+string(g)) }
 
@@ -129,8 +142,9 @@ const (
 type ExecutorKind string
 
 const (
-	ExecutorMember ExecutorKind = "member"
-	ExecutorAgent  ExecutorKind = "agent"
+	ExecutorMember   ExecutorKind = "member"
+	ExecutorAgent    ExecutorKind = "agent"
+	ExecutorExternal ExecutorKind = "external" // 外部事件（代码平台的 PR / CI），ADR 0020
 )
 
 // Executor 是能被指派任务的对象：成员或 Agent。
@@ -200,6 +214,7 @@ type Comment struct {
 // Task 是任务。
 type Task struct {
 	ID                   string            `json:"id"`
+	Number               int               `json:"number"` // 组织内递增的可读序号，界面上写成 #123
 	OrgID                string            `json:"org_id"`
 	GoalID               string            `json:"goal_id"`
 	ParentID             string            `json:"parent_id,omitempty"`

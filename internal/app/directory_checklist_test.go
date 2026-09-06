@@ -56,7 +56,7 @@ func TestDirectoryChecklist(t *testing.T) {
 		{Key: "user_emails", Title: i18n.T("邮箱权限", "Emails"), Status: directory.CheckTodo, Detail: i18n.T("读不到邮箱。", "No emails."), Fix: i18n.T("开通「获取用户邮箱信息」。", "Enable user email.")},
 	})
 	v, err = a.DirectoryChecklist(ctx, jia)
-	if err != nil || v.Ready || v.Next.Step != "checks" || !strings.Contains(v.Next.Text, "获取部门基础信息") || len(v.Checks) != 4 || checkStatus(v, "dept_names") != "blocked" || checkStatus(v, "user_emails") != "todo" {
+	if err != nil || v.Ready || v.Next.Step != "checks" || !strings.Contains(v.Next.Text, "获取部门基础信息") || len(v.Checks) != 5 || checkStatus(v, "dept_names") != "blocked" || checkStatus(v, "user_emails") != "todo" || checkStatus(v, "messaging") != "ok" {
 		t.Fatalf("权限缺项应阻塞并指向修法 %+v %v", v, err)
 	}
 	if v.Checks[2].FixURL != "https://example.test/app/cli_x/auth" {
@@ -105,7 +105,7 @@ func TestDirectoryChecklist(t *testing.T) {
 		t.Fatal(err)
 	}
 	v, _ = a.DirectoryChecklist(ctx, jia)
-	if !v.Ready || v.Next.Step != "preview" || len(v.Checks) != 2 || len(v.SuggestedRoots) != 0 || len(v.RootDepartmentIDs) != 0 || v.RootDepartmentID != "0" {
+	if !v.Ready || v.Next.Step != "preview" || len(v.Checks) != 3 || len(v.SuggestedRoots) != 0 || len(v.RootDepartmentIDs) != 0 || v.RootDepartmentID != "0" {
 		t.Fatalf("全通且未同步过应指向预览 %+v", v)
 	}
 	if _, err := a.PreviewDirectory(ctx, jia); err != nil {

@@ -6,6 +6,19 @@
 // 拼出来的句子（拒绝理由、动态摘要）直接走字典里的 mock.* 键。
 import type {
   Agent,
+  AgentCheck,
+  DeviceApproveInput,
+  DeviceClient,
+  DeviceGrant,
+  DeviceRequest,
+  DeviceToken,
+  Preferences,
+  PreferencesCatalog,
+  PrefField,
+  PrefSource,
+  PrefValues,
+  RolePreferences,
+  TaskBrief,
   AgentInput,
   AgentRegistration,
   AgentStat,
@@ -24,6 +37,13 @@ import type {
   BoardLane,
   Burndown,
   Capability,
+  CodeChecklist,
+  CodeIdentity,
+  CodePlatform,
+  CodePlatformInput,
+  CodePlatformTest,
+  CodeRepo,
+  CodeStep,
   Comment,
   DirectoryConfig,
   DirectoryInput,
@@ -38,10 +58,25 @@ import type {
   DirectoryDecisionRecord,
   DirectoryDuplicate,
   DirectoryDuplicateSide,
+  DirectoryField,
   DirectoryKind,
   DirectoryMappings,
   DirectoryMatchReason,
   DirectorySkipped,
+  Delivery,
+  DeliveryStatus,
+  ExternalLink,
+  LinkKind,
+  LinkStatus,
+  MyNotifications,
+  MyNotificationsInput,
+  MyNotifyChannel,
+  NotifyChannel,
+  NotifyHealth,
+  OrgNotifications,
+  OrgNotificationsInput,
+  QuietHours,
+  TaskPR,
   MemberImportDecision,
   DirectoryRun,
   DirectoryTeamPlan,
@@ -137,7 +172,7 @@ import type {
   Notification,
 } from "./api";
 import { fieldChangeSentence } from "./fieldChange";
-import { ApiError, BLOCK_KEYS, GRID_COLS, GRID_MAX_H, INBOX_KINDS, blocksOverlap, compactLayout, isBlockHeight, isBlockKey, isBlockWidth, normalizeLayout, sameLayout } from "./api";
+import { ApiError, BLOCK_KEYS, DEFAULT_PREFERENCES, DEVICE_CLIENTS, GRID_COLS, GRID_MAX_H, INBOX_KINDS, LINK_KINDS, PREF_FIELDS, blocksOverlap, compactLayout, isBlockHeight, isBlockKey, isBlockWidth, normalizeLayout, sameLayout } from "./api";
 import { addDays, diffDays, parseDate, startOfWeek, toISODate, today } from "./format";
 import { getLocale, normalizeLocale, t, type Key, type Locale } from "./i18n";
 
@@ -305,6 +340,8 @@ const T = (name: string, title: string, from: string | string[], to: string, by:
   requires: [],
   ...extra,
 });
+/** 由外部事件触发的迁移（ADR 0020）：与后端内置流程一致 */
+const git = (event: string) => ({ source: "git" as const, event });
 const commonTail = (active: string[]): TransitionDef[] => [
   T("block", "标记阻塞", active, "blocked", ["assignee", "creator"]),
   T("cancel", "取消", "*", "cancelled", ["creator", "role:admin"]),
@@ -376,8 +413,8 @@ const TASK_TYPES: Record<string, TaskType> = {
       ),
       transitions: [
         T("start_design", "开始设计", "draft", "designing", "creator", { assign_to: "participant:designer" }),
-        T("design_done", "设计完成", "designing", "developing", "assignee", { requires: ["artifact:prd"], assign_to: "participant:developer" }),
-        T("dev_done", "开发完成", "developing", "testing", "assignee", { requires: ["artifact:pr"], assign_to: "participant:tester" }),
+        T("design_done", "设计完成", "designing", "developing", "assignee", { requires: ["artifact:prd"], assign_to: "participant:developer", triggered_by: git("pr_opened") }),
+        T("dev_done", "开发完成", "developing", "testing", "assignee", { requires: ["artifact:pr"], assign_to: "participant:tester", triggered_by: git("pr_merged") }),
         T("test_fail", "测试不通过", "testing", "developing", "assignee", { requires: ["comment"], assign_to: "participant:developer" }),
         T("test_pass", "测试通过", "testing", "releasing", "assignee", { requires: ["artifact:test_report", "no_open_bugs"], assign_to: "participant:releaser" }),
         T("release_done", "发布完成", "releasing", "awaiting_acceptance", "assignee", { requires: ["artifact:release_note"] }),
@@ -385,7 +422,7 @@ const TASK_TYPES: Record<string, TaskType> = {
         T("reject", "验收打回", "awaiting_acceptance", "developing", "reviewer", { requires: ["comment"], grant: "review", assign_to: "participant:developer" }),
         T("ask_for_input", "提问等待", ["designing", "developing", "testing", "releasing"], "waiting", "assignee", { requires: ["comment"] }),
         T("resume", "答复并恢复", "waiting", "$previous", ["creator", "reviewer"], { requires: ["comment"] }),
-        ...commonTail(["designing", "developing", "testing", "releasing"]),
+        ...commonTail(["designing", "developing", "testing", "releasing"]).map((tr) => (tr.name === "block" ? { ...tr, triggered_by: git("ci_failed") } : tr)),
         T("unblock", "解除阻塞", "blocked", "$previous", ["assignee", "creator"]),
       ],
     },
@@ -419,8 +456,8 @@ const TASK_TYPES: Record<string, TaskType> = {
         T("reject", "判定非 Bug", ["new", "confirmed"], "rejected", ["creator", "role:tester", "role:developer"], { requires: ["comment"] }),
         T("duplicate", "判定重复", ["new", "confirmed"], "duplicate", ["creator", "role:tester", "role:developer"], { requires: ["comment"] }),
         T("wont_fix", "不修复", ["new", "confirmed", "fixing"], "wont_fix", ["creator", "role:admin"], { requires: ["comment"] }),
-        T("start_fix", "开始修复", "confirmed", "fixing", "assignee"),
-        T("fixed", "修复完成", "fixing", "fixed", "assignee", { requires: ["artifact:pr"], assign_to: "participant:tester" }),
+        T("start_fix", "开始修复", "confirmed", "fixing", "assignee", { triggered_by: git("pr_opened") }),
+        T("fixed", "修复完成", "fixing", "fixed", "assignee", { requires: ["artifact:pr"], assign_to: "participant:tester", triggered_by: git("pr_merged") }),
         T("verify", "验证通过", "fixed", "verified", ["assignee", "reviewer"], { grant: "review" }),
         T("reopen", "重新打开", ["fixed", "verified"], "fixing", ["assignee", "reviewer", "creator"], { requires: ["comment"], assign_to: "participant:developer" }),
       ],
@@ -522,17 +559,17 @@ const AGENTS: Record<ID, Agent> = {
   "li-agent": {
     id: "li-agent", name: "小李的编码 Agent", owner: ref("li"), shared: false, capabilities: ["coding"],
     grants: [g("execute"), g("claim_backlog"), g("comment"), g("link"), g("review", "with_approval")],
-    online: true, last_seen_at: nowISO(), max_concurrency: 2, created_at: at(-60), can_manage: true,
+    online: true, last_seen_at: nowISO(), max_concurrency: 2, runtime: "claude-code", created_at: at(-60), can_manage: true,
   },
   "zhang-agent": {
     id: "zhang-agent", name: "小张的测试 Agent", owner: ref("zhang"), shared: false, capabilities: ["testing", "coding"],
     grants: [g("execute"), g("claim_backlog"), g("review"), g("comment")],
-    online: true, last_seen_at: at(0, 8, 40), max_concurrency: 1, created_at: at(-45), can_manage: true,
+    online: true, last_seen_at: at(0, 8, 40), max_concurrency: 1, runtime: "cursor", created_at: at(-45), can_manage: true,
   },
   "wang-agent": {
     id: "wang-agent", name: "小王的写作助手", owner: ref("wang"), shared: false, capabilities: ["writing", "data_analysis"],
     grants: [g("execute"), g("comment"), g("create_task", "with_approval")],
-    online: false, last_seen_at: at(-1, 18), max_concurrency: 1, created_at: at(-30), can_manage: true,
+    online: false, last_seen_at: at(-1, 18), max_concurrency: 1, runtime: "codex", created_at: at(-30), can_manage: true,
   },
   "zhou-agent": {
     id: "zhou-agent", name: "小周的客服助手", owner: ref("zhou"), shared: false, capabilities: ["writing", "data_analysis"],
@@ -567,7 +604,7 @@ interface MilestoneRow {
   id: ID; goal_id: ID; title: string; description: string; due_on: string; reached_at: string | null; created_by: ID; created_at: string; updated_at: string;
 }
 interface TaskRow {
-  id: ID; goal_id: ID | null; parent_id: ID | null; type: string; type_version: number; title: string; description: string;
+  id: ID; number: number; goal_id: ID | null; parent_id: ID | null; type: string; type_version: number; title: string; description: string;
   state: string; previous_state: string | null; last_weight: number; creator_id: ID; assignee_id: ID | null; reviewer_id: ID;
   participants: Record<string, ID | null>; required_role: string | null; pending_participant: string | null; required_capabilities: string[];
   artifacts: Artifact[]; comments: Comment[]; planned_start: string | null; planned_end: string | null; actual_start: string | null; actual_end: string | null;
@@ -602,11 +639,12 @@ function addGoal(row: GoalRow) { goals[row.id] = row; }
 function addMilestone(row: Omit<MilestoneRow, "updated_at" | "created_by" | "description"> & Partial<MilestoneRow>) {
   milestones[row.id] = { description: "", created_by: goals[row.goal_id]?.owner_id ?? "wang", updated_at: row.created_at, ...row };
 }
-function addTask(row: Omit<TaskRow, "artifacts" | "comments" | "last_weight" | "previous_state" | "fields" | "updated_at" | "type_version" | "parent_id" | "required_role" | "pending_participant" | "required_capabilities" | "description" | "points" | "sprint_id"> & Partial<TaskRow>) {
+let taskSeq = 0;
+function addTask(row: Omit<TaskRow, "number" | "artifacts" | "comments" | "last_weight" | "previous_state" | "fields" | "updated_at" | "type_version" | "parent_id" | "required_role" | "pending_participant" | "required_capabilities" | "description" | "points" | "sprint_id"> & Partial<TaskRow>) {
   const def = TASK_TYPES[row.type];
   const st = def.workflow.states[row.state];
   const full: TaskRow = {
-    parent_id: null, type_version: def.workflow.version, description: "", previous_state: null,
+    number: ++taskSeq, parent_id: null, type_version: def.workflow.version, description: "", previous_state: null,
     last_weight: st.weight ?? 0, required_role: null, pending_participant: null, required_capabilities: [], points: null, sprint_id: null,
     artifacts: [], comments: [], fields: {}, updated_at: row.created_at, ...row,
   };
@@ -623,7 +661,7 @@ function addRun(row: Omit<RunRow, "outcome"> & { outcome?: Run["outcome"] }) {
 function emit(kind: EventKind, opts: { task?: ID | null; goal?: ID | null; actor?: ID | null; summary: string; data?: Record<string, unknown>; at?: string }) {
   const tk = opts.task ? tasks[opts.task] : null;
   events.push({
-    id: nextId("E"), kind, task_id: opts.task ?? null, task_title: tk?.title ?? null,
+    id: nextId("E"), kind, task_id: opts.task ?? null, task_title: tk?.title ?? null, task_number: tk?.number ?? null,
     goal_id: opts.goal ?? tk?.goal_id ?? null, actor: opts.actor ? ref(opts.actor) : null,
     summary: opts.summary, data: opts.data ?? {}, created_at: opts.at ?? nowISO(),
   });
@@ -848,7 +886,7 @@ const progressOf = (tk: TaskRow) => {
   if (st.label === "terminal_failure") return 0;
   return st.weight ?? tk.last_weight;
 };
-const taskRef = (tk: TaskRow): TaskRef => ({ id: tk.id, title: tk.title, type: tk.type, state: stateOf(tk) });
+const taskRef = (tk: TaskRow): TaskRef => ({ id: tk.id, number: tk.number, title: tk.title, type: tk.type, state: stateOf(tk) });
 const viewRun = (r: RunRow): Run => ({
   id: r.id, task_id: r.task_id, state: r.state, state_title: TASK_TYPES[tasks[r.task_id].type].workflow.states[r.state]?.title ?? r.state,
   executor: ref(r.executor_id), started_at: r.started_at, ended_at: r.ended_at, outcome: r.outcome, usage: r.usage, total_tokens: runTokens(r), cost: round2(runCost(r)),
@@ -862,7 +900,7 @@ function viewTask(tk: TaskRow): Task {
   const def = defOf(tk);
   const rs = taskRuns(tk.id);
   return {
-    id: tk.id, goal_id: tk.goal_id, goal: tk.goal_id && goals[tk.goal_id] ? { id: tk.goal_id, title: goals[tk.goal_id].title } : null, parent_id: tk.parent_id,
+    id: tk.id, number: tk.number, goal_id: tk.goal_id, goal: tk.goal_id && goals[tk.goal_id] ? { id: tk.goal_id, title: goals[tk.goal_id].title } : null, parent_id: tk.parent_id,
     type: tk.type, type_title: def.title, type_version: tk.type_version, title: tk.title, description: tk.description,
     state: stateOf(tk), previous_state: tk.previous_state, creator: ref(tk.creator_id), assignee: tk.assignee_id ? ref(tk.assignee_id) : null, reviewer: ref(tk.reviewer_id),
     participants: Object.fromEntries(Object.entries(def.participants).map(([slot, p]) => [slot, { title: p.title, role: p.role, executor: tk.participants[slot] ? ref(tk.participants[slot] as ID) : null }])),
@@ -872,6 +910,7 @@ function viewTask(tk: TaskRow): Task {
     planned_start: tk.planned_start, planned_end: tk.planned_end, actual_start: tk.actual_start, actual_end: tk.actual_end,
     estimate: tk.estimate, points: tk.points, sprint: tk.sprint_id && sprints[tk.sprint_id] ? { id: tk.sprint_id, name: sprints[tk.sprint_id].name } : null,
     priority: tk.priority, progress: progressOf(tk), total_tokens: rs.reduce((s, r) => s + runTokens(r), 0), cost: taskCost(tk.id),
+    links: linksOf(tk.id), pr: prOf(tk.id),
     fields: tk.fields, created_at: tk.created_at, updated_at: tk.updated_at,
   };
 }
@@ -1092,7 +1131,7 @@ function doTransition(tk: TaskRow, name: string, body: TransitionBody): Task {
 
 // ---------- 甘特图与统计 ----------
 const ganttTask = (tk: TaskRow): GanttTask => ({
-  id: tk.id, title: tk.title, type: tk.type, type_title: defOf(tk).title, state: stateOf(tk), assignee: tk.assignee_id ? ref(tk.assignee_id) : null, goal_id: tk.goal_id,
+  id: tk.id, number: tk.number, title: tk.title, type: tk.type, type_title: defOf(tk).title, state: stateOf(tk), assignee: tk.assignee_id ? ref(tk.assignee_id) : null, goal_id: tk.goal_id,
   planned_start: tk.planned_start, planned_end: tk.planned_end, actual_start: tk.actual_start, actual_end: tk.actual_end, progress: progressOf(tk), cost: taskCost(tk.id),
 });
 function gantt(group: GanttGroup, from: string, to: string, pick: ((team: ID | null) => boolean) | null = null): GanttData {
@@ -1212,7 +1251,11 @@ type Handler = (m: RegExpMatchArray, body: unknown, q: Query) => unknown;
 const routes: Array<[string, RegExp, Handler]> = [];
 const on = (method: string, pattern: string, h: Handler) => routes.push([method, new RegExp(`^${pattern.replace(/:(\w+)/g, "(?<$1>[^/]+)")}$`), h]);
 const str = (q: Query, k: string) => (q?.[k] === undefined || q?.[k] === null ? undefined : String(q[k]));
-const getTask = (id: string) => { const tk = tasks[id]; if (!tk) throw new ApiError(404, t("mock.task.notFound")); return tk; };
+const getTask = (id: string) => {
+  const tk = tasks[id] ?? (/^#?\d+$/.test(id) ? Object.values(tasks).find((x) => x.number === Number(id.replace(/^#/, ""))) : undefined);
+  if (!tk) throw new ApiError(404, /^#?\d+$/.test(id) ? t("mock.task.noNumber", { n: id.replace(/^#/, "") }) : t("mock.task.notFound"));
+  return tk;
+};
 const getGoal = (id: string) => { const gr = goals[id]; if (!gr) throw new ApiError(404, t("mock.goal.notFound")); return gr; };
 const requireLogin = () => { if (!loggedIn) throw new ApiError(401, t("mock.login.required")); };
 
@@ -1423,6 +1466,7 @@ on("POST", "/tasks", (_m, body) => {
   return viewTask(row);
 });
 on("GET", "/tasks/:id", (m) => { requireLogin(); return viewTask(getTask(m.groups!.id)); });
+on("GET", "/task-by-number/:n", (m) => { requireLogin(); return viewTask(getTask(`#${m.groups!.n.replace(/^#/, "")}`)); });
 on("PATCH", "/tasks/:id", (m, body) => {
   requireLogin();
   const tk = getTask(m.groups!.id);
@@ -1496,6 +1540,20 @@ on("PATCH", "/tasks/:id", (m, body) => {
   return viewTask(tk);
 });
 on("GET", "/tasks/:id/workflow", (m) => { requireLogin(); return workflowView(getTask(m.groups!.id)); });
+on("GET", "/tasks/:id/brief", (m) => {
+  requireLogin();
+  const tk = getTask(m.groups!.id);
+  const def = defOf(tk);
+  const chain: string[] = [];
+  for (let gid = tk.goal_id; gid && goals[gid]; gid = goals[gid].parent_id) chain.unshift(goals[gid].title);
+  const preds = relations.filter((r) => r.type === "blocks" && r.to === tk.id).map((r) => tasks[r.from]).filter(Boolean);
+  const brief: TaskBrief = {
+    task: viewTask(tk), type_title: L(def.title), state: stateOf(tk), agent_instructions: def.agent_instructions, task_schema: def.task_schema, result_schema: def.result_schema,
+    goal_chain: chain, predecessors: preds.map(summaryOf), predecessor_results: preds.map((p) => ({ task_id: p.id, title: p.title, result: p.fields.result, artifacts: p.artifacts })),
+    workflow: workflowView(tk), names: Object.fromEntries(Object.values(MEMBERS).map((mm) => [mm.id, ref(mm.id).name])),
+  };
+  return brief;
+});
 on("POST", "/tasks/:id/transitions/:name", (m, body) => { requireLogin(); return doTransition(getTask(m.groups!.id), m.groups!.name, (body ?? {}) as TransitionBody); });
 on("POST", "/tasks/:id/claim", (m) => {
   requireLogin();
@@ -2103,7 +2161,7 @@ const LABEL_ORDER: StateLabel[] = ["pending", "active", "waiting", "terminal_suc
 const PRIORITY_RANK: Record<Task["priority"], number> = { urgent: 0, high: 1, normal: 2, low: 3 };
 const summaryOf = (tk: TaskRow): Omit<BoardCard, "can_move_to"> => {
   const v = viewTask(tk);
-  return { id: v.id, goal_id: v.goal_id, goal: v.goal, type: v.type, type_title: v.type_title, title: v.title, state: v.state, assignee: v.assignee, planned_start: v.planned_start, planned_end: v.planned_end, priority: v.priority, progress: v.progress, cost: v.cost, points: v.points, sprint: v.sprint, estimate: v.estimate };
+  return { id: v.id, number: v.number, goal_id: v.goal_id, goal: v.goal, type: v.type, type_title: v.type_title, title: v.title, state: v.state, assignee: v.assignee, planned_start: v.planned_start, planned_end: v.planned_end, priority: v.priority, progress: v.progress, cost: v.cost, points: v.points, sprint: v.sprint, estimate: v.estimate, pr: v.pr };
 };
 const byBoardOrder = (a: TaskRow, b: TaskRow) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || (a.planned_end ?? "9999").localeCompare(b.planned_end ?? "9999") || a.created_at.localeCompare(b.created_at);
 function board(q: Query): BoardData {
@@ -2881,6 +2939,17 @@ on("PUT", "/org/directory", (_m, body) => {
   emit("DirectoryConfigured", { actor: ME, summary: t("mock.ev.directoryConfigured", { name: p.title }) });
   return viewDirectory();
 });
+/** DELETE /org/directory：删掉凭据与同步设置；已同步进来的团队 / 成员、对应关系与历次同步记录都留着。没接入时也算成功（幂等）。 */
+on("DELETE", "/org/directory", () => {
+  requireOrgAdmin();
+  const p = providerOf(DIR.provider);
+  const was = dirConfigured();
+  DIR.provider = null;
+  DIR.credentials = {}; DIR.secrets = {};
+  DIR.root_department_id = ""; DIR.root_department_ids = []; DIR.default_role = ""; DIR.schedule = "manual"; DIR.proxy_url = "";
+  if (was && p) emit("DirectoryDisconnected", { actor: ME, summary: t("mock.ev.directoryDisconnected", { name: p.title }) });
+  return viewDirectory();
+});
 on("POST", "/org/directory/test", (): DirectoryTest => {
   requireOrgAdmin();
   const p = providerOf(DIR.provider);
@@ -3422,6 +3491,604 @@ on("POST", "/admin/admins", (_m, body) => {
 });
 
 const clone = <T,>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
+
+
+// ---------- 显示偏好（个人 → 角色 → 默认，逐字段） ----------
+const PREF_COLUMNS = ["number", "title", "type", "state", "assignee", "reviewer", "goal", "sprint", "priority", "points", "planned", "due", "cost"];
+const PREF_CARD_FIELDS = ["number", "assignee", "due", "priority", "points", "goal"];
+const PREF_VIEWS = ["list", "board", "gantt", "sprints", "backlog"];
+const PERSONAL_PREFS: Record<ID, Partial<PrefValues>> = {};
+const ROLE_PREFS: Record<string, Partial<PrefValues>> = { developer: { default_task_view: "board", task_card_fields: ["number", "assignee", "due", "priority", "points"] } };
+const prefTitle = (k: string) => t(`pref.key.${k}` as Key);
+function prefCatalog(): PreferencesCatalog {
+  return {
+    columns: PREF_COLUMNS.map((key) => ({ key, title: prefTitle(key) })),
+    card_fields: PREF_CARD_FIELDS.map((key) => ({ key, title: prefTitle(key) })),
+    views: PREF_VIEWS.map((key) => ({ key, title: t(`tasks.view.${key}` as Key) })),
+    defaults: { ...DEFAULT_PREFERENCES, task_list_columns: [...DEFAULT_PREFERENCES.task_list_columns], task_card_fields: [...DEFAULT_PREFERENCES.task_card_fields] },
+  };
+}
+function resolvePreferences(): Preferences {
+  const mine = PERSONAL_PREFS[ME] ?? {};
+  const roles = myRoles();
+  const values: Record<string, unknown> = { ...DEFAULT_PREFERENCES };
+  const sources = {} as Record<PrefField, PrefSource>;
+  const used = new Set<string>();
+  for (const f of PREF_FIELDS) {
+    if (mine[f] !== undefined) { values[f] = mine[f]; sources[f] = "personal"; continue; }
+    const role = roles.find((r) => ROLE_PREFS[r]?.[f] !== undefined);
+    if (role) { values[f] = ROLE_PREFS[role][f]; sources[f] = "role"; used.add(role); continue; }
+    sources[f] = "default";
+  }
+  const overrides = PREF_FIELDS.filter((f) => mine[f] !== undefined);
+  const source: PrefSource = overrides.length ? "personal" : used.size ? "role" : "default";
+  return { ...(values as unknown as PrefValues), source, sources, roles_used: [...used], overrides };
+}
+/** 校验并合并一份部分修改到 target（null 清项）；与后端同一套整句。 */
+function applyPrefPatch(target: Partial<PrefValues>, body: unknown) {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const keys = Object.keys(b);
+  if (!keys.length) throw new ApiError(400, t("mock.pref.empty"));
+  for (const k of keys) {
+    if (!(PREF_FIELDS as string[]).includes(k)) throw new ApiError(400, t("mock.pref.unknownKey", { key: k }));
+    const v = b[k];
+    if (v === null) { delete target[k as PrefField]; continue; }
+    if (k === "task_list_columns" || k === "task_card_fields") {
+      const allowed = k === "task_list_columns" ? PREF_COLUMNS : PREF_CARD_FIELDS;
+      if (!Array.isArray(v) || !v.length || v.some((x) => typeof x !== "string" || !allowed.includes(x)) || new Set(v).size !== v.length) throw new ApiError(400, t("mock.pref.badList", { title: prefTitle(k) }));
+      if (k === "task_list_columns" && !v.includes("title")) throw new ApiError(400, t("mock.pref.needTitle"));
+      target[k] = [...(v as string[])];
+    } else if (k === "default_task_view") {
+      if (typeof v !== "string" || !PREF_VIEWS.includes(v)) throw new ApiError(400, t("mock.pref.badView"));
+      target.default_task_view = v;
+    } else {
+      if (typeof v !== "boolean") throw new ApiError(400, t("mock.pref.badBool", { title: prefTitle(k) }));
+      target[k as "compact" | "sidebar_collapsed"] = v;
+    }
+  }
+}
+const viewRolePrefs = (r: OrgRole): RolePreferences => {
+  const data = ROLE_PREFS[r.name] ?? {};
+  return { role: r.name, role_title: r.title, data: { ...data }, fields: PREF_FIELDS.filter((f) => data[f] !== undefined), member_count: Object.values(MEMBERS).filter((m) => m.active && m.roles.includes(r.name)).length };
+};
+
+// ---------- 外部链接与代码平台（ADR 0020）、通知外发（ADR 0019） ----------
+interface LinkRow { id: ID; task_id: ID; kind: LinkKind; provider: string; url: string; title: string; status?: LinkStatus; actor_name?: string; external_id?: string; created_at: string; updated_at: string }
+const LINKS: LinkRow[] = [];
+// 示例：登录改版上挂着一条打开着的 PR 与一份设计稿，导出报表上挂着一条已合并的 PR
+LINKS.push(
+  { id: "XL1", task_id: "T1", kind: "pr", provider: "github", url: "https://git.example.com/pr/12", title: "feat: login redesign #12", status: "open", actor_name: "li", external_id: "github:acme/web#12", created_at: at(-2, 11), updated_at: at(-1, 9) },
+  { id: "XL2", task_id: "T1", kind: "design", provider: "", url: "https://design.example.com/login-v2", title: "登录页设计稿 v2", created_at: at(-6, 15), updated_at: at(-6, 15) },
+  { id: "XL3", task_id: "T6", kind: "pr", provider: "github", url: "https://git.example.com/pr/4", title: "feat: weekly CSV export #4", status: "merged", actor_name: "li", external_id: "github:acme/web#4", created_at: at(-4, 18), updated_at: at(-3, 10) },
+);
+EN["登录页设计稿 v2"] = "Login page design v2";
+const linkKindTitle = (k: LinkKind) => t(`link.kind.${k}` as Key);
+const linkStatusTitle = (s: LinkStatus | undefined) => (s ? t(`mock.link.status.${s}` as Key) : "");
+const viewLink = (l: LinkRow): ExternalLink => ({
+  id: l.id, kind: l.kind, kind_title: linkKindTitle(l.kind), provider: l.provider, url: l.url, title: l.title || l.url,
+  status: l.status, status_title: l.status ? linkStatusTitle(l.status) : undefined, actor_name: l.actor_name, external_id: l.external_id,
+  created_at: l.created_at, updated_at: l.updated_at,
+});
+const linksOf = (taskId: ID) => LINKS.filter((l) => l.task_id === taskId).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(viewLink);
+/** 列表行 / 卡片上的 PR 小标：最近更新的那条 PR 链接 */
+function prOf(taskId: ID): TaskPR | undefined {
+  const prs = LINKS.filter((l) => l.task_id === taskId && l.kind === "pr").sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  if (!prs.length) return undefined;
+  const best = prs[0];
+  return { status: best.status ?? "open", status_title: linkStatusTitle(best.status ?? "open"), url: best.url, title: best.title || best.url, count: prs.length };
+}
+
+on("GET", "/tasks/:id/links", (m) => { requireLogin(); return linksOf(getTask(m.groups!.id).id); });
+on("POST", "/tasks/:id/links", (m, body) => {
+  requireLogin();
+  const tk = getTask(m.groups!.id);
+  const b = (body ?? {}) as { kind?: string; url?: string; title?: string };
+  const url = (b.url ?? "").trim();
+  if (!/^https?:\/\//.test(url)) throw new ApiError(400, t("mock.link.badUrl"));
+  const kind = (b.kind ?? "other") as LinkKind;
+  if (!LINK_KINDS.includes(kind)) throw new ApiError(400, t("mock.link.badKind", { kind: String(b.kind) }));
+  const now = nowISO();
+  const existing = LINKS.find((l) => l.task_id === tk.id && l.url === url);
+  if (existing) {
+    existing.kind = kind;
+    if (b.title?.trim()) existing.title = b.title.trim();
+    existing.updated_at = now;
+    emit("ExternalLinkUpdated", { task: tk.id, actor: ME, summary: t("mock.ev.linkUpdated", { title: existing.title }) });
+    return viewLink(existing);
+  }
+  const row: LinkRow = { id: nextId("XL"), task_id: tk.id, kind, provider: CODE.provider ?? "", url, title: b.title?.trim() || url, created_at: now, updated_at: now };
+  LINKS.push(row);
+  emit("ExternalLinkAdded", { task: tk.id, actor: ME, summary: t("mock.ev.linkAdded", { title: row.title }) });
+  return viewLink(row);
+});
+on("DELETE", "/tasks/:id/links/:lid", (m) => {
+  requireLogin();
+  const tk = getTask(m.groups!.id);
+  const i = LINKS.findIndex((l) => l.id === m.groups!.lid && l.task_id === tk.id);
+  if (i < 0) throw new ApiError(404, t("mock.link.notFound"));
+  const [gone] = LINKS.splice(i, 1);
+  emit("ExternalLinkRemoved", { task: tk.id, actor: ME, summary: t("mock.ev.linkRemoved", { title: gone.title }) });
+  return undefined;
+});
+
+/** 代码平台的提供方声明（与 internal/directory 注册的三个一致）；界面里没有平台名，这里才有。 */
+function codeProviders(): DirectoryProviderInfo[] {
+  const zh = getLocale() === "zh-CN";
+  const x = (a: string, b: string) => (zh ? a : b);
+  return [
+    {
+      key: "gitee", title: "Gitee", root_department_id: "",
+      fields: [{ key: "token", title: x("私人令牌", "Personal token"), secret: true, optional: false, placeholder: "xxxxxxxxxxxxxxxxxxxx", hint: x("Gitee → 设置 → 私人令牌，勾上 projects 与 hook", "Gitee → Settings → Personal access tokens, tick projects and hook") }],
+      prerequisites: [
+        x("有一个能读到目标仓库的 Gitee 账号", "A Gitee account that can read the target repositories"),
+        x("生成一个包含 projects 与 hook 权限的私人令牌", "Create a personal token with the projects and hook scopes"),
+        x("本系统的地址要能被 Gitee 访问到", "This system's address must be reachable from Gitee"),
+      ],
+      tip: { text: x("私人令牌在 Gitee 的「设置 → 私人令牌」页生成，要勾上仓库（projects）与 webhook（hook）两项权限。", "Create the token on Gitee under Settings → Personal access tokens, ticking both projects and hook."), url: "https://gitee.com/personal_access_tokens" },
+    },
+    {
+      key: "github", title: "GitHub", root_department_id: "",
+      fields: [
+        { key: "token", title: x("访问令牌", "Access token"), secret: true, optional: false, placeholder: "ghp_xxxxxxxxxxxx", hint: x("GitHub → Settings → Developer settings → Personal access tokens，勾上 repo 与 admin:repo_hook", "GitHub → Settings → Developer settings → Personal access tokens, tick repo and admin:repo_hook") },
+        { key: "api_base", title: x("接口地址", "API base"), secret: false, optional: true, placeholder: "https://api.github.com", hint: x("用 github.com 时留空；GitHub 企业版填 https://你的域名/api/v3", "Leave empty for github.com; for GitHub Enterprise use https://your-domain/api/v3") },
+      ],
+      prerequisites: [
+        x("有一个能读到目标仓库的 GitHub 账号或组织", "A GitHub account or organization that can read the target repositories"),
+        x("生成一个访问令牌，权限包含 repo 与 admin:repo_hook", "Create an access token with the repo and admin:repo_hook scopes"),
+        x("本系统的地址要能被 GitHub 访问到（回调是 GitHub 主动请求）", "This system's address must be reachable from GitHub (the callback is a request from GitHub)"),
+      ],
+      tip: { text: x("令牌在 GitHub 的「Developer settings → Personal access tokens」页生成，要能读仓库并管理仓库的 webhook。", "Create the token under GitHub's Developer settings → Personal access tokens; it must read repositories and manage their webhooks."), url: "https://github.com/settings/tokens" },
+    },
+    {
+      key: "gitlab", title: "GitLab", root_department_id: "",
+      fields: [
+        { key: "token", title: x("访问令牌", "Access token"), secret: true, optional: false, placeholder: "glpat-xxxxxxxxxxxx", hint: x("GitLab → 用户设置 → 访问令牌，勾上 api 范围", "GitLab → User settings → Access tokens, tick the api scope") },
+        { key: "api_base", title: x("接口地址", "API base"), secret: false, optional: true, placeholder: "https://gitlab.com/api/v4", hint: x("用 gitlab.com 时留空；自建的填 https://你的域名/api/v4", "Leave empty for gitlab.com; for self-hosted use https://your-domain/api/v4") },
+      ],
+      prerequisites: [
+        x("有一个能读到目标项目的 GitLab 账号", "A GitLab account that can read the target projects"),
+        x("生成一个范围为 api 的访问令牌", "Create an access token with the api scope"),
+        x("本系统的地址要能被 GitLab 访问到", "This system's address must be reachable from GitLab"),
+      ],
+      tip: { text: x("令牌在 GitLab 的「用户设置 → 访问令牌」页生成，范围勾 api（它同时包含读仓库与管理回调）。", "Create the token under GitLab's User settings → Access tokens with the api scope (it covers reading repositories and managing hooks)."), url: "https://gitlab.com/-/user_settings/personal_access_tokens" },
+    },
+  ];
+}
+const codeProviderOf = (key: string | null) => (key ? codeProviders().find((p) => p.key === key) ?? null : null);
+/** 示例数据里平台上有这些仓库；令牌以 bad 开头时读不到（凭据被拒） */
+const REMOTE_REPOS = ["acme/web", "acme/api", "acme/mobile"];
+const CODE: { provider: string | null; credentials: Record<string, string>; secrets: Record<string, string>; repos: string[]; webhook_secret: string; proxy_url: string } = {
+  provider: null, credentials: {}, secrets: {}, repos: [], webhook_secret: "", proxy_url: "",
+};
+const CODE_EVENTS = () => [
+  { key: "pr_opened", title: t("code.event.pr_opened") }, { key: "pr_ready", title: t("code.event.pr_ready") },
+  { key: "pr_merged", title: t("code.event.pr_merged") }, { key: "pr_closed", title: t("code.event.pr_closed") },
+  { key: "ci_passed", title: t("code.event.ci_passed") }, { key: "ci_failed", title: t("code.event.ci_failed") },
+];
+const newWebhookSecret = () => `whsec_${Math.random().toString(36).slice(2, 12)}${Math.random().toString(36).slice(2, 10)}`;
+const codeConfigured = () => { const p = codeProviderOf(CODE.provider); return !!p && p.fields.filter((f) => f.secret).every((f) => !!CODE.secrets[f.key]); };
+const codeTokenBad = () => Object.values(CODE.secrets).join("").startsWith("bad");
+const baseUrl = () => (typeof window !== "undefined" ? window.location.origin : "http://localhost:5439");
+const codeRepoRows = (): CodeRepo[] => REMOTE_REPOS.map((full) => {
+  const on = CODE.repos.includes(full);
+  // 示例剧本：acme/mobile 上建不了回调（令牌看不到它的设置）
+  const bad = on && full === "acme/mobile";
+  return { id: full, full_name: full, enabled: on, hook_ok: on && !bad, hook_error: bad ? t("mock.code.hookError", { repo: full }) : undefined };
+});
+/** 平时不给回调密钥；reveal 为真（只有 ?reveal=secret 与「换一把密钥」那一次）才带上，跟后端一致 */
+function viewCodePlatform(reveal = false): CodePlatform {
+  const p = codeProviderOf(CODE.provider);
+  const providers = codeProviders().map((x) => (x.key !== CODE.provider ? x : { ...x, fields: x.fields.map((f) => (f.secret ? { ...f, set: !!CODE.secrets[f.key] } : { ...f, set: !!CODE.credentials[f.key], value: CODE.credentials[f.key] || undefined })) }));
+  const secrets_set: Record<string, boolean> = {};
+  for (const f of p?.fields ?? []) if (f.secret) secrets_set[f.key] = !!CODE.secrets[f.key];
+  const configured = codeConfigured();
+  return {
+    provider: CODE.provider, provider_title: p?.title ?? "", configured, credentials: { ...CODE.credentials }, secrets_set, providers,
+    repos: configured ? codeRepoRows().filter((r) => r.enabled) : [],
+    webhook_url: configured ? `${baseUrl()}/api/v1/hooks/code/${CODE.provider}/${ORG.id}` : "",
+    webhook_secret: reveal && CODE.webhook_secret ? CODE.webhook_secret : undefined, webhook_secret_set: !!CODE.webhook_secret,
+    proxy_url: CODE.proxy_url, console_url: p?.tip?.url, events: CODE_EVENTS(),
+  };
+}
+function codeChecklist(): CodeChecklist {
+  const p = codeProviderOf(CODE.provider);
+  if (!p || !codeConfigured()) throw new ApiError(400, t("mock.code.notConfigured"));
+  const consoleUrl = p.tip?.url ?? "";
+  const bad = codeTokenBad();
+  const chosen = CODE.repos.length > 0;
+  const hooksBad = codeRepoRows().some((r) => r.enabled && !r.hook_ok);
+  const checks: DirectoryCheck[] = [];
+  if (bad) {
+    checks.push({ key: "credentials", title: t("mock.code.check.credentials"), status: "blocked", blocking: true, fix: t("mock.code.check.credentials.fix", { name: p.title }), fix_url: consoleUrl, detail: t("mock.code.check.credentials.detail", { name: p.title }) });
+    checks.push({ key: "repos", title: t("mock.code.check.repos"), status: "skipped", blocking: true, detail: t("mock.directory.check.skippedDetail") });
+    checks.push({ key: "webhook", title: t("mock.code.check.webhook"), status: "skipped", blocking: false, detail: t("mock.directory.check.skippedDetail") });
+  } else {
+    checks.push({ key: "credentials", title: t("mock.code.check.credentials"), status: "ok", blocking: true, detail: t("mock.code.check.credentials.okDetail", { name: p.title }) });
+    checks.push({ key: "repos", title: t("mock.code.check.repos"), status: "ok", blocking: true, detail: t("mock.code.check.repos.okDetail", { n: REMOTE_REPOS.length }) });
+    checks.push(!chosen
+      ? { key: "webhook", title: t("mock.code.check.webhook"), status: "todo", blocking: false, fix: t("mock.code.check.webhook.fix") }
+      : hooksBad
+        ? { key: "webhook", title: t("mock.code.check.webhook"), status: "todo", blocking: false, fix: t("mock.code.check.webhook.fixOne"), fix_url: consoleUrl }
+        : { key: "webhook", title: t("mock.code.check.webhook"), status: "ok", blocking: false, detail: t("mock.code.check.webhook.okDetail", { n: CODE.repos.length }) });
+  }
+  const ready = !checks.some((c) => c.status === "blocked");
+  const step: CodeStep = !ready ? "checks" : !chosen ? "repos" : "done";
+  return { provider: p.key, provider_title: p.title, console_url: consoleUrl, webhook_url: viewCodePlatform().webhook_url, checks, ready, next: { step, text: t(`mock.code.next.${step}` as Key, { name: p.title }) }, repos: [...CODE.repos] };
+}
+
+on("GET", "/org/code-platform", (_m, _b, q) => { requireOrgAdmin(); return viewCodePlatform(str(q, "reveal") === "secret"); });
+on("PUT", "/org/code-platform", (_m, body) => {
+  requireOrgAdmin();
+  const b = (body ?? {}) as CodePlatformInput;
+  if (b.provider !== undefined && b.provider !== CODE.provider) {
+    if (b.provider === "") { CODE.provider = null; CODE.credentials = {}; CODE.secrets = {}; CODE.repos = []; CODE.webhook_secret = ""; return viewCodePlatform(); }
+    if (!codeProviderOf(b.provider)) throw new ApiError(400, t("mock.code.badProvider", { key: b.provider }));
+    CODE.provider = b.provider; CODE.credentials = {}; CODE.secrets = {}; CODE.repos = [];
+  }
+  const p = codeProviderOf(CODE.provider);
+  if (!p) throw new ApiError(400, t("mock.code.needProvider"));
+  if (b.credentials) {
+    for (const [k, v] of Object.entries(b.credentials)) {
+      const f = p.fields.find((x) => x.key === k);
+      if (!f) throw new ApiError(400, t("mock.code.badField", { name: p.title, key: k }));
+      if (f.secret) { if (v) CODE.secrets[k] = v; } else CODE.credentials[k] = v;
+    }
+    for (const f of p.fields) if (!f.optional && !f.secret && !CODE.credentials[f.key]) CODE.credentials[f.key] = "";
+    for (const f of p.fields) if (f.secret && !f.optional && !CODE.secrets[f.key]) throw new ApiError(400, t("mock.code.needSecret", { title: f.title }));
+    if (!CODE.webhook_secret) CODE.webhook_secret = newWebhookSecret();
+  }
+  if (b.repos) {
+    for (const r of b.repos) if (!REMOTE_REPOS.includes(r)) throw new ApiError(400, t("mock.code.badRepo", { repo: r }));
+    CODE.repos = [...b.repos];
+  }
+  if (b.proxy_url !== undefined) CODE.proxy_url = b.proxy_url;
+  // 换一把回调密钥：旧的立刻失效，新的只在这一次的返回里给出来
+  if (b.rotate_webhook_secret) CODE.webhook_secret = newWebhookSecret();
+  emit("CodePlatformConfigured", { actor: ME, summary: t("mock.ev.codeConfigured", { name: p.title }) });
+  return viewCodePlatform(!!b.rotate_webhook_secret);
+});
+/** DELETE /org/code-platform：删掉凭据与仓库选择；已经挂上的外部链接与历史动态都留着。没接入时也算成功（幂等）。 */
+on("DELETE", "/org/code-platform", () => {
+  requireOrgAdmin();
+  const p = codeProviderOf(CODE.provider);
+  const was = codeConfigured();
+  CODE.provider = null; CODE.credentials = {}; CODE.secrets = {}; CODE.repos = []; CODE.webhook_secret = ""; CODE.proxy_url = "";
+  if (was && p) emit("CodePlatformDisconnected", { actor: ME, summary: t("mock.ev.codeDisconnected", { name: p.title }) });
+  return viewCodePlatform();
+});
+on("POST", "/org/code-platform/test", (): CodePlatformTest => {
+  requireOrgAdmin();
+  const cl = codeChecklist();
+  const blocked = cl.checks.find((c) => c.status === "blocked");
+  return { ok: !blocked, repos: REMOTE_REPOS.length, error: blocked?.fix, warnings: cl.checks.filter((c) => c.status === "todo").map((c) => c.fix ?? c.title) };
+});
+on("GET", "/org/code-platform/checklist", () => { requireOrgAdmin(); return codeChecklist(); });
+on("GET", "/org/code-platform/repos", (): CodeRepo[] => {
+  requireOrgAdmin();
+  if (!codeConfigured()) throw new ApiError(400, t("mock.code.notConfigured"));
+  if (codeTokenBad()) throw new ApiError(400, t("mock.code.check.credentials.fix", { name: codeProviderOf(CODE.provider)?.title ?? "" }));
+  return codeRepoRows();
+});
+/** 我在代码平台上的登录名（每个成员一份） */
+const CODE_IDENTITIES: Record<ID, string> = {};
+const viewCodeIdentity = (): CodeIdentity => {
+  const p = codeProviderOf(CODE.provider);
+  return { provider: CODE.provider ?? "", provider_title: p?.title ?? "", login: CODE_IDENTITIES[ME] ?? "", bound: !!CODE_IDENTITIES[ME] };
+};
+on("GET", "/me/code-identity", () => { requireLogin(); return viewCodeIdentity(); });
+on("PUT", "/me/code-identity", (_m, body) => {
+  requireLogin();
+  const login = String((body as { login?: string })?.login ?? "").trim();
+  if (!login) { delete CODE_IDENTITIES[ME]; return viewCodeIdentity(); }
+  const taken = Object.entries(CODE_IDENTITIES).find(([id, v]) => id !== ME && v.toLowerCase() === login.toLowerCase());
+  if (taken) throw new ApiError(400, t("mock.code.loginTaken", { login }));
+  CODE_IDENTITIES[ME] = login;
+  emit("CodeIdentityBound", { actor: ME, summary: t("mock.ev.codeIdentity", { login }) });
+  return viewCodeIdentity();
+});
+
+// ---------- 通知外发（ADR 0019） ----------
+const NOTIFY_KINDS = () => [
+  { key: "proposal", title: t("mock.notify.kind.proposal") }, { key: "review", title: t("mock.notify.kind.review") },
+  { key: "assigned", title: t("mock.notify.kind.assigned") }, { key: "question", title: t("mock.notify.kind.question") },
+  { key: "blocked", title: t("mock.notify.kind.blocked") }, { key: "overdue", title: t("mock.notify.kind.overdue") },
+  { key: "milestone_due", title: t("mock.notify.kind.milestone_due") },
+];
+/** 通道声明：IM 通道复用 IM 集成的凭据（这里没有自己的字段），邮件与 webhook 是只发消息的提供方 */
+function notifyChannelDefs(): Array<{ key: string; title: string; im: boolean; fields: DirectoryField[]; prerequisites: string[] }> {
+  const zh = getLocale() === "zh-CN";
+  const x = (a: string, b: string) => (zh ? a : b);
+  return [
+    { key: "feishu", title: x("飞书", "Feishu"), im: true, fields: [], prerequisites: [x("为应用开通「以应用的身份发消息」权限（获取与发送单聊、群组消息），并发布版本", "Grant the app permission to send messages as the app (read and send direct and group messages) and publish a version"), x("在「应用能力」里启用机器人", "Enable the bot capability for the app")] },
+    { key: "wecom", title: x("企业微信", "WeCom"), im: true, fields: [
+      { key: "agent_id", title: x("应用 AgentId", "App AgentId"), secret: false, optional: false, placeholder: "1000002", hint: x("管理后台 → 应用管理 → 自建应用 → 该应用页面上的 AgentId", "Admin console → Apps → your custom app → the AgentId on that page") },
+      { key: "app_secret", title: x("应用 Secret", "App Secret"), secret: true, optional: false, placeholder: "", hint: x("同一页的 Secret（不是通讯录同步的 Secret）；保存后只显示是否已设置", "The Secret on the same page (not the contacts-sync one); only whether it is set is shown after saving") },
+    ], prerequisites: [x("在企业微信管理后台创建一个自建应用，把要接收提醒的人加进它的可见范围", "Create a custom app in the WeCom admin console and add the people who should receive reminders to its visible range"), x("把本系统的出网 IP 加进该应用的企业可信 IP", "Add this system's outbound IP to the app's trusted IP list")] },
+    { key: "email", title: x("邮件", "Email"), im: false, fields: [
+      { key: "host", title: x("SMTP 主机", "SMTP host"), secret: false, optional: false, placeholder: "smtp.example.com", hint: x("留空表示用服务端配置的邮件服务", "Leave empty to use the mail service configured on the server") },
+      { key: "port", title: x("端口", "Port"), secret: false, optional: false, placeholder: "587", hint: x("465 走 TLS，其余端口用 STARTTLS", "465 uses TLS; other ports use STARTTLS") },
+      { key: "username", title: x("用户名", "Username"), secret: false, optional: false, placeholder: "", hint: "" },
+      { key: "password", title: x("密码", "Password"), secret: true, optional: false, placeholder: "", hint: x("保存后只显示是否已设置", "Only whether it is set is shown after saving") },
+      { key: "from", title: x("发件人", "From"), secret: false, optional: false, placeholder: "AxiomOS <no-reply@example.com>", hint: "" },
+    ], prerequisites: [x("有一个能发信的 SMTP 账号；或者由运维在服务端设置 SMTP_URL 与 SMTP_FROM", "An SMTP account that can send mail, or SMTP_URL and SMTP_FROM set on the server")] },
+    { key: "webhook", title: "Webhook", im: false, fields: [
+      { key: "url", title: x("接收地址", "Receiving URL"), secret: false, optional: false, placeholder: "https://example.com/axiomos/notify", hint: x("每条通知 POST 一个 JSON 到这里", "Each notification is POSTed here as JSON") },
+      { key: "secret", title: x("签名密钥", "Signing secret"), secret: true, optional: true, placeholder: "", hint: x("可选；填了就在请求头 X-AxiomOS-Signature 里带 HMAC-SHA256 签名", "Optional; when set, an HMAC-SHA256 signature is sent in the X-AxiomOS-Signature header") },
+    ], prerequisites: [x("有一个能收 HTTPS POST 的地址（自建服务、飞书 / 企业微信群机器人的转发等）", "An address that accepts HTTPS POST (your own service, an IM group bot relay, and so on)")] },
+  ];
+}
+const NOTIFY: { enabled: Record<string, boolean>; config: Record<string, Record<string, string>>; secrets: Record<string, Record<string, string>>; allowed: string[] } = {
+  // 示例数据里 Webhook 已经配好（这样"我的偏好 → 通知"里有一个真的能选的通道），飞书靠 IM 集成
+  enabled: {}, config: { webhook: { url: "https://example.com/axiomos/notify" } }, secrets: { webhook: { secret: "shh" } }, allowed: ["proposal", "review", "assigned", "question", "blocked", "overdue", "milestone_due"],
+};
+/** 通道配好了没有：IM 通道看 IM 集成接没接上，其余看自己的必填字段 */
+function notifyConfigured(key: string, fields: DirectoryField[]): boolean {
+  if (key === "feishu" || key === "wecom") {
+    if (DIR.provider !== key || !dirConfigured()) return false;
+    return fields.filter((f) => !f.optional).every((f) => (f.secret ? !!NOTIFY.secrets[key]?.[f.key] : !!NOTIFY.config[key]?.[f.key]));
+  }
+  return fields.filter((f) => !f.optional).every((f) => (f.secret ? !!NOTIFY.secrets[key]?.[f.key] : !!NOTIFY.config[key]?.[f.key]));
+}
+function notifyHealth(key: string): NotifyHealth {
+  const fails = DELIVERIES.filter((d) => d.channel === key).slice(0, 5);
+  let streak = 0;
+  for (const d of fails) { if (d.status === "failed") streak++; else break; }
+  const last = DELIVERIES.find((d) => d.channel === key);
+  return { status: streak >= 3 ? "degraded" : "ok", streak, last_error: streak > 0 ? last?.error ?? "" : "", last_at: last?.sent_at ?? last?.created_at };
+}
+function viewNotifyChannel(def: ReturnType<typeof notifyChannelDefs>[number]): NotifyChannel {
+  const enabled = NOTIFY.enabled[def.key] ?? true;
+  const configured = notifyConfigured(def.key, def.fields);
+  const fields = def.fields.map((f) => (f.secret ? { ...f, set: !!NOTIFY.secrets[def.key]?.[f.key] } : { ...f, set: !!NOTIFY.config[def.key]?.[f.key], value: NOTIFY.config[def.key]?.[f.key] || undefined }));
+  let hint: string | undefined;
+  if (!configured) {
+    hint = def.im && DIR.provider !== def.key ? t("mock.notify.needIm", { name: def.title }) : t("mock.notify.notConfigured", { name: def.title });
+  } else if (!enabled) hint = t("mock.notify.off", { name: def.title });
+  return {
+    key: def.key, title: def.title, enabled, configured, available: enabled && configured, im: def.im,
+    config: { ...(NOTIFY.config[def.key] ?? {}) }, secrets_set: Object.fromEntries(def.fields.filter((f) => f.secret).map((f) => [f.key, !!NOTIFY.secrets[def.key]?.[f.key]])),
+    fields, prerequisites: def.prerequisites, hint, health: notifyHealth(def.key),
+  };
+}
+function viewOrgNotifications(): OrgNotifications {
+  const defs = notifyChannelDefs();
+  const channels: Record<string, NotifyChannel> = {};
+  const health: Record<string, NotifyHealth> = {};
+  for (const d of defs) { channels[d.key] = viewNotifyChannel(d); health[d.key] = channels[d.key].health; }
+  return { channels, channel_order: defs.map((d) => d.key), allowed_kinds: [...NOTIFY.allowed], kinds: NOTIFY_KINDS(), health };
+}
+interface DeliveryRow { id: number; kind: string; channel: string; status: DeliveryStatus; title: string; text: string; url: string; error: string; attempts: number; created_at: string; sent_at?: string; recipient_id: ID }
+let deliverySeq = 100;
+const DELIVERIES: DeliveryRow[] = [
+  { id: 43, kind: "review", channel: "feishu", status: "skipped", title: "「导出报表」等你验收", text: "小李 提交了结果", url: "/tasks/T6/", error: "你还没有绑定飞书身份，收不到飞书消息。", attempts: 0, created_at: at(-1, 10), recipient_id: "wang" },
+  { id: 42, kind: "assigned", channel: "email", status: "failed", title: "你有一个新任务：客户访谈纪要", text: "由 小王 指派", url: "/tasks/T8/", error: "连不上 smtp.example.com:587：拨号超时。", attempts: 3, created_at: at(-2, 9), recipient_id: "wang" },
+  { id: 41, kind: "proposal", channel: "webhook", status: "sent", title: "小李的助手 想「提交结果」", text: "等你确认", url: "/", error: "", attempts: 1, created_at: at(-3, 16), sent_at: at(-3, 16), recipient_id: "wang" },
+];
+Object.assign(EN, {
+  "「导出报表」等你验收": "\"Export report\" is waiting for your acceptance",
+  "小李 提交了结果": "Li submitted a result",
+  "你有一个新任务：客户访谈纪要": "You have a new task: Customer interview notes",
+  "由 小王 指派": "Assigned by Wang",
+  "连不上 smtp.example.com:587：拨号超时。": "Cannot reach smtp.example.com:587: dial timeout.",
+  "小李的助手 想「提交结果」": "Li's assistant wants to \"submit a result\"",
+  "等你确认": "Waiting for you to confirm",
+});
+const deliveryKindTitle = (k: string) => (k === "test" ? t("mock.notify.kind.test") : NOTIFY_KINDS().find((x) => x.key === k)?.title ?? k);
+const deliveryStatusTitle = (s: DeliveryStatus) => t(`settings.notify.status.${s}` as Key);
+const viewDelivery = (d: DeliveryRow, withRecipient: boolean): Delivery => ({
+  id: d.id, kind: d.kind, kind_title: deliveryKindTitle(d.kind), channel: d.channel, channel_title: notifyChannelDefs().find((c) => c.key === d.channel)?.title ?? d.channel,
+  status: d.status, status_title: deliveryStatusTitle(d.status), title: d.title, text: d.text, url: d.url, error: d.error, attempts: d.attempts,
+  created_at: d.created_at, sent_at: d.sent_at, recipient: withRecipient ? { id: d.recipient_id, name: MEMBERS[d.recipient_id]?.name ?? d.recipient_id } : undefined,
+});
+
+on("GET", "/org/notifications", () => { requireOrgAdmin(); return viewOrgNotifications(); });
+on("PUT", "/org/notifications", (_m, body) => {
+  requireOrgAdmin();
+  const b = (body ?? {}) as OrgNotificationsInput;
+  if (!b.channels && !b.allowed_kinds) throw new ApiError(400, t("mock.notify.nothing"));
+  const defs = notifyChannelDefs();
+  for (const [key, patch] of Object.entries(b.channels ?? {})) {
+    const def = defs.find((d) => d.key === key);
+    if (!def) throw new ApiError(400, t("mock.notify.badChannel", { key }));
+    if (patch.enabled !== undefined) NOTIFY.enabled[key] = patch.enabled;
+    for (const [k, v] of Object.entries(patch.config ?? {})) {
+      const f = def.fields.find((x) => x.key === k);
+      if (!f) throw new ApiError(400, t("mock.notify.badField", { name: def.title, key: k }));
+      if (f.secret) { if (v) (NOTIFY.secrets[key] ??= {})[k] = v; } else (NOTIFY.config[key] ??= {})[k] = v;
+    }
+    emit("NotificationChannelConfigured", { actor: ME, summary: t(NOTIFY.enabled[key] === false ? "mock.ev.notifyOff" : "mock.ev.notifyOn", { name: def.title }) });
+  }
+  if (b.allowed_kinds) {
+    const known = NOTIFY_KINDS().map((k) => k.key);
+    for (const k of b.allowed_kinds) if (!known.includes(k)) throw new ApiError(400, t("mock.notify.badKind", { kind: k }));
+    NOTIFY.allowed = known.filter((k) => b.allowed_kinds!.includes(k));
+    emit("NotificationPolicyChanged", { actor: ME, summary: t("mock.ev.notifyPolicy", { n: NOTIFY.allowed.length }) });
+  }
+  return viewOrgNotifications();
+});
+on("POST", "/org/notifications/test", (_m, body) => {
+  requireOrgAdmin();
+  const key = String((body as { channel?: string })?.channel ?? "");
+  const def = notifyChannelDefs().find((d) => d.key === key);
+  if (!def) throw new ApiError(400, t("mock.notify.badChannel", { key }));
+  const view = viewNotifyChannel(def);
+  if (!view.available) throw new ApiError(400, t("mock.notify.cannotTest", { name: def.title, why: view.hint ?? "" }));
+  // IM 通道要收件人绑过身份；示例里当前登录的人没有绑飞书
+  const bound = !def.im || !!Object.values(EXT_MEMBERS).includes(ME);
+  const now = nowISO();
+  const row: DeliveryRow = {
+    id: ++deliverySeq, kind: "test", channel: key, status: bound ? "sent" : "skipped",
+    title: t("mock.notify.testTitle"), text: t("mock.notify.testText", { name: MEMBERS[ME].name }), url: baseUrl() + "/",
+    error: "", attempts: 1, created_at: now, sent_at: bound ? now : undefined, recipient_id: ME,
+  };
+  DELIVERIES.unshift(row);
+  return { ok: bound, message: bound ? t("mock.notify.testOk", { name: def.title }) : t("mock.notify.testNoIdentity", { name: def.title }), delivery: viewDelivery(row, true) };
+});
+on("GET", "/org/notifications/deliveries", (_m, _b, q) => {
+  requireOrgAdmin();
+  const limit = Number(str(q, "limit") ?? 50) || 50;
+  const ch = str(q, "channel"), st = str(q, "status");
+  return DELIVERIES.filter((d) => (!ch || d.channel === ch) && (!st || d.status === st)).slice(0, limit).map((d) => viewDelivery(d, true));
+});
+
+/** 个人规则：没设过就按默认（待确认操作与等我验收走 IM，其余只站内） */
+const MY_RULES: Record<ID, { rules: Record<string, string[]>; quiet: QuietHours | null }> = {};
+function myNotifyChannels(): MyNotifyChannel[] {
+  return notifyChannelDefs().map((d) => ({ def: d, view: viewNotifyChannel(d) })).filter(({ view }) => view.available).map(({ def, view }) => {
+    const bound = !def.im || !!Object.values(EXT_MEMBERS).includes(ME);
+    return { key: def.key, title: def.title, im: view.im, bound, hint: bound ? undefined : t("mock.notify.notBound", { name: def.title }) };
+  });
+}
+function myNotifications(): MyNotifications {
+  const available = myNotifyChannels();
+  const keys = available.map((c) => c.key);
+  const mine = MY_RULES[ME];
+  const defaults: Record<string, string[]> = {};
+  const rules: Record<string, string[]> = {};
+  const sources: Record<string, "personal" | "default"> = {};
+  // 默认：待确认操作与等我验收走 IM（绑定了才算），否则走邮件（组织开了邮件时），其余只站内
+  const boundIm = available.find((c) => c.im && c.bound)?.key;
+  for (const k of NOTIFY_KINDS()) {
+    const def = k.key === "proposal" || k.key === "review" ? (boundIm ? [boundIm] : keys.includes("email") ? ["email"] : []) : [];
+    defaults[k.key] = def;
+    const personal = mine?.rules[k.key];
+    sources[k.key] = personal ? "personal" : "default";
+    rules[k.key] = (personal ?? def).filter((c) => keys.includes(c) && NOTIFY.allowed.includes(k.key));
+  }
+  return { rules, sources, quiet_hours: mine?.quiet ?? null, available_channels: available, kinds: NOTIFY_KINDS(), allowed_kinds: [...NOTIFY.allowed], defaults, source: mine ? "personal" : "default" };
+}
+on("GET", "/me/notifications", () => { requireLogin(); return myNotifications(); });
+on("PUT", "/me/notifications", (_m, body) => {
+  requireLogin();
+  const b = (body ?? {}) as MyNotificationsInput;
+  if (!b.rules && b.quiet_hours === undefined) throw new ApiError(400, t("mock.notify.nothing"));
+  const mine = (MY_RULES[ME] ??= { rules: {}, quiet: null });
+  const open = myNotifyChannels().map((c) => c.key);
+  for (const [kind, channels] of Object.entries(b.rules ?? {})) {
+    if (!NOTIFY_KINDS().some((k) => k.key === kind)) throw new ApiError(400, t("mock.notify.badKind", { kind }));
+    if (!NOTIFY.allowed.includes(kind)) throw new ApiError(400, t("mock.notify.kindNotAllowed", { kind: NOTIFY_KINDS().find((k) => k.key === kind)!.title }));
+    for (const c of channels) if (!open.includes(c)) throw new ApiError(400, t("mock.notify.channelNotOpen", { name: notifyChannelDefs().find((d) => d.key === c)?.title ?? c }));
+    mine.rules[kind] = [...channels];
+  }
+  if (b.quiet_hours !== undefined) {
+    if (b.quiet_hours === null) mine.quiet = null;
+    else {
+      const ok = (v: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+      if (!ok(b.quiet_hours.from) || !ok(b.quiet_hours.to)) throw new ApiError(400, t("mock.notify.badTime"));
+      if (b.quiet_hours.from === b.quiet_hours.to) throw new ApiError(400, t("notify.me.quietSame"));
+      mine.quiet = { ...b.quiet_hours };
+    }
+  }
+  emit("NotificationPreferencesUpdated", { actor: ME, summary: t("mock.ev.notifyPrefs") });
+  return myNotifications();
+});
+on("DELETE", "/me/notifications", () => { requireLogin(); delete MY_RULES[ME]; return myNotifications(); });
+on("GET", "/me/notifications/deliveries", (_m, _b, q) => {
+  requireLogin();
+  const limit = Number(str(q, "limit") ?? 20) || 20;
+  return DELIVERIES.filter((d) => d.recipient_id === ME).slice(0, limit).map((d) => viewDelivery(d, false));
+});
+
+on("GET", "/me/preferences", () => { requireLogin(); return resolvePreferences(); });
+on("PUT", "/me/preferences", (_m, body) => {
+  requireLogin();
+  const next = { ...(PERSONAL_PREFS[ME] ?? {}) };
+  applyPrefPatch(next, body);
+  PERSONAL_PREFS[ME] = next;
+  emit("PreferencesUpdated", { actor: ME, summary: t("mock.ev.preferencesUpdated"), data: { fields: Object.keys((body ?? {}) as object) } });
+  return resolvePreferences();
+});
+on("DELETE", "/me/preferences", () => { requireLogin(); delete PERSONAL_PREFS[ME]; return resolvePreferences(); });
+on("GET", "/me/preferences/catalog", () => { requireLogin(); return prefCatalog(); });
+on("GET", "/org/preferences", () => { requireOrgAdmin(); return ROLES.map(viewRolePrefs); });
+on("PUT", "/org/preferences/:role", (m, body) => {
+  requireOrgAdmin();
+  const role = roleOf(m.groups!.role);
+  if (!role) throw new ApiError(404, t("mock.org.roleNotFound"));
+  const next = { ...(ROLE_PREFS[role.name] ?? {}) };
+  applyPrefPatch(next, body);
+  ROLE_PREFS[role.name] = next;
+  return viewRolePrefs(role);
+});
+on("DELETE", "/org/preferences/:role", (m) => {
+  requireOrgAdmin();
+  const role = roleOf(m.groups!.role);
+  if (!role) throw new ApiError(404, t("mock.org.roleNotFound"));
+  delete ROLE_PREFS[role.name];
+  return viewRolePrefs(role);
+});
+
+// ---------- 设备码接入（ADR 0018）与连接检查 ----------
+interface DeviceRow { device_code: string; user_code: string; client: DeviceClient; name: string; status: DeviceRequest["status"]; created_at: string; expires_at: string; decided_at: string | null; agent_id: ID | null; approved_by: ID | null; token: string | null }
+const DEVICE_REQS: Record<string, DeviceRow> = {};
+// 「其他 MCP 客户端」跟着界面语言走，所以取值时才算（与 ConnectWizard 的 clientTitle 同一份文案）
+const clientTitleOf = (c: DeviceClient): string => (c === "claude-code" ? "Claude Code" : c === "cursor" ? "Cursor" : c === "codex" ? "OpenAI Codex" : t("connect.client.custom"));
+const normCode = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, "");
+const codeOf = () => { const A = "ABCDEFGHJKLMNPQRSTUVWXYZ"; let s = ""; for (let i = 0; i < 4; i++) s += A[Math.floor(Math.random() * A.length)]; return `${s}-${String(1000 + Math.floor(Math.random() * 9000))}`; };
+const deviceStatus = (r: DeviceRow): DeviceRequest["status"] => (r.status === "pending" && parseDate(r.expires_at)! <= new Date() ? "expired" : r.status);
+const viewDevice = (r: DeviceRow): DeviceRequest => {
+  const status = deviceStatus(r);
+  return { user_code: r.user_code, client: r.client, client_title: clientTitleOf(r.client), name: r.name, status, status_title: t(`device.status.${status}` as Key), created_at: r.created_at, expires_at: r.expires_at, decided_at: r.decided_at, agent: r.agent_id && AGENTS[r.agent_id] ? { id: r.agent_id, name: AGENTS[r.agent_id].name } : null, approved_by: r.approved_by ? { id: r.approved_by, name: MEMBERS[r.approved_by]?.name ?? r.approved_by } : null };
+};
+const findDevice = (code: string) => { const r = Object.values(DEVICE_REQS).find((x) => normCode(x.user_code) === normCode(code)); if (!r) throw new ApiError(404, t("mock.device.notFound")); return r; };
+// 示例数据：一条待批准、一条已拒绝、一条已过期，便于看三种状态
+DEVICE_REQS.demo1 = { device_code: "dvc_demo1", user_code: "DEMO-1234", client: "claude-code", name: "小王的笔记本", status: "pending", created_at: nowISO(), expires_at: new Date(Date.now() + 14 * 60_000).toISOString(), decided_at: null, agent_id: null, approved_by: null, token: null };
+DEVICE_REQS.demo2 = { device_code: "dvc_demo2", user_code: "DENY-0000", client: "cursor", name: "", status: "denied", created_at: at(0, 8), expires_at: at(0, 8, 15), decided_at: at(0, 8, 3), agent_id: null, approved_by: "wang", token: null };
+DEVICE_REQS.demo3 = { device_code: "dvc_demo3", user_code: "EXPD-0000", client: "codex", name: "旧机器", status: "pending", created_at: at(-1, 8), expires_at: at(-1, 8, 15), decided_at: null, agent_id: null, approved_by: null, token: null };
+on("POST", "/agent-auth/device", (_m, body): DeviceGrant => {
+  const b = (body ?? {}) as { client?: string; name?: string };
+  if (!DEVICE_CLIENTS.includes(b.client as DeviceClient)) throw new ApiError(400, t("mock.device.badClient"));
+  const row: DeviceRow = { device_code: `dvc_${nextId("d")}${Math.random().toString(36).slice(2, 10)}`, user_code: codeOf(), client: b.client as DeviceClient, name: (b.name ?? "").slice(0, 80), status: "pending", created_at: nowISO(), expires_at: new Date(Date.now() + 15 * 60_000).toISOString(), decided_at: null, agent_id: null, approved_by: null, token: null };
+  DEVICE_REQS[row.device_code] = row;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return { device_code: row.device_code, user_code: row.user_code, verification_url: `${origin}/agents/connect/?code=${row.user_code}`, expires_in: 900, interval: 5 };
+});
+on("GET", "/agent-auth/device/:code", (m) => { requireLogin(); return viewDevice(findDevice(m.groups!.code)); });
+on("POST", "/agent-auth/device/:code/approve", (m, body) => {
+  requireLogin();
+  const r = findDevice(m.groups!.code);
+  if (deviceStatus(r) !== "pending") throw new ApiError(400, t("mock.device.decided", { status: t(`device.status.${deviceStatus(r)}` as Key) }));
+  const b = (body ?? {}) as DeviceApproveInput;
+  const grants: Grant[] = Object.entries(b.grants ?? {}).filter(([, mode]) => mode && mode !== "deny").map(([name, mode]) => ({ name: name as GrantName, mode: name === "manage_workflows" || mode === "with_approval" ? "with_approval" : "direct" }));
+  const a: Agent = { id: nextId("agent-"), name: (b.name?.trim() || r.name || clientTitleOf(r.client)).slice(0, 80), owner: ref(ME), shared: !!b.shared, capabilities: b.capabilities ?? [], grants, online: false, last_seen_at: null, max_concurrency: b.max_concurrency ?? 1, runtime: r.client, created_at: nowISO(), can_manage: true };
+  AGENTS[a.id] = a;
+  r.status = "approved"; r.decided_at = nowISO(); r.agent_id = a.id; r.approved_by = ME; r.token = `axm_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+  emit("AgentConnected", { actor: ME, summary: t("mock.ev.agentConnected", { name: a.name, client: clientTitleOf(r.client) }), data: { agent_id: a.id, client: r.client, name: a.name, user_code: r.user_code } });
+  // 示例：批准 20 秒后这个 Agent「上线」并调了一次 whoami，向导的连接检查能看到变绿
+  window.setTimeout(() => { if (AGENTS[a.id]) { AGENTS[a.id].online = true; AGENTS[a.id].last_seen_at = nowISO(); LAST_TOOL[a.id] = { tool: "whoami", at: nowISO() }; } }, 20_000);
+  return { agent: viewAgent(a), request: viewDevice(r) };
+});
+on("POST", "/agent-auth/device/:code/deny", (m) => {
+  requireLogin();
+  const r = findDevice(m.groups!.code);
+  if (deviceStatus(r) !== "pending") throw new ApiError(400, t("mock.device.decided", { status: t(`device.status.${deviceStatus(r)}` as Key) }));
+  r.status = "denied"; r.decided_at = nowISO(); r.approved_by = ME;
+  return viewDevice(r);
+});
+on("POST", "/agent-auth/token", (_m, body): DeviceToken => {
+  const b = (body ?? {}) as { device_code?: string };
+  const r = b.device_code ? DEVICE_REQS[b.device_code] : undefined;
+  if (!r) throw new ApiError(404, t("mock.device.notFound"));
+  const status = deviceStatus(r);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const out: DeviceToken = { status, mcp_url: `${origin}/mcp`, interval: 5 };
+  if (status === "approved" && r.agent_id) {
+    out.agent = { id: r.agent_id, name: AGENTS[r.agent_id]?.name ?? "" };
+    out.organization = ORG.name;
+    if (r.token) { out.token = r.token; r.token = null; }
+  }
+  return out;
+});
+const LAST_TOOL: Record<ID, { tool: string; at: string }> = { "li-agent": { tool: "heartbeat", at: nowISO() }, "zhang-agent": { tool: "list_my_tasks", at: at(0, 8, 40) }, "zhou-agent": { tool: "get_task_brief", at: nowISO() }, "shared-doc": { tool: "whoami", at: nowISO() } };
+on("GET", "/agents/:id/check", (m): AgentCheck => {
+  requireLogin();
+  const a = AGENTS[m.groups!.id];
+  if (!a) throw new ApiError(404, t("mock.agentNotFound"));
+  const lt = LAST_TOOL[a.id];
+  const clock = (iso: string) => { const d = parseDate(iso)!; return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+  const hint = !a.last_seen_at ? t("mock.check.never") : a.online ? (lt ? t("mock.check.onlineTool", { tool: lt.tool, time: clock(lt.at) }) : t("mock.check.online")) : t("mock.check.offline", { time: clock(a.last_seen_at) });
+  return { online: a.online, connected: !!a.last_seen_at, last_seen_at: a.last_seen_at, last_tool: lt?.tool ?? null, last_tool_at: lt?.at ?? null, hint };
+});
 
 export async function mockRequest(method: string, path: string, body?: unknown, query?: Query): Promise<unknown> {
   await new Promise((r) => setTimeout(r, 120));

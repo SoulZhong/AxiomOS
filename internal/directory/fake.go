@@ -49,6 +49,12 @@ func UseFakeProvider(key, root string, f *Fake, goodSecret string, fields ...Cre
 			}
 			return f, nil
 		},
+		NewMessenger: func(creds map[string]string, opts Options) (Messenger, error) {
+			if secretKey != "" && creds[secretKey] != goodSecret {
+				return nil, &RejectedError{Code: 10003, Msg: "invalid app_secret"}
+			}
+			return f, nil
+		},
 	}
 	if key != FakeProviderKey {
 		p.Title = T("测试目录二", "Second test directory")
@@ -67,6 +73,19 @@ type Fake struct {
 	Tenant   string
 	// Checks 非空时 Diagnose 在通用检查之后原样附上它们（模拟某个平台的权限缺项与被授权的部门）。
 	Checks []Check
+
+	// 发消息（ADR 0019）：Sent 记下每次 SendDirect；FailNext > 0 时接下来的 FailNext 次发送以 FailErr 失败；
+	// SendErr 非空时一直失败。
+	Sent     []FakeSent
+	SendErr  error
+	FailNext int
+	FailErr  error
+}
+
+// FakeSent 是内存目录记下的一次发送。
+type FakeSent struct {
+	To  string
+	Msg Message
 }
 
 // NewFake 创建空目录。
@@ -167,3 +186,46 @@ func (f *Fake) Diagnose(ctx context.Context, rootID string) ([]Check, error) {
 
 // SetChecks 替换附加的检查项。
 func (f *Fake) SetChecks(cs []Check) { f.mu.Lock(); f.Checks = cs; f.mu.Unlock() }
+
+// SendDirect 记下一次发送；FailNext 次内返回 FailErr，之后 SendErr 非空时返回它。
+func (f *Fake) SendDirect(ctx context.Context, to string, msg Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.FailNext > 0 {
+		f.FailNext--
+		return f.FailErr
+	}
+	if f.SendErr != nil {
+		return f.SendErr
+	}
+	f.Sent = append(f.Sent, FakeSent{To: to, Msg: msg})
+	return nil
+}
+
+// SetSendErr 设置 / 清除"一直失败"。
+func (f *Fake) SetSendErr(err error) { f.mu.Lock(); f.SendErr = err; f.mu.Unlock() }
+
+// FailNextSends 让接下来 n 次发送失败。
+func (f *Fake) FailNextSends(n int, err error) {
+	f.mu.Lock()
+	f.FailNext, f.FailErr = n, err
+	f.mu.Unlock()
+}
+
+// SentTo 返回发给某人的全部消息。
+func (f *Fake) SentTo(to string) []Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Message
+	for _, s := range f.Sent {
+		if s.To == to {
+			out = append(out, s.Msg)
+		}
+	}
+	return out
+}
+
+// DiagnoseMessaging 固定通过（测试里用 SendErr 模拟发送失败即可）。
+func (f *Fake) DiagnoseMessaging(ctx context.Context) Check {
+	return Check{Key: MessagingCheckKey, Title: T("能以应用身份发消息", "Can send messages as the app"), Status: CheckOK, Detail: T("测试目录总是能发。", "The test directory can always send.")}
+}

@@ -5,13 +5,14 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { prefersReducedMotion } from "@/lib/motion";
 import { api, ApiError, MOCK, type Session } from "@/lib/api";
 import { normalizeLocale, setLocale, t } from "@/lib/i18n";
+import { clearPreferences, loadPreferences } from "@/lib/preferences";
 import { toggleSidebar, useSidebarCollapsed } from "@/lib/sidebar";
 import { applyScopeSession } from "@/lib/useScope";
 import { BridgeBar } from "./BridgeBar";
 import { IconAgent, IconApprove, IconBacklog, IconBoard, IconChart, IconChevronLeft, IconChevronRight, IconClose, IconFlow, IconGanttFlight, IconGoal, IconHome, IconKeyboard, IconLogout, IconMenu, IconOrg, IconOverview, IconSearch, IconSettings, IconSprint, IconTask, ShipMark } from "./icons";
 import { CommandPalette } from "./palette/CommandPalette";
 import { useShipTelemetry } from "./ship-status/telemetry";
-import { ShortcutHelp, useGlobalShortcuts, useIsMac } from "./shortcuts";
+import { ChordIndicator, ShortcutHelp, useGlobalShortcuts, useIsMac } from "./shortcuts";
 import { arrival } from "./space/arrival";
 import { BOARDING_FLAG } from "./space/sceneBus";
 import { Avatar, Kbd, Tag, Tip, cx } from "./ui";
@@ -73,6 +74,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         // 登录后以成员自己的语言为准
         const l = normalizeLocale(s.member.locale);
         if (l) setLocale(l);
+        // 显示偏好（DESIGN.md §20）：列、卡片字段、默认页签、紧凑、侧栏默认
+        void loadPreferences();
         // 组织设置入口：负责人，或持有 org_settings 权限。会话里有 is_owner / permissions 就直接用；
         // 老后端没有这两个字段时再查 GET /org/roles（失败即视为不可见）。
         if ((s.is_owner ?? s.organization.owner_id === s.member.id) || s.permissions?.includes("org_settings")) {
@@ -94,6 +97,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         setCanManageOrg(false);
         setChecked(true);
         applyScopeSession(null);
+        clearPreferences();
         if (e instanceof ApiError && e.status === 401 && !isLogin) router.replace("/login/");
       },
     );
@@ -106,6 +110,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     await api.auth.logout();
     setSession(null);
     setCanManageOrg(false);
+    clearPreferences();
     router.replace("/login/");
   };
 
@@ -159,7 +164,8 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
     // 迭代详情（/sprints/[id]）仍属于「任务」入口
     { href: "/tasks", label: t("nav.tasks"), icon: <IconTask />, match: (p) => p.startsWith("/tasks") || p.startsWith("/sprints") },
     { href: "/agents", label: t("nav.agents"), icon: <IconAgent /> },
-    ...(canManageOrg ? [{ href: "/settings", label: t("nav.settings"), icon: <IconSettings /> }] : []),
+    // 组织设置只给有入口的人；其他人也有「设置」：我的偏好（DESIGN.md §20）与只读的流程
+    { href: "/settings", label: canManageOrg ? t("nav.settings") : t("nav.settingsMine"), icon: <IconSettings /> },
   ];
   // 指令台里除六个入口外，再列出各页签的直达项（「任务 · 看板」……）与待确认操作的历史记录，地址带查询串
   const sub = (base: string, label: string, tabs: Array<[string, string, ReactNode]>) => tabs.map(([q, tl, icon]) => ({ href: `${base}${q}`, label: `${label} · ${tl}`, icon }));
@@ -169,7 +175,7 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
     ...sub("/overview/?tab=", t("nav.overview"), [["cost", t("overview.tab.cost"), <IconChart key="c" />], ["efficiency", t("overview.tab.efficiency"), <IconChart key="e" />], ["agents", t("overview.tab.agents"), <IconAgent key="a" />]]),
     { href: "/proposals/", label: `${t("proposals.title")} · ${t("proposals.history")}`, icon: <IconApprove key="p" /> },
     // 「流程」每个成员都能查看（只读），不受组织设置入口的门槛限制；没有组织设置入口的人看到的就叫「流程」
-    ...(canManageOrg ? sub("/settings/?tab=", t("nav.settings"), [["workflows", t("settings.tab.workflows"), <IconFlow key="w" />]]) : [{ href: "/settings/?tab=workflows", label: t("taskTypes.title"), icon: <IconFlow key="w" /> }]),
+    ...(canManageOrg ? sub("/settings/?tab=", t("nav.settings"), [["me", t("settings.tab.me"), <IconSettings key="m" />], ["workflows", t("settings.tab.workflows"), <IconFlow key="w" />]]) : [{ href: "/settings/?tab=me", label: `${t("nav.settingsMine")} · ${t("settings.tab.me")}`, icon: <IconSettings key="m" /> }, { href: "/settings/?tab=workflows", label: t("taskTypes.title"), icon: <IconFlow key="w" /> }]),
   ];
   // 收起态（显式收起，或 768–1199 没有偏好）只显示图标 + 气泡，文字藏起来（.sb-x）；展开态完整；<768 变抽屉（始终完整）。
   const labelCls = "sb-x min-w-0 truncate";
@@ -283,7 +289,8 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
         </div>
       </div>
       <ShortcutHelp open={help} onClose={() => setHelp(false)} />
-      <CommandPalette open={palette} onClose={() => setPalette(false)} onHelp={openHelp} pages={palettePages} loggedIn={!!session} />
+      <ChordIndicator />
+      <CommandPalette open={palette} onClose={() => setPalette(false)} onHelp={openHelp} pages={palettePages} loggedIn={!!session} canManageOrg={canManageOrg} />
     </div>
   );
 }

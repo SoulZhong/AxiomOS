@@ -6,7 +6,7 @@ import { t } from "@/lib/i18n";
 import { useSession } from "@/components/AppShell";
 import { IconEdit, IconPlus, IconTrash } from "@/components/icons";
 import { useToast } from "@/components/toast";
-import { Button, Code, ConfirmDialog, Drawer, Empty, ErrorBox, Field, Input, Panel, Table, TableSkeleton, Tag } from "@/components/ui";
+import { Button, Code, ConsequenceDialog, Drawer, Empty, ErrorBox, Field, Input, Panel, Table, TableSkeleton, Tag } from "@/components/ui";
 import { BilingualTitleFields, buildTitle, titlePairOf, type TitlePair } from "./BilingualTitle";
 
 export function CapabilitiesTab() {
@@ -42,7 +42,7 @@ export function CapabilitiesTab() {
         </Table>
       )}
       <CapabilityDrawer cap={editing} onClose={() => setEditing(null)} onSaved={() => { caps.reload(); refresh(); }} />
-      <ConfirmDialog open={!!removing} title={t("common.delete")} message={removing ? t("settings.caps.deleteConfirm", { title: removing.title }) : null} confirmLabel={t("common.delete")} danger busy={!!busy} onConfirm={() => removing && void remove(removing)} onClose={() => setRemoving(null)} />
+      <ConsequenceDialog open={!!removing} title={removing ? t("settings.caps.deleteTitle", { title: removing.title }) : ""} effects={[t("settings.caps.deleteEffect.refs"), t("settings.caps.deleteEffect.noUndo")]} confirmLabel={t("common.delete")} danger busy={!!busy} onConfirm={() => removing && void remove(removing)} onClose={() => setRemoving(null)} />
     </Panel>
   );
 }

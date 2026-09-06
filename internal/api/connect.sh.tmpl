@@ -1,0 +1,132 @@
+#!/bin/sh
+# AxiomOS Agent 接入（{{.ClientTitle}}）：申请设备码 → 你在网页里批准 → 写入 MCP 配置。
+# 令牌只会写进 MCP 客户端的配置文件，不会写到别处；本脚本不落任何日志。
+# 用法：curl -fsSL '{{.BaseURL}}/api/v1/agent-auth/connect.sh?client={{.Client}}' | sh
+# 可选环境变量：AXIOMOS_AGENT_NAME（Agent 名称）、AXIOMOS_NO_BROWSER=1（不自动开浏览器）
+set -eu
+umask 077
+BASE="{{.BaseURL}}"
+CLIENT="{{.Client}}"
+NAME="${AXIOMOS_AGENT_NAME:-}"
+
+say() { printf '%s\n' "$*"; }
+die() { printf '%s\n' "$*" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || die "{{.T.need_curl}}"
+
+# 从一行 JSON 里取字段（不依赖 jq）
+jstr() { sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1; }
+jnum() { sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1; }
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+say "{{.T.requesting}}"
+RESP=$(curl -fsS -X POST "$BASE/api/v1/agent-auth/device" -H 'Content-Type: application/json' \
+  -d "{\"client\":\"$CLIENT\",\"name\":\"$(esc "$NAME")\"}") || die "{{.T.request_fail}}"
+DEVICE=$(printf '%s' "$RESP" | jstr device_code)
+CODE=$(printf '%s' "$RESP" | jstr user_code)
+URL=$(printf '%s' "$RESP" | jstr verification_url)
+INTERVAL=$(printf '%s' "$RESP" | jnum interval); [ -n "$INTERVAL" ] || INTERVAL=5
+EXPIRES=$(printf '%s' "$RESP" | jnum expires_in); [ -n "$EXPIRES" ] || EXPIRES=900
+[ -n "$DEVICE" ] && [ -n "$CODE" ] || die "{{.T.request_fail}}"
+
+say ""
+say "  {{.T.open}} $URL"
+say "  {{.T.enter}} $CODE {{.T.approve}}"
+say ""
+if [ -z "${AXIOMOS_NO_BROWSER:-}" ] && [ -z "${CI:-}" ]; then
+  if command -v open >/dev/null 2>&1; then open "$URL" >/dev/null 2>&1 || true
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL" >/dev/null 2>&1 || true
+  elif command -v wslview >/dev/null 2>&1; then wslview "$URL" >/dev/null 2>&1 || true
+  fi
+fi
+
+say "{{.T.waiting}}"
+DEADLINE=$(( $(date +%s) + EXPIRES ))
+STATUS=pending
+BODY=""
+while :; do
+  sleep "$INTERVAL"
+  OUT=$(curl -sS -w '\n%{http_code}' -X POST "$BASE/api/v1/agent-auth/token" -H 'Content-Type: application/json' \
+    -d "{\"device_code\":\"$DEVICE\"}" 2>/dev/null) || OUT=""
+  HTTP=$(printf '%s' "$OUT" | tail -n 1)
+  BODY=$(printf '%s' "$OUT" | sed '$d')
+  if [ "$HTTP" = "200" ]; then
+    STATUS=$(printf '%s' "$BODY" | jstr status)
+  fi
+  case "$STATUS" in
+    approved) break ;;
+    denied) die "{{.T.denied}}" ;;
+    expired) die "{{.T.expired}}" ;;
+  esac
+  [ "$(date +%s)" -lt "$DEADLINE" ] || die "{{.T.expired}}"
+done
+
+TOKEN=$(printf '%s' "$BODY" | jstr token)
+MCP=$(printf '%s' "$BODY" | jstr mcp_url)
+AGENT=$(printf '%s' "$BODY" | jstr name)
+[ -n "$TOKEN" ] || die "{{.T.no_token}}"
+[ -n "$MCP" ] || MCP="$BASE/mcp"
+say "{{.T.approved}} $AGENT"
+
+JSON_SNIPPET=$(printf '{\n  "mcpServers": {\n    "axiomos": {\n      "type": "http",\n      "url": "%s",\n      "headers": { "Authorization": "Bearer %s" }\n    }\n  }\n}' "$MCP" "$TOKEN")
+
+case "$CLIENT" in
+  claude-code)
+    if command -v claude >/dev/null 2>&1; then
+      claude mcp remove axiomos >/dev/null 2>&1 || true
+      claude mcp add --transport http axiomos "$MCP" --header "Authorization: Bearer $TOKEN"
+      say "{{.T.written}} Claude Code (mcp: axiomos)"
+    else
+      say "{{.T.no_claude}}"
+      say "$JSON_SNIPPET"
+    fi
+    say "{{.T.try_claude}}"
+    ;;
+  cursor)
+    F="$HOME/.cursor/mcp.json"
+    mkdir -p "$HOME/.cursor"
+    if [ ! -s "$F" ]; then
+      printf '{\n  "mcpServers": {\n    "axiomos": {\n      "url": "%s",\n      "headers": { "Authorization": "Bearer %s" }\n    }\n  }\n}\n' "$MCP" "$TOKEN" > "$F"
+      say "{{.T.written}} $F"
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 - "$F" "$MCP" "$TOKEN" <<'PY'
+import json, sys
+path, url, tok = sys.argv[1:4]
+with open(path) as f:
+    data = json.load(f)
+data.setdefault("mcpServers", {})["axiomos"] = {"url": url, "headers": {"Authorization": "Bearer " + tok}}
+with open(path, "w") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+      say "{{.T.merged}} $F"
+    else
+      say "{{.T.no_python}} $F:"
+      say "$JSON_SNIPPET"
+    fi
+    say "{{.T.try_cursor}}"
+    ;;
+  codex)
+    F="$HOME/.codex/config.toml"
+    mkdir -p "$HOME/.codex"
+    SNIP=$(printf '\n[mcp_servers.axiomos]\nurl = "%s"\nhttp_headers = { Authorization = "Bearer %s" }\n' "$MCP" "$TOKEN")
+    if [ -s "$F" ] && grep -q '^\[mcp_servers\.axiomos\]' "$F"; then
+      say "$F {{.T.codex_exists}}"
+      say "$SNIP"
+    else
+      printf '%s\n' "$SNIP" >> "$F"
+      say "{{.T.written}} $F"
+    fi
+    say "{{.T.try_codex}}"
+    ;;
+  *)
+    say "{{.T.custom}}"
+    say "$JSON_SNIPPET"
+    ;;
+esac
+
+# 连接检查：调一次 whoami，网页向导据此显示「已在线」
+say "{{.T.checking}}"
+curl -sS -o /dev/null -X POST "$MCP" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}' >/dev/null 2>&1 || true
+say "{{.T.done}}"

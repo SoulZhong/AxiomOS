@@ -1,13 +1,13 @@
 "use client";
 import { useCallback, useMemo, useState } from "react";
 import { api, inviteUrlOf, isSynced, type OrgMember, type OrgTeam } from "@/lib/api";
-import { errorMessage, useLoad } from "@/lib/hooks";
+import { errorMessage, setQueryParams, useLoad, useQueryParam } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { usePersisted } from "@/lib/usePersisted";
 import { useSession } from "@/components/AppShell";
 import { IconChevronDown, IconChevronRight, IconDownload, IconPlus, IconUpload } from "@/components/icons";
 import { useToast } from "@/components/toast";
-import { Button, Checkbox, ConfirmDialog, Empty, ErrorBox, ListSkeleton, Menu, Panel, Segmented, Select, Tag, TableSkeleton, Tip, cx } from "@/components/ui";
+import { Button, Checkbox, ConsequenceDialog, Empty, ErrorBox, ListSkeleton, Menu, Panel, Segmented, Select, Tag, TableSkeleton, Tip, cx } from "@/components/ui";
 import { MergeDialog, type MergeSide } from "../MergeDialog";
 import { BulkTeamDialog, ChangeRolesDialog, ChangeTeamDialog, ImportDialog, InviteDialog, MoveTeamDialog } from "./dialogs";
 import { EditMemberDrawer } from "./MemberDrawer";
@@ -51,6 +51,15 @@ export function PeopleTab() {
   const [revoking, setRevoking] = useState<PersonRow | null>(null);
   const [merging, setMerging] = useState<{ kind: "member"; a: MergeSide; b: MergeSide; reason?: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  // 停用前统计影响范围（DESIGN.md §6）：名下未结束任务、负责的目标、他的 Agent；只在对话框打开时取
+  const deactivatingId = deactivating?.id ?? null;
+  const impact = useLoad(async () => {
+    if (!deactivatingId) return null;
+    const [tasks, goals, agents] = await Promise.all([api.tasks.list({ assignee: deactivatingId, limit: 500 }).catch(() => []), api.goals.list().catch(() => []), api.agents.list().catch(() => [])]);
+    const openTasks = tasks.filter((x) => x.state.label !== "terminal_success" && x.state.label !== "terminal_failure").length;
+    const walk = (gs: typeof goals): number => gs.reduce((n, g) => n + (g.owner.id === deactivatingId && g.status !== "abandoned" && !g.achieved ? 1 : 0) + walk(g.children ?? []), 0);
+    return { openTasks, goals: walk(goals), agents: agents.filter((a) => a.owner.id === deactivatingId).length };
+  }, [deactivatingId]);
 
   const allMembers = useMemo<PersonRow[]>(() => members.data ?? [], [members.data]);
   const allTeams = useMemo(() => teams.data ?? [], [teams.data]);
@@ -90,6 +99,17 @@ export function PeopleTab() {
     }
   };
   const openDialog = (kind: "bulk" | "invite" | "import") => setDialog({ kind, key: Date.now() });
+  // ?member=<id>（快速命令「跳到成员」）：成员表一到就定位到那个人，参数随即清掉
+  const qMember = useQueryParam("member");
+  const [seenMember, setSeenMember] = useState<string | null>(null);
+  if (qMember !== seenMember && members.data) {
+    setSeenMember(qMember);
+    const m = qMember ? allMembers.find((x) => x.id === qMember) : undefined;
+    if (m) {
+      selectTeam(m.team_id ?? null, m.id);
+      setQueryParams({ member: null });
+    }
+  }
 
   // ---- 团队操作（树上的菜单） ----
   const act = async (fn: () => Promise<unknown>, ok: string): Promise<boolean> => {
@@ -271,10 +291,35 @@ export function PeopleTab() {
       {dialog?.kind === "bulk" && <BulkTeamDialog key={dialog.key} open members={selectedVisible} teams={allTeams} defaultTeam={selectedTeam} onClose={() => setDialog(null)} onDone={() => { setSelected(new Set()); reloadAll(); }} />}
       {dialog?.kind === "invite" && <InviteDialog key={dialog.key} open roles={roleList} teams={allTeams} defaultTeam={selectedTeam} onClose={() => setDialog(null)} onInvited={() => { reloadAll(); }} />}
       {dialog?.kind === "import" && <ImportDialog key={dialog.key} open roles={roleList} teams={allTeams} onClose={() => setDialog(null)} onImported={reloadAll} />}
-      <ConfirmDialog open={!!deactivating} title={t("settings.people.deactivate")} message={deactivating ? t("settings.people.deactivateConfirm", { name: deactivating.name }) : null} confirmLabel={t("settings.people.deactivate")} danger busy={busy} onConfirm={() => deactivating && void deactivate(deactivating)} onClose={() => setDeactivating(null)} />
-      <ConfirmDialog open={!!revoking} title={t("settings.people.revokeInvite")} message={revoking ? t("settings.invitations.deleteConfirm", { email: revoking.email }) : null} confirmLabel={t("settings.people.revokeInvite")} danger busy={busy} onConfirm={() => revoking && void revoke(revoking)} onClose={() => setRevoking(null)} />
-      <ConfirmDialog open={!!owning} title={t("settings.members.makeOwner")} message={owning ? t("settings.members.makeOwnerConfirm", { name: owning.name }) : null} busy={busy} onConfirm={() => owning && void makeOwner(owning)} onClose={() => setOwning(null)} />
-      <ConfirmDialog open={!!removingTeam} title={t("settings.people.deactivateTeam")} message={removingTeam ? t("settings.people.deactivateTeamConfirm", { name: removingTeam.name }) : null} confirmLabel={t("settings.people.deactivateTeam")} danger busy={busy} onConfirm={() => removingTeam && void removeTeam(removingTeam)} onClose={() => setRemovingTeam(null)} />
+      <ConsequenceDialog
+        open={!!deactivating}
+        title={deactivating ? t("settings.people.deactivateTitle", { name: deactivating.name }) : ""}
+        counting={impact.loading && !impact.data}
+        effects={[
+          t("settings.people.deactivateEffect.login"),
+          impact.data && impact.data.openTasks > 0 ? t("settings.people.deactivateEffect.tasks", { n: impact.data.openTasks }) : t("settings.people.deactivateEffect.noTasks"),
+          impact.data && impact.data.goals > 0 ? t("settings.people.deactivateEffect.goals", { n: impact.data.goals }) : null,
+          impact.data && impact.data.agents > 0 ? t("settings.people.deactivateEffect.agents", { n: impact.data.agents }) : null,
+        ]}
+        note={t("settings.people.deactivateEffect.restore")}
+        confirmLabel={t("settings.people.deactivate")}
+        danger
+        busy={busy}
+        onConfirm={() => deactivating && void deactivate(deactivating)}
+        onClose={() => setDeactivating(null)}
+      />
+      <ConsequenceDialog open={!!revoking} title={revoking ? t("settings.people.revokeTitle", { email: revoking.email }) : ""} effects={[t("settings.people.revokeEffect.link"), t("settings.people.revokeEffect.member")]} confirmLabel={t("settings.people.revokeInvite")} danger busy={busy} onConfirm={() => revoking && void revoke(revoking)} onClose={() => setRevoking(null)} />
+      <ConsequenceDialog open={!!owning} title={owning ? t("settings.members.makeOwnerTitle", { name: owning.name }) : ""} effects={[t("settings.members.makeOwnerEffect.you"), t("settings.members.makeOwnerEffect.agents")]} danger={false} busy={busy} onConfirm={() => owning && void makeOwner(owning)} onClose={() => setOwning(null)} />
+      <ConsequenceDialog
+        open={!!removingTeam}
+        title={removingTeam ? t("settings.people.deactivateTeamTitle", { name: removingTeam.name }) : ""}
+        effects={[t("settings.people.deactivateTeamEffect.tree"), removingTeam && isSynced(removingTeam) ? t("settings.people.deactivateTeamEffect.synced", { source: removingTeam.source_title ?? removingTeam.source ?? "" }) : t("settings.people.deactivateTeamEffect.manual")]}
+        confirmLabel={t("settings.people.deactivateTeam")}
+        danger
+        busy={busy}
+        onConfirm={() => removingTeam && void removeTeam(removingTeam)}
+        onClose={() => setRemovingTeam(null)}
+      />
     </Panel>
   );
 }

@@ -36,11 +36,24 @@ func (t Transition) req(c ...string) Transition { t.Requires = c; return t }
 func (t Transition) grant(g Grant) Transition   { t.Grant = g; return t }
 func (t Transition) assign(a string) Transition { t.AssignTo = a; return t }
 
+// onGit 声明这一步由代码平台的某件外部事件触发（ADR 0020）。
+func (t Transition) onGit(event string) Transition {
+	t.TriggeredBy = &Trigger{Source: SourceGit, Event: event}
+	return t
+}
+
 func commonTail(activeStates []string) []Transition {
 	return []Transition{
 		tr("block", "标记阻塞|Mark blocked", activeStates, "blocked", []string{"assignee", "creator"}),
 		tr("cancel", "取消|Cancel", []string{"*"}, "cancelled", []string{"creator", "role:admin"}),
 	}
+}
+
+// gitTail 与 commonTail 相同，只是「标记阻塞」另接受代码平台的「检查失败」事件（ADR 0020）。
+func gitTail(activeStates []string) []Transition {
+	out := commonTail(activeStates)
+	out[0] = out[0].onGit(EventCIFailed)
+	return out
 }
 
 // 内置交付物类型的中文名。
@@ -131,8 +144,8 @@ func BuiltinTaskTypes() []*TaskType {
 			},
 			Transitions: append([]Transition{
 				tr("start_design", "开始设计|Start design", []string{"draft"}, "designing", []string{"creator"}).assign("participant:designer"),
-				tr("design_done", "设计完成|Design done", []string{"designing"}, "developing", []string{"assignee"}).req("artifact:prd").assign("participant:developer"),
-				tr("dev_done", "开发完成|Development done", []string{"developing"}, "testing", []string{"assignee"}).req("artifact:pr").assign("participant:tester"),
+				tr("design_done", "设计完成|Design done", []string{"designing"}, "developing", []string{"assignee"}).req("artifact:prd").assign("participant:developer").onGit(EventPROpened),
+				tr("dev_done", "开发完成|Development done", []string{"developing"}, "testing", []string{"assignee"}).req("artifact:pr").assign("participant:tester").onGit(EventPRMerged),
 				tr("test_fail", "测试不通过|Test failed", []string{"testing"}, "developing", []string{"assignee"}).req("comment").assign("participant:developer"),
 				tr("test_pass", "测试通过|Test passed", []string{"testing"}, "releasing", []string{"assignee"}).req("artifact:test_report", "no_open_bugs").assign("participant:releaser"),
 				tr("release_done", "发布完成|Release done", []string{"releasing"}, "awaiting_acceptance", []string{"assignee"}).req("artifact:release_note"),
@@ -141,7 +154,7 @@ func BuiltinTaskTypes() []*TaskType {
 				tr("ask_for_input", "提问等待|Ask and wait", reqActive, "waiting", []string{"assignee"}).req("comment"),
 				tr("resume", "答复并恢复|Reply and resume", []string{"waiting"}, "$previous", []string{"creator", "reviewer"}).req("comment"),
 				tr("unblock", "解除阻塞|Unblock", []string{"blocked"}, "$previous", []string{"assignee", "creator"}),
-			}, commonTail(reqActive)...),
+			}, gitTail(reqActive)...),
 		},
 	}
 
@@ -169,8 +182,8 @@ func BuiltinTaskTypes() []*TaskType {
 				tr("reject", "判定非 Bug|Not a bug", []string{"new", "confirmed"}, "rejected", []string{"creator", "role:tester", "role:developer"}).req("comment"),
 				tr("duplicate", "判定重复|Duplicate", []string{"new", "confirmed"}, "duplicate", []string{"creator", "role:tester", "role:developer"}).req("comment"),
 				tr("wont_fix", "不修复|Won't fix", []string{"new", "confirmed", "fixing"}, "wont_fix", []string{"creator", "role:admin"}).req("comment"),
-				tr("start_fix", "开始修复|Start fixing", []string{"confirmed"}, "fixing", []string{"assignee"}),
-				tr("fixed", "修复完成|Fixed", []string{"fixing"}, "fixed", []string{"assignee"}).req("artifact:pr").assign("participant:tester"),
+				tr("start_fix", "开始修复|Start fixing", []string{"confirmed"}, "fixing", []string{"assignee"}).onGit(EventPROpened),
+				tr("fixed", "修复完成|Fixed", []string{"fixing"}, "fixed", []string{"assignee"}).req("artifact:pr").assign("participant:tester").onGit(EventPRMerged),
 				tr("verify", "验证通过|Verified", []string{"fixed"}, "verified", []string{"assignee", "reviewer"}).grant(GrantReview),
 				tr("reopen", "重新打开|Reopen", []string{"fixed", "verified"}, "fixing", []string{"assignee", "reviewer", "creator"}).req("comment").assign("participant:developer"),
 			},

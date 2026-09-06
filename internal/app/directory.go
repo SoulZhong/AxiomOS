@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,6 +82,7 @@ type FieldView struct {
 	Key         string `json:"key"`
 	Title       string `json:"title"`
 	Secret      bool   `json:"secret"`
+	Optional    bool   `json:"optional"`
 	Placeholder string `json:"placeholder"`
 	Hint        string `json:"hint"`
 	Set         bool   `json:"set"`
@@ -93,7 +95,7 @@ func providerView(p directory.Provider, cfg *store.DirectoryConfig, secretsSet m
 		v.Tip = &GuideView{Text: p.Tip.Text.In(loc), URL: p.Tip.URL}
 	}
 	for _, f := range p.Fields {
-		fv := FieldView{Key: f.Key, Title: f.Title.In(loc), Secret: f.Secret, Placeholder: f.Placeholder, Hint: f.Hint.In(loc)}
+		fv := FieldView{Key: f.Key, Title: f.Title.In(loc), Secret: f.Secret, Optional: f.Optional, Placeholder: f.Placeholder, Hint: f.Hint.In(loc)}
 		if cfg != nil && cfg.Provider == p.Key {
 			if f.Secret {
 				fv.Set = secretsSet[f.Key]
@@ -257,6 +259,31 @@ func (a *App) GetDirectoryConfig(ctx context.Context, sess *Session) (*Directory
 
 // SaveDirectoryConfig 写配置：凭据按提供方声明逐字段校验，保密字段加密入库；产生动态 DirectoryConfigured（不含任何保密值）。
 // 换提供方等于换来源：凭据与根部门重置为新提供方的，旧外部身份保留但不再匹配（ADR 0017 补记）。
+// DisconnectDirectory 断开 IM 集成：删掉配置，回到未接入。
+// 已经同步进来的团队与成员、外部身份、历次同步记录都保留；要改成手工维护就去「对应关系」里解绑。
+func (a *App) DisconnectDirectory(ctx context.Context, sess *Session) (*DirectoryView, error) {
+	if err := a.requireOrgSettings(sess); err != nil {
+		return nil, err
+	}
+	if err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+		c, err := a.Store.DirectoryConfig(ctx, tx, sess.OrgID)
+		if err == store.ErrNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := a.Store.DeleteDirectoryConfig(ctx, tx, sess.OrgID); err != nil {
+			return err
+		}
+		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "DirectoryDisconnected", ActorID: sess.Actor.ID, At: time.Now(),
+			Data: map[string]any{"provider": c.Provider}}})
+	}); err != nil {
+		return nil, err
+	}
+	return a.GetDirectoryConfig(ctx, sess)
+}
+
 func (a *App) SaveDirectoryConfig(ctx context.Context, sess *Session, in DirectoryConfigInput) (*DirectoryView, error) {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return nil, err
@@ -310,7 +337,7 @@ func (a *App) SaveDirectoryConfig(ctx context.Context, sess *Session, in Directo
 				}
 			}
 		}
-		var secretsChanged []string
+		var secretsChanged, fieldsChanged []string
 		creds := map[string]string{}
 		for _, f := range prov.Fields {
 			val := strings.TrimSpace(in.Credentials[f.Key])
@@ -326,6 +353,15 @@ func (a *App) SaveDirectoryConfig(ctx context.Context, sess *Session, in Directo
 			}
 			if val == "" {
 				val = cfg.Credentials[f.Key]
+			} else {
+				if isURLField(f.Key) {
+					if err := checkEgress(val); err != nil {
+						return err
+					}
+				}
+				if val != cfg.Credentials[f.Key] {
+					fieldsChanged = append(fieldsChanged, f.Key)
+				}
 			}
 			if val == "" {
 				return Bad("err.directory_field_required", f.Title)
@@ -372,8 +408,15 @@ func (a *App) SaveDirectoryConfig(ctx context.Context, sess *Session, in Directo
 		if in.Schedule != nil {
 			cfg.Schedule = strings.TrimSpace(*in.Schedule)
 		}
-		if in.ProxyURL != nil {
+		proxyChanged := false
+		if in.ProxyURL != nil && strings.TrimSpace(*in.ProxyURL) != cfg.ProxyURL {
+			if p := strings.TrimSpace(*in.ProxyURL); p != "" {
+				if err := checkProxy(p); err != nil {
+					return err
+				}
+			}
 			cfg.ProxyURL = strings.TrimSpace(*in.ProxyURL)
+			proxyChanged = true
 		}
 		if err := a.Store.UpsertDirectoryConfig(ctx, tx, cfg); err != nil {
 			return err
@@ -383,12 +426,15 @@ func (a *App) SaveDirectoryConfig(ctx context.Context, sess *Session, in Directo
 			return err
 		}
 		out = a.directoryView(cfg, last, sess.Loc())
-		if secretsChanged == nil {
-			secretsChanged = []string{}
+		// 动态只记改了哪些字段的名字，不记值：接口地址、用户名与代理地址都可能暴露内网拓扑（Codex 审查）。
+		fields := append(append([]string{}, fieldsChanged...), secretsChanged...)
+		if proxyChanged {
+			fields = append(fields, "proxy_url")
 		}
+		sort.Strings(fields)
 		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "DirectoryConfigured", ActorID: sess.Actor.ID, At: time.Now(),
-			Data: map[string]any{"provider": cfg.Provider, "provider_switched": switched, "credentials": cfg.Credentials, "secrets_changed": secretsChanged,
-				"root_department_id": cfg.RootDepartmentID, "root_department_ids": cfg.RootDepartmentIDs, "default_role": cfg.DefaultRole, "schedule": cfg.Schedule, "proxy_url": cfg.ProxyURL}}})
+			Data: map[string]any{"provider": cfg.Provider, "provider_switched": switched, "fields": fields,
+				"root_department_id": cfg.RootDepartmentID, "root_department_ids": cfg.RootDepartmentIDs, "default_role": cfg.DefaultRole, "schedule": cfg.Schedule}}})
 	})
 	return out, err
 }
@@ -587,6 +633,15 @@ func (a *App) DirectoryChecklist(ctx context.Context, sess *Session) (*Checklist
 		return nil, err
 	}
 	checks := a.diagnose(ctx, dir, cfg, prov)
+	// 「能以应用身份发消息」（ADR 0019）：待处理、不阻塞；用通知通道的凭据让提供方自检，连续失败时带最近一次错误
+	if b := directory.FirstBlocked(checks); b == nil || b.Key != "connection" {
+		_ = a.tx(ctx, sess, func(tx pgx.Tx) error {
+			if mc := a.messagingCheck(ctx, tx, sess.OrgID, prov); mc != nil {
+				checks = append(checks, *mc)
+			}
+			return nil
+		})
+	}
 	for _, c := range checks {
 		view.Checks = append(view.Checks, checkView(c, loc))
 	}

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type Agent, type AgentStat, type Event, type Grant, type GrantMode, type GrantName, type Task } from "@/lib/api";
+import { api, type Agent, type AgentCheck, type AgentStat, type Event, type Grant, type GrantMode, type GrantName, type Task } from "@/lib/api";
 import { fmtMoney, fmtRelative, parseDate, today } from "@/lib/format";
 import { errorMessage, useAction, useCapabilityTitles, useHighlight, useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
@@ -8,9 +8,10 @@ import { isAcceptanceWait, useTaskTypeIndex } from "@/lib/states";
 import { capabilityTitle, GRANT_ORDER, grantModeTitle, grantTitle } from "@/lib/terms";
 import { useSession } from "@/components/AppShell";
 import { AgentVisor, type VisorState } from "@/components/AgentVisor";
-import { IconAgent, IconApprove, IconEdit, IconKey, IconPlus, IconTrash } from "@/components/icons";
+import { clientTitle, ConnectWizard } from "@/components/agents/ConnectWizard";
+import { IconAgent, IconApprove, IconEdit, IconKey, IconPlus, IconRun, IconTrash } from "@/components/icons";
 import { useToast } from "@/components/toast";
-import { Avatar, Button, Checkbox, ConfirmDialog, CopyLine, Dialog, Drawer, Empty, ErrorBox, Field, FormSection, Input, PageHeader, Panel, RelativeTime, Select, StatChips, StatusLED, Table, TableSkeleton, Tag, TagList, Tip, cx } from "@/components/ui";
+import { Avatar, Button, Checkbox, ConsequenceDialog, CopyLine, Dialog, Drawer, Empty, ErrorBox, Field, FormSection, Input, PageHeader, Panel, RelativeTime, Select, StatChips, StatusLED, Table, TableSkeleton, Tag, TagList, Tip, cx } from "@/components/ui";
 
 const POLL_MS = 30_000;
 
@@ -27,15 +28,12 @@ function heartbeat(iso: string | null): string {
  * 今日段数 = 今天由这个 Agent 发起的「开始执行」动态条数（GET /events）；成本 = GET /stats/agents 的累计成本。
  */
 function AgentTelemetry({ agent, stat, todayRuns, currency }: { agent: Agent; stat: AgentStat | undefined; todayRuns: number; currency?: string }) {
+  // 一项一个不折行的小块，分隔点跟在后一项前面：窄的时候整块换行，行尾不会剩一个孤零零的「·」
   return (
-    <span className="eyebrow mt-1 flex items-center gap-1.5 normal-case text-ink-subtle">
-      <span>{t("agents.lastHeartbeat")}</span>
-      <span className="text-telemetry">{heartbeat(agent.last_seen_at)}</span>
-      <span className="text-hairline-tertiary" aria-hidden="true">·</span>
-      <span>{t("agents.todaySegments", { n: todayRuns })}</span>
-      <span className="text-hairline-tertiary" aria-hidden="true">·</span>
-      <span>{t("agents.costTotal")}</span>
-      <span className="text-telemetry">{stat ? fmtMoney(stat.cost, currency) : "—"}</span>
+    <span className="eyebrow mt-1 flex flex-wrap items-center gap-x-1 normal-case text-ink-subtle">
+      <span className="whitespace-nowrap">{t("agents.lastHeartbeat")} <span className="text-telemetry">{heartbeat(agent.last_seen_at)}</span></span>
+      <span className="whitespace-nowrap"><span className="mr-1 text-hairline-tertiary" aria-hidden="true">·</span>{t("agents.todaySegments", { n: todayRuns })}</span>
+      <span className="whitespace-nowrap"><span className="mr-1 text-hairline-tertiary" aria-hidden="true">·</span>{t("agents.costTotal")} <span className="text-telemetry">{stat ? fmtMoney(stat.cost, currency) : "—"}</span></span>
     </span>
   );
 }
@@ -98,6 +96,16 @@ export default function AgentsPage() {
   const dayStart = today().getTime();
   const todayRuns = (id: string) => events.data?.filter((e) => e.kind === "RunStarted" && e.actor?.id === id && new Date(e.created_at).getTime() >= dayStart).length ?? 0;
   const [registering, setRegistering] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  // 「检查连接」：每行一份最近一次 GET /agents/{id}/check 的结果，显示在遥测行下面
+  const [checks, setChecks] = useState<Record<string, AgentCheck | { error: string }>>({});
+  const [checking, setChecking] = useState<string | null>(null);
+  const checkOne = async (a: Agent) => {
+    setChecking(a.id);
+    try { setChecks((c) => ({ ...c, [a.id]: {} as AgentCheck })); const r = await api.agents.check(a.id); setChecks((c) => ({ ...c, [a.id]: r })); }
+    catch (e) { setChecks((c) => ({ ...c, [a.id]: { error: errorMessage(e) } })); }
+    finally { setChecking(null); }
+  };
   const [token, setToken] = useState<{ agent: Agent; token: string } | null>(null);
   const [removing, setRemoving] = useState<Agent | null>(null);
   const [highlight, mark] = useHighlight();
@@ -117,7 +125,7 @@ export default function AgentsPage() {
 
   return (
     <div>
-      <PageHeader title={t("agents.title")} description={seesAll ? t("agents.descriptionAll") : t("agents.descriptionMine")} actions={<Button variant="primary" icon={<IconPlus />} onClick={() => setRegistering(true)}>{t("agents.register")}</Button>} />
+      <PageHeader title={t("agents.title")} description={seesAll ? t("agents.descriptionAll") : t("agents.descriptionMine")} actions={<Button variant="primary" icon={<IconPlus />} onClick={() => setConnecting(true)}>{t("agents.connect")}</Button>} />
       <StatChips
         className="mb-4"
         value={null}
@@ -126,12 +134,12 @@ export default function AgentsPage() {
       />
       <Panel index={1} icon={<IconAgent />} title={t("nav.agents")} telemetry={agents.data ? t("panel.rows", { n: agents.data.length }) : undefined} padded={false}>
         {agents.loading ? <TableSkeleton rows={4} cols={6} /> : agents.error ? <div className="p-4"><ErrorBox message={agents.error} onRetry={agents.reload} /></div> : !agents.data?.length ? (
-          <Empty text={t("agents.empty")} action={<Button variant="primary" icon={<IconPlus />} onClick={() => setRegistering(true)}>{t("agents.register")}</Button>} />
+          <Empty text={t("agents.empty")} action={<Button variant="primary" icon={<IconPlus />} onClick={() => setConnecting(true)}>{t("agents.connect")}</Button>} />
         ) : (
           <Table>
             <thead>
               <tr>
-                <th className="w-full">Agent</th><th className="w-[140px]">{t("agents.status")}</th>{seesAll && <th className="w-[110px]">{t("agents.owner")}</th>}<th className="w-[200px]">{t("agents.capabilities")}</th><th className="w-[100px]">{t("agents.grants")}</th><th className="num w-[88px]">{t("agents.maxAtOnce")}</th><th className="actions w-[236px]" aria-label={t("common.actions")} />
+                <th className="w-full">Agent</th><th className="w-[120px]">{t("agents.status")}</th><th className="w-[104px]">{t("agents.runtime")}</th>{seesAll && <th className="w-[88px]">{t("agents.owner")}</th>}<th className="w-[116px]">{t("agents.capabilities")}</th><th className="w-[92px]">{t("agents.grants")}</th><th className="num w-[64px]">{t("agents.maxAtOnce")}</th><th className="actions w-[300px]" aria-label={t("common.actions")} />
               </tr>
             </thead>
             <tbody>
@@ -141,7 +149,7 @@ export default function AgentsPage() {
                 const hasApproval = a.grants.some((x) => x.mode === "with_approval");
                 return (
                   <tr key={a.id} className={cx(highlight === a.id && "row-new")}>
-                    <td className="w-full max-w-0 min-w-[220px]">
+                    <td className="w-full max-w-0 min-w-[210px]">
                       <span className="flex items-center gap-2.5">
                         <AgentVisor state={visorState(a)} size={24} motion={snap.motions[a.id]} />
                         <span className="flex min-w-0 flex-col">
@@ -150,6 +158,17 @@ export default function AgentsPage() {
                             {a.shared && <Tip tip={t("agents.sharedManaged")}><Tag tone="accent">{t("agents.sharedTag")}</Tag></Tip>}
                           </span>
                           <AgentTelemetry agent={a} stat={statOf(a.id)} todayRuns={todayRuns(a.id)} currency={currency} />
+                          {checks[a.id] && (
+                            <span className="mt-1 flex items-center gap-1.5 text-caption" data-agent-check={a.id}>
+                              {"error" in checks[a.id] ? <span className="text-danger">{(checks[a.id] as { error: string }).error}</span> : "hint" in checks[a.id] ? (
+                                <>
+                                  <StatusLED tone={(checks[a.id] as AgentCheck).online ? "online" : (checks[a.id] as AgentCheck).connected ? "warning" : "dark"} />
+                                  <span className="text-ink-muted">{(checks[a.id] as AgentCheck).hint}</span>
+                                  {(checks[a.id] as AgentCheck).last_tool && <Tag>{t("connect.lastTool", { tool: (checks[a.id] as AgentCheck).last_tool })}</Tag>}
+                                </>
+                              ) : <span className="text-ink-subtle">{t("common.loading")}</span>}
+                            </span>
+                          )}
                         </span>
                       </span>
                     </td>
@@ -161,6 +180,7 @@ export default function AgentsPage() {
                         {!a.online && <span className="text-caption text-ink-subtle">· {a.last_seen_at ? <RelativeTime iso={a.last_seen_at} /> : t("agents.never")}</span>}
                       </span>
                     </td>
+                    <td className="max-w-[112px]">{a.runtime ? <span className="block truncate text-ink-muted" title={clientTitle(a.runtime)}>{clientTitle(a.runtime)}</span> : <span className="text-ink-subtle">—</span>}</td>
                     {seesAll && <td className="max-w-[140px] whitespace-nowrap"><span className="flex items-center gap-1.5"><Avatar name={a.owner.name} size={20} /><span className="truncate">{a.owner.name}</span></span></td>}
                     <td className="whitespace-nowrap"><TagList items={a.capabilities.map((c) => capabilityTitle(c, caps))} empty={t("agents.noCaps")} /></td>
                     <td className="whitespace-nowrap">
@@ -181,11 +201,14 @@ export default function AgentsPage() {
                     <td className="num whitespace-nowrap">{t("agents.countUnit", { n: a.max_concurrency })}</td>
                     <td className="actions">
                       {/* 别人的公共 Agent 只读：没有编辑 / 移除 / 令牌（ADR 0017 同期的可见范围规则） */}
-                      {a.can_manage && <span className="row-actions">
+                      <span className="row-actions">
+                        <Button size="sm" variant="ghost" icon={<IconRun />} disabled={checking === a.id} onClick={() => void checkOne(a)}>{t("agents.checkConnection")}</Button>
+                      {a.can_manage && <>
                         <Tip tip={t("agents.noTokenStored")}><Button size="sm" variant="ghost" icon={<IconKey />} disabled>{t("agents.viewToken")}</Button></Tip>
                         <Tip tip={t("agents.editUnavailable")}><Button size="sm" variant="ghost" icon={<IconEdit />} disabled>{t("common.edit")}</Button></Tip>
                         <Button size="sm" variant="ghost" className="text-danger hover:!text-danger" icon={<IconTrash />} disabled={busy === a.id} onClick={() => setRemoving(a)}>{t("agents.remove")}</Button>
-                      </span>}
+                      </>}
+                      </span>
                     </td>
                   </tr>
                 );
@@ -194,12 +217,26 @@ export default function AgentsPage() {
           </Table>
         )}
       </Panel>
+      <ConnectWizard open={connecting} onClose={() => setConnecting(false)} onManual={() => setRegistering(true)} />
       <RegisterDrawer open={registering} capabilities={session?.capabilities ?? []} capTitles={caps} onClose={() => setRegistering(false)} onCreated={(r) => { setToken(r); mark(r.agent.id); agents.reload(); }} />
       <Dialog open={!!token} onClose={() => setToken(null)} title={t("agents.registered")} footer={<Button variant="primary" onClick={() => setToken(null)}>{t("agents.saved")}</Button>}>
         <p className="text-ink-muted">{t("agents.tokenHint", { name: token?.agent.name })}</p>
         <CopyLine text={token?.token ?? ""} />
       </Dialog>
-      <ConfirmDialog open={!!removing} title={t("agents.remove")} message={removing ? t("agents.removeConfirm", { name: removing.name }) : null} confirmLabel={t("agents.remove")} danger busy={!!busy} onConfirm={() => removing && void remove(removing)} onClose={() => setRemoving(null)} />
+      <ConsequenceDialog
+        open={!!removing}
+        title={removing ? t("agents.removeTitle", { name: removing.name }) : ""}
+        effects={removing ? (() => {
+          const openTasks = (tasks.data ?? []).filter((x) => x.assignee?.id === removing.id && x.state.label !== "terminal_success" && x.state.label !== "terminal_failure").length;
+          const runs = openRuns(removing.id) ? 1 : 0;
+          return [t("agents.removeEffect.token"), runs > 0 ? t("agents.removeEffect.runs", { n: runs }) : null, openTasks > 0 ? t("agents.removeEffect.tasks", { n: openTasks }) : t("agents.removeEffect.noTasks"), t("agents.removeEffect.history")];
+        })() : []}
+        confirmLabel={t("agents.remove")}
+        danger
+        busy={!!busy}
+        onConfirm={() => removing && void remove(removing)}
+        onClose={() => setRemoving(null)}
+      />
     </div>
   );
 }

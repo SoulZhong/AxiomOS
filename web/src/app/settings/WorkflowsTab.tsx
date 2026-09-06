@@ -2,13 +2,17 @@
 import { useState } from "react";
 import { api, type TaskType } from "@/lib/api";
 import { useLoad } from "@/lib/hooks";
-import { t } from "@/lib/i18n";
+import { t, type Key } from "@/lib/i18n";
 import { isBugType } from "@/lib/states";
 import { describeAssignTo, describeBy, describeRequire, describeStateName, grantTitle, roleTitle, stateLabel } from "@/lib/terms";
 import { useSession } from "@/components/AppShell";
 import { IconBug, IconChevronRight } from "@/components/icons";
 import { LABEL_TONE, isDarkLabel } from "@/components/StateBadge";
 import { Code, ErrorBox, ListSkeleton, Panel, Table, Tag } from "@/components/ui";
+
+/** 外部事件（ADR 0020）的界面名：六种写死在这里，因为流程页对每个成员只读可见，不该为了一个标签去要「组织设置」权限。 */
+const CODE_EVENTS = ["pr_opened", "pr_ready", "pr_merged", "pr_closed", "ci_passed", "ci_failed"];
+const eventTitle = (key: string) => (CODE_EVENTS.includes(key) ? t(`code.event.${key}` as Key) : key);
 
 /** 组织设置 · 流程（原独立入口「流程」，DESIGN.md §10 并入）：每种任务类型走哪套流程——状态、每一步谁能走、走之前要满足什么、走完后负责人换成谁。 */
 /** standalone：没有组织设置入口的成员单独看这一页时，说明句已在页头，这里不再重复 */
@@ -84,7 +88,12 @@ export function WorkflowsTab({ standalone = false }: { standalone?: boolean } = 
                     const toState = def.workflow.states[tr.to];
                     return (
                       <tr key={tr.name}>
-                        <td>{tr.title}<div><Code className="text-caption">{tr.name}</Code></div></td>
+                        <td>
+                          {tr.title}
+                          <div><Code className="text-caption">{tr.name}</Code></div>
+                          {/* 由外部事件触发的迁移（ADR 0020）：只读地说清"什么时候会自动走" */}
+                          {tr.triggered_by && <div className="mt-1"><Tag tone="accent">{t("taskTypes.triggeredBy", { event: eventTitle(tr.triggered_by.event) })}</Tag></div>}
+                        </td>
                         <td>
                           <span className="inline-flex flex-wrap items-center gap-1">
                             <span className="text-ink-muted">{tr.from.map((f) => describeStateName(f, def)).join(", ")}</span>

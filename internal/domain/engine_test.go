@@ -387,7 +387,7 @@ func TestScenarioF_Permissions(t *testing.T) {
 	mustFail(t, w.do(task.ID, "zhang-agent", "start", ""), "别人的 Agent 开始", "任务负责人")
 	mustFail(t, w.do(task.ID, "li", "cancel", ""), "小李取消", "创建者")
 	must(t, w.do(task.ID, "zhao", "cancel", ""), "管理员取消")
-	mustFail(t, w.do(task.ID, "wang", "ready", ""), "终止后就绪", "没有「ready」这一步")
+	mustFail(t, w.do(task.ID, "wang", "ready", ""), "终止后就绪", "任务已经结束")
 
 	self := w.create("generic", "写月度总结", "wang", nil)
 	must(t, w.assign(self.ID, "wang", "wang"), "")

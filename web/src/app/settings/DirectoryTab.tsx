@@ -1,13 +1,14 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { api, isSynced, type DirectoryBinding, type DirectoryCheck, type DirectoryChecklist, type DirectoryConfig, type DirectoryConfirmation, type DirectoryDecided, type DirectoryDuplicate, type DirectoryField, type DirectoryInput, type DirectoryKind, type DirectoryPreview, type DirectoryProviderInfo, type DirectoryRun, type DirectorySchedule, type DirectorySkipped } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { api, isSynced, type DirectoryBinding, type DirectoryChecklist, type DirectoryConfig, type DirectoryConfirmation, type DirectoryDecided, type DirectoryDuplicate, type DirectoryInput, type DirectoryKind, type DirectoryPreview, type DirectoryProviderInfo, type DirectoryRun, type DirectorySchedule, type DirectorySkipped } from "@/lib/api";
 import { fmtDate, fmtDateTime, parseDate } from "@/lib/format";
 import { errorMessage, useLoad } from "@/lib/hooks";
 import { t, type Key } from "@/lib/i18n";
-import { IconCheck, IconCopy, IconExternal, IconMember, IconPlay, IconSearch, IconTeam } from "@/components/icons";
+import { IconCopy, IconMember, IconPlay, IconSearch, IconTeam } from "@/components/icons";
 import { useToast } from "@/components/toast";
-import { Button, Checkbox, ConfirmDialog, DescList, Empty, ErrorBox, Field, Input, ListSkeleton, Panel, Select, Table, Tabs, Tag, Tip, cx, type Tone } from "@/components/ui";
+import { Button, Checkbox, ConfirmDialog, ConsequenceDialog, DescList, Empty, ErrorBox, Field, Input, ListSkeleton, Panel, Select, Table, Tabs, Tag, Tip, cx, type Tone } from "@/components/ui";
 import { MergeDialog } from "./MergeDialog";
+import { ChecklistStep, CheckSummary, CredentialField, ProviderCards, StepRow, WizardLink, type ChecklistState, type StepState } from "./wizard";
 
 /*
  * IM 集成 = 一条被引导的路（ADR 0017 补记二，DESIGN.md §14「接入向导」）：
@@ -22,8 +23,7 @@ import { MergeDialog } from "./MergeDialog";
  * 接入完成的状态视图里常驻「预览同步」按钮与「对应关系」面板（已绑定 / 可能重复 / 已跳过），同步完之后仍能回来处理。
  */
 type StepNo = 1 | 2 | 3 | 4 | 5 | 6;
-type StepState = "done" | "current" | "upcoming";
-interface ChecklistState { data: DirectoryChecklist | null; error: string | null; loading: boolean }
+type DirChecklistState = ChecklistState<DirectoryChecklist>;
 
 export function DirectoryTab() {
   const toast = useToast();
@@ -34,6 +34,8 @@ export function DirectoryTab() {
   const [picked, setPicked] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   // override：用户点了某一步的「修改」，临时把那一步展开；保存 / 完成 / 不改了之后清掉，回到数据推出的那一步
   const [override, setOverride] = useState<StepNo | null>(null);
   // 本次会话里点了「先跳过」的待处理项（不拦同步的黄色项）；只在还没同步过时挡在 ③
@@ -47,7 +49,7 @@ export function DirectoryTab() {
   // 对应关系面板要在决定 / 合并 / 解绑之后刷新
   const [mappingsVersion, setMappingsVersion] = useState(0);
   const bumpMappings = useCallback(() => setMappingsVersion((v) => v + 1), []);
-  const [cl, setCl] = useState<ChecklistState>({ data: null, error: null, loading: false });
+  const [cl, setCl] = useState<DirChecklistState>({ data: null, error: null, loading: false });
 
   const cfg = config.data;
   const configured = !!cfg?.configured;
@@ -115,7 +117,24 @@ export function DirectoryTab() {
     setLastRun(null); setOverride(5); setAutoPreviewing(true);
     try { setLastPreview(await api.org.directory.preview()); } catch (err) { toast.fail(errorMessage(err)); } finally { setAutoPreviewing(false); }
   };
-  const startSwitch = () => { setConfirmSwitch(false); setSwitching(true); setPicked(null); setOverride(null); };
+  // 向导回到起点：清掉所有临时状态（挑到一半的提供方、跳过的检查项、上一次预览 / 同步结果）
+  const resetWizard = () => {
+    setPicked(null); setOverride(null); setSkipped([]); setChecksOpen(null);
+    setLastPreview(null); setLastRun(null); setAutoPreviewing(false);
+  };
+  const startSwitch = () => { setConfirmSwitch(false); setSwitching(true); resetWizard(); };
+  // 断开：凭据与同步设置没了，页面回到 ① 选平台（走向导自己的复位路径，再重新读一次设置）
+  const disconnect = async () => {
+    setDisconnecting(true);
+    try {
+      await api.org.directory.disconnect();
+      setConfirmDisconnect(false);
+      setSwitching(false); resetWizard();
+      setCl({ data: null, error: null, loading: false });
+      config.reload(); runs.reload(); bumpMappings();
+      toast.ok(t("settings.directory.disconnected"));
+    } catch (err) { toast.fail(errorMessage(err)); } finally { setDisconnecting(false); }
+  };
   const checkSummary = cl.data ? <CheckSummary checks={checks} /> : cl.loading ? <span className="text-ink-subtle">{t("settings.directory.wizard.checking")}</span> : <span className="text-ink-subtle">{t("settings.directory.wizard.notChecked")}</span>;
   const scopeSummary = rootsChosen
     ? rootIds.length > 0
@@ -146,6 +165,7 @@ export function DirectoryTab() {
             <span className="ml-auto flex items-center gap-2">
               <Button size="sm" icon={<IconSearch />} disabled={autoPreviewing} onClick={() => void openPreview()} data-preview-now>{t("settings.directory.preview")}</Button>
               <Button size="sm" variant="ghost" onClick={() => setConfirmSwitch(true)}>{t("settings.directory.switch")}</Button>
+              <Button size="sm" variant="ghost" onClick={() => setConfirmDisconnect(true)} data-directory-disconnect>{t("settings.directory.disconnect")}</Button>
             </span>
           </div>
         )}
@@ -269,56 +289,31 @@ export function DirectoryTab() {
           </StepRow>
         </ol>
         </div>
-        <ConfirmDialog
+        <ConsequenceDialog
           open={confirmSwitch}
           title={t("settings.directory.switch")}
-          message={t("settings.directory.switchConfirm", { name: cfg.provider_title })}
+          subject={t("settings.directory.switching", { name: cfg.provider_title })}
+          effects={[t("settings.directory.switchEffect.keep", { name: cfg.provider_title }), t("settings.directory.switchEffect.manual"), t("settings.directory.switchEffect.realign")]}
           confirmLabel={t("settings.directory.switchGo")}
           danger
           onConfirm={startSwitch}
           onClose={() => setConfirmSwitch(false)}
         />
+        <ConsequenceDialog
+          open={confirmDisconnect}
+          title={t("settings.directory.disconnectTitle")}
+          subject={t("settings.directory.disconnectSubject", { name: cfg.provider_title })}
+          effects={[t("settings.directory.disconnectEffect.creds"), t("settings.directory.disconnectEffect.people"), t("settings.directory.disconnectEffect.history")]}
+          note={t("settings.directory.disconnectNote")}
+          confirmLabel={t("settings.directory.disconnectGo")}
+          danger
+          busy={disconnecting}
+          onConfirm={() => void disconnect()}
+          onClose={() => setConfirmDisconnect(false)}
+        />
       </Panel>
       {cfg.configured && <RunsPanel runs={runs.data} loading={runs.loading && !runs.data} error={runs.error} onRetry={runs.reload} />}
     </div>
-  );
-}
-
-/**
- * 一步一行：左边序号圆点（做完 ✓ 绿、当前强调色、还没到灰），右边标题 + 一行摘要 + 右侧动作；展开时内容在下面。
- * 步与步之间一根细竖线，读起来是"从上到下的一条路"。
- */
-function StepRow({ n, title, state, warn, summary, action, open, children, last }: { n: StepNo; title: string; state: StepState; warn?: boolean; summary?: ReactNode; action?: ReactNode; open: boolean; children: ReactNode; last?: boolean }) {
-  const dot = state === "done"
-    ? warn ? "border-warning-border bg-warning-bg text-warning" : "border-success-border bg-success-bg text-success"
-    : state === "current" ? "border-accent bg-accent text-on-accent" : "border-hairline bg-surface-2 text-ink-subtle";
-  return (
-    <li className={cx("relative pl-10", !last && "pb-5 before:absolute before:bottom-0 before:left-[11px] before:top-7 before:w-px before:bg-hairline before:content-['']")} data-step={n} data-state={state} aria-current={state === "current" ? "step" : undefined}>
-      <span className={cx("absolute left-0 top-0 inline-flex h-6 w-6 items-center justify-center rounded-full border font-mono text-[11px] font-medium", dot)} aria-hidden="true">
-        {state === "done" ? (warn ? "!" : <IconCheck size={12} />) : n}
-      </span>
-      <div className="flex min-h-6 items-center gap-3">
-        <h3 className={cx("shrink-0 text-body font-medium", state === "upcoming" ? "text-ink-subtle" : "text-ink")}>{title}</h3>
-        {summary && <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 truncate text-body text-ink-muted">{summary}</span>}
-        {action && <span className="ml-auto shrink-0">{action}</span>}
-      </div>
-      {open && <div className="mt-3">{children}</div>}
-    </li>
-  );
-}
-
-/** ③ 的一行摘要：「6 项检查全部通过」或「4 项通过 · 1 项阻塞 · 1 项待处理」 */
-function CheckSummary({ checks }: { checks: DirectoryCheck[] }) {
-  const ok = checks.filter((c) => c.status === "ok").length;
-  const blocked = checks.filter((c) => c.status === "blocked").length;
-  const todo = checks.filter((c) => c.status === "todo").length;
-  if (checks.length > 0 && ok === checks.length) return <span className="text-success">{t("settings.directory.wizard.allOk", { n: checks.length })}</span>;
-  return (
-    <>
-      <span>{t("settings.directory.wizard.passed", { n: ok })}</span>
-      {blocked > 0 && <><span aria-hidden="true">·</span><span className="text-danger">{t("settings.directory.wizard.blockedN", { n: blocked })}</span></>}
-      {todo > 0 && <><span aria-hidden="true">·</span><span className="text-warning">{t("settings.directory.wizard.todoN", { n: todo })}</span></>}
-    </>
   );
 }
 
@@ -335,45 +330,6 @@ function CredentialsSummary({ cfg, provider }: { cfg: DirectoryConfig; provider:
         </span>
       ))}
     </>
-  );
-}
-
-/** 一排提供方卡片：标题、前置条件、「选择」。选中的那张换成强调色边框与「已选择」。 */
-function ProviderCards({ providers, picked, onPick }: { providers: DirectoryProviderInfo[]; picked: string | null; onPick: (key: string) => void }) {
-  if (!providers.length) return <Empty text={t("settings.directory.noProviders")} illustration={false} className="py-6" />;
-  return (
-    <ul className="grid gap-3 sm:grid-cols-2" role="list">
-      {providers.map((p) => {
-        const on = p.key === picked;
-        return (
-          <li key={p.key} className={cx("flex flex-col rounded-md border bg-surface-2 p-4", on ? "border-accent shadow-[inset_0_0_0_1px_var(--c-accent)]" : "border-hairline")} data-provider={p.key} aria-current={on ? "true" : undefined}>
-            <div className="flex items-center gap-2">
-              <span className="text-title font-medium">{p.title}</span>
-              {on && <Tag tone="accent">{t("settings.directory.picked")}</Tag>}
-            </div>
-            {p.prerequisites.length > 0 && (
-              <>
-                <div className="eyebrow mt-3 text-ink-subtle">{t("settings.directory.prerequisites")}</div>
-                <ol className="mt-1 list-decimal space-y-1 pl-5 text-body text-ink-muted">
-                  {p.prerequisites.map((x, i) => <li key={i}>{x}</li>)}
-                </ol>
-              </>
-            )}
-            <div className="mt-auto pt-4">
-              <Button variant={on ? "default" : "primary"} disabled={on} onClick={() => onPick(p.key)} aria-label={t("settings.directory.pickAria", { name: p.title })}>{on ? t("settings.directory.picked") : t("settings.directory.pick")}</Button>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function ExternalLink({ href, children, className }: { href: string; children: ReactNode; className?: string }) {
-  return (
-    <a href={href} target="_blank" rel="noreferrer noopener" className={cx("inline-flex items-center gap-1 text-accent underline-offset-2 hover:underline", className)}>
-      {children}<IconExternal size={12} aria-hidden="true" />
-    </a>
   );
 }
 
@@ -430,7 +386,7 @@ function CredentialsStep({ cfg, provider, onSaved, onCancel }: { cfg: DirectoryC
       {tip && (
         <p className="text-caption text-ink-subtle" data-provider-tip>
           {tip.text}
-          {tip.url && <> <ExternalLink href={tip.url}>{t("settings.directory.openConsole", { name: provider.title })}</ExternalLink></>}
+          {tip.url && <> <WizardLink href={tip.url}>{t("settings.directory.openConsole", { name: provider.title })}</WizardLink></>}
         </p>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
@@ -452,98 +408,6 @@ function CredentialsStep({ cfg, provider, onSaved, onCancel }: { cfg: DirectoryC
         {onCancel && <Button variant="ghost" onClick={onCancel}>{t("settings.directory.wizard.keep")}</Button>}
       </div>
     </form>
-  );
-}
-
-/** 一个凭据字段。保密字段不回传：已设置时只显示「已设置 ••••」，想换才点「重设」，改主意点「不改了」。 */
-function CredentialField({ field: f, value, onChange, isSet, resetting, onReset }: { field: DirectoryField; value: string; onChange: (v: string) => void; isSet: boolean; resetting: boolean; onReset: (on: boolean) => void }) {
-  if (!f.secret) {
-    return <Field label={f.title} hint={f.hint || undefined}><Input value={value} onChange={(e) => onChange(e.target.value)} placeholder={f.placeholder || undefined} autoComplete="off" spellCheck={false} /></Field>;
-  }
-  const hint = resetting && isSet ? t("settings.directory.secretNewHint", { title: f.title }) : f.hint || t("settings.directory.secretHint");
-  return (
-    <Field as="div" label={f.title} hint={hint}>
-      {resetting ? (
-        <span className="flex items-center gap-2">
-          <Input type="password" value={value} onChange={(e) => onChange(e.target.value)} placeholder={f.placeholder || undefined} autoComplete="new-password" aria-label={f.title} />
-          {isSet && <Button size="sm" onClick={() => onReset(false)}>{t("settings.directory.keepSecret")}</Button>}
-        </span>
-      ) : (
-        <span className="flex h-8 items-center gap-2">
-          <Tag tone="success">{t("settings.directory.secretSet")}</Tag>
-          <span className="telemetry text-ink-subtle">••••••••••••</span>
-          <Button size="sm" onClick={() => onReset(true)}>{t("settings.directory.resetSecret")}</Button>
-        </span>
-      )}
-    </Field>
-  );
-}
-
-const CHECK_DOT: Record<DirectoryCheck["status"], string> = { ok: "bg-success", todo: "bg-warning", blocked: "bg-danger", skipped: "bg-neutral" };
-const CHECK_TONE: Record<DirectoryCheck["status"], Tone> = { ok: "success", todo: "warning", blocked: "danger", skipped: "neutral" };
-
-/**
- * ③ 检查清单：每项一行——状态点、标题、一句"怎么做"、「打开{平台}控制台」（直达那一页）、「详情」（代号只在这里）。
- * 黄色（不拦同步）的项可以「先跳过」，行还留着；底部「我已处理，重新检查」重新拉一次清单。全绿了父组件自动进 ④。
- */
-function ChecklistStep({ cl, providerTitle, skipped, canSkip, onSkip, onSkipAll, onRecheck }: { cl: ChecklistState; providerTitle: string; skipped: string[]; canSkip: boolean; onSkip: (key: string) => void; onSkipAll: () => void; onRecheck: () => Promise<DirectoryChecklist | null> }) {
-  const toast = useToast();
-  const data = cl.data;
-  if (!data && cl.loading) return <div className="max-w-[640px]"><ListSkeleton rows={4} /></div>;
-  if (!data) return <ErrorBox message={cl.error ?? t("settings.directory.wizard.checkError")} onRetry={() => void onRecheck()} className="max-w-[640px]" />;
-  const blocked = data.checks.filter((c) => c.status === "blocked");
-  const pending = data.checks.filter((c) => c.status === "todo" && !skipped.includes(c.key));
-  const allOk = data.checks.length > 0 && data.checks.every((c) => c.status === "ok");
-  const recheck = async () => {
-    const d = await onRecheck();
-    if (!d) return;
-    toast.ok(d.checks.every((c) => c.status === "ok") ? t("settings.directory.wizard.recheckOk") : t("settings.directory.wizard.rechecked"));
-  };
-  return (
-    <div className="max-w-[640px]">
-      <p className="mb-3 text-body text-ink-muted">{allOk ? t("settings.directory.wizard.checkLeadOk") : blocked.length > 0 ? t("settings.directory.wizard.checkLead", { name: providerTitle }) : t("settings.directory.wizard.checkLeadTodo", { name: providerTitle })}</p>
-      {cl.error && <p className="mb-2 text-caption text-danger" role="alert">{cl.error}</p>}
-      <ul className={cx("divide-y divide-hairline rounded-md border border-hairline bg-surface-1", cl.loading && "opacity-60 transition-opacity")} aria-busy={cl.loading || undefined} data-checklist>
-        {data.checks.map((c) => (
-          <CheckRow key={c.key} check={c} skipped={skipped.includes(c.key)} consoleUrl={data.console_url} providerTitle={providerTitle} onSkip={canSkip && c.status === "todo" && !c.blocking && !skipped.includes(c.key) ? () => onSkip(c.key) : undefined} />
-        ))}
-      </ul>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button variant={blocked.length > 0 ? "primary" : "default"} disabled={cl.loading} onClick={() => void recheck()}>{cl.loading ? t("settings.directory.wizard.checking") : t("settings.directory.wizard.recheck")}</Button>
-        {canSkip && blocked.length === 0 && pending.length > 0 && <Button variant="primary" onClick={onSkipAll}>{t("settings.directory.wizard.skipAll")}</Button>}
-      </div>
-    </div>
-  );
-}
-
-function CheckRow({ check: c, skipped, consoleUrl, providerTitle, onSkip }: { check: DirectoryCheck; skipped: boolean; consoleUrl?: string; providerTitle: string; onSkip?: () => void }) {
-  const [showDetail, setShowDetail] = useState(false);
-  const url = c.fix_url || consoleUrl;
-  const statusTitle = t(`settings.directory.wizard.status.${c.status}` as Key);
-  return (
-    <li className="flex items-start gap-3 px-3 py-2.5" data-check={c.key} data-status={c.status}>
-      <span className={cx("mt-[7px] h-2 w-2 shrink-0 rounded-full", CHECK_DOT[c.status])} role="img" aria-label={statusTitle} />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={cx("text-body font-medium", c.status === "skipped" ? "text-ink-subtle" : "text-ink")}>{c.title}</span>
-          {c.status !== "ok" && <Tag tone={CHECK_TONE[c.status]}>{skipped && c.status === "todo" ? t("settings.directory.wizard.skipped") : statusTitle}</Tag>}
-        </div>
-        {c.fix && c.status !== "ok" && <p className="mt-0.5 text-body text-ink-muted">{c.fix}</p>}
-        {(url || c.detail) && c.status !== "skipped" && (
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption">
-            {url && c.status !== "ok" && <ExternalLink href={url}>{t("settings.directory.openConsole", { name: providerTitle })}</ExternalLink>}
-            {c.detail && (
-              <button type="button" className="text-ink-subtle underline-offset-2 hover:text-ink hover:underline" aria-expanded={showDetail} onClick={() => setShowDetail((v) => !v)}>
-                {t("settings.directory.wizard.detail")}
-              </button>
-            )}
-          </div>
-        )}
-        {showDetail && c.detail && <p className="mt-1.5 rounded-sm bg-surface-2 px-2 py-1 text-caption text-ink-muted break-words">{c.detail}</p>}
-        {!showDetail && c.status === "skipped" && c.detail && <p className="mt-0.5 text-caption text-ink-subtle">{c.detail}</p>}
-      </div>
-      {onSkip && <Button size="sm" variant="ghost" className="shrink-0" onClick={onSkip}>{t("settings.directory.wizard.skip")}</Button>}
-    </li>
   );
 }
 

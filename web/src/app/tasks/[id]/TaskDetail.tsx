@@ -1,33 +1,45 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { api, isTerminal, type Event, type ExecutorRef, type Goal, type Proposal, type Relation, type RelationType, type Task, type TaskInput, type TaskState, type TransitionAvailability, type WorkflowAvailability } from "@/lib/api";
+import { api, isTerminal, LINK_KINDS, type Event, type ExecutorRef, type ExternalLink, type Goal, type LinkKind, type Milestone, type Proposal, type Relation, type RelationType, type Task, type TaskInput, type TaskState, type WorkflowDef } from "@/lib/api";
 import { fmtDate, fmtDateTime, fmtDuration, fmtMoney, fmtTokens } from "@/lib/format";
 import { errorMessage, useAction, useCapabilityTitles, useExecutors, useLoad, useRouteId } from "@/lib/hooks";
-import { t } from "@/lib/i18n";
+import { t, type Key } from "@/lib/i18n";
 import { prefersReducedMotion } from "@/lib/motion";
 import { isAcceptanceWait } from "@/lib/states";
 import { artifactTypeTitle, PRIORITIES, priorityTitle, RELATIONS, relationTitle, roleTitle, runOutcomeTitle, stateLabel } from "@/lib/terms";
 import { useSession } from "@/components/AppShell";
 import { PointsChip, PointsChips } from "@/components/board/PointsChips";
+import { BriefSection } from "@/components/BriefSection";
 import { EventList } from "@/components/EventList";
 import { flattenGoals } from "@/components/GoalDrawer";
-import { IconApprove, IconBlocks, IconChevronDown, IconCollab, IconComment, IconExternal, IconHand, IconLink, IconLog, IconPlay, IconPlus, IconRun, IconTrail, IconUsage, IconUser } from "@/components/icons";
+import { IconAccept, IconApprove, IconBlocks, IconChevronDown, IconClose, IconCollab, IconExternal, IconGoal, IconLink, IconLog, IconPlus, IconRun, IconTrail, IconUsage } from "@/components/icons";
 import { InlineCapabilities, InlineDate, InlineField, InlineFields, InlineNumber, InlineParticipants, InlineSelect, InlineTable, InlineText, InlineTitle, InlineToggle, executorOptions, schemaProps, useInlineSaves } from "@/components/inline";
 import { StateBadge, stateMotion } from "@/components/StateBadge";
-import { isOverdue, OverdueTag, PriorityTag, TypeLabel } from "@/components/TaskTable";
+import { ActionBar, AssignDialog } from "@/components/tasks/TaskActions";
+import { isOverdue, LINK_STATUS_TONE, OverdueTag, PriorityTag, TypeLabel } from "@/components/TaskTable";
 import { useToast } from "@/components/toast";
-import { Avatar, Button, Checkbox, DetailSkeleton, Dialog, EnergyLine, ErrorBox, ExecutorName, Field, HudCorners, IdLine, Input, ListSkeleton, Panel, ProgressBar, RelativeTime, Select, Table, Tag, TaskLink, Textarea, Tip, cx } from "@/components/ui";
+import { Avatar, Button, Checkbox, ConfirmDialog, DetailSkeleton, Dialog, EnergyLine, ErrorBox, ExecutorName, Field, IdLine, Input, ListSkeleton, Panel, ProgressBar, RelativeTime, Select, Table, Tag, TaskLink, TaskNumber, Textarea, Tip, cx } from "@/components/ui";
 
 /** PATCH 请求体：除 TaskInput 外还允许清空预估工时（null） */
 type TaskPatch = Partial<TaskInput>;
 
+/*
+ * 任务详情 = 执行简报（DESIGN.md §17）。四段，按执行者需要的顺序，而不是按数据库字段：
+ *   ① 现在要做什么：标题、状态与动作栏、描述、这类任务的做法、走下一步需要什么、参与角色
+ *   ② 为什么做：目标链（可点）、里程碑、优先级、计划、迭代、上级任务
+ *   ③ 前面发生了什么：前置任务的结果与交付物、关联、交付物、评论、执行记录、动态
+ *   ④ 如何验收：验收人、验收条件（来自流程与任务类型）、预计工时与工作量、成本与用量
+ * 右栏只留次要的「基本信息」（ID、类型版本、创建者、创建时间……）。所有就地编辑（§15）原样保留。
+ */
 export function TaskDetail() {
   const id = useRouteId();
   const { session } = useSession();
   const task = useLoad(() => (id ? api.tasks.get(id) : Promise.reject(new Error(t("task.missing")))), [id]);
   const wf = useLoad(() => (id ? api.tasks.workflow(id) : Promise.reject(new Error(t("task.missing")))), [id]);
   const events = useLoad(() => (id ? api.events.list({ task: id, limit: 100 }) : Promise.resolve([])), [id]);
+  // 任务说明（GET /tasks/{id}/brief）：目标链、前置任务的结果、类型给执行者的做法；老后端没有这个接口时静默退化
+  const brief = useLoad(() => (id ? api.tasks.brief(id).catch(() => null) : Promise.resolve(null)), [id]);
   const typeName = task.data?.type ?? null;
   const type = useLoad(() => (typeName ? api.taskTypes.get(typeName).catch(() => null) : Promise.resolve(null)), [typeName]);
   const caps = useCapabilityTitles();
@@ -44,7 +56,7 @@ export function TaskDetail() {
   if (seen !== task.data) { setSeen(task.data); setLocal(null); }
   const saves = useInlineSaves();
   const ex = useExecutors();
-  // 归属目标的下拉与"所属目标负责人链"都要整棵目标树
+  // 归属目标的下拉、目标链与"所属目标负责人链"都要整棵目标树
   const goalTree = useLoad(() => api.goals.list().catch(() => [] as Goal[]), []);
   const flatGoals = useMemo(() => flattenGoals(goalTree.data ?? []), [goalTree.data]);
   const goalById = useMemo(() => new Map(flatGoals.map((g) => [g.goal.id, g.goal])), [flatGoals]);
@@ -63,6 +75,15 @@ export function TaskDetail() {
   // 迭代 / 上级任务的选项只在能改时才取
   const sprints = useLoad(() => (editPlan ? api.sprints.list().catch(() => []) : Promise.resolve([])), [editPlan]);
   const allTasks = useLoad(() => (editPlan ? api.tasks.list({ limit: 500 }).catch(() => [] as Task[]) : Promise.resolve([] as Task[])), [editPlan]);
+  // 目标链（②）：从所属目标一路向上，根在前，每级可点；里程碑取所属目标的下一个
+  const goalId = shown?.goal_id ?? null;
+  const chain = useMemo(() => {
+    const out: Goal[] = [];
+    for (let g = goalId ? goalById.get(goalId) : undefined; g; g = g.parent_id ? goalById.get(g.parent_id) : undefined) out.unshift(g);
+    return out;
+  }, [goalId, goalById]);
+  const milestones = useLoad(() => (goalId ? api.milestones.list(goalId).catch(() => [] as Milestone[]) : Promise.resolve([] as Milestone[])), [goalId]);
+  const nextMilestone = (milestones.data ?? []).find((m) => m.status !== "reached") ?? null;
   // 上级任务候选：除自己和自己的子孙
   const selfId = shown?.id ?? null;
   const parentOptions = useMemo(() => {
@@ -100,7 +121,7 @@ export function TaskDetail() {
     const title = task.data?.title ?? "";
     void points.run("points", () => api.tasks.update(id!, { points: n }), n === null ? t("task.pointsCleared", { title }) : t("task.pointsSaved", { title, n })).then((ok) => ok && task.reload());
   };
-  const reloadAll = () => { task.reload(); wf.reload(); events.reload(); };
+  const reloadAll = () => { task.reload(); wf.reload(); events.reload(); brief.reload(); };
   // 动态轮询（组织范围，显示时只留本任务）拉到「自动解除前置」时重新加载任务：关联列表随后播断链。
   // 这条动态记在被取消的前置任务名下，data.other_id 才是本任务，所以要看组织范围的流。
   const taskReload = task.reload;
@@ -148,9 +169,11 @@ export function TaskDetail() {
   const goalOptions = flatGoals.map(({ goal, depth }) => ({ value: goal.id, label: goal.title, depth }));
   const hasFields = Object.keys(schemaProps(type.data?.task_schema)).length > 0 || Object.keys(x.fields).length > 0;
   const st = (key: string) => saves.get(key);
-  // 面板序号眉标：01 描述、02 基本信息（右栏顶部，视觉上与描述并列），其余按 DOM 顺序从 03 起递增（参与者面板是条件渲染，所以用计数器）
-  let n = 2;
-  const idx = () => ++n;
+  const instructions = brief.data?.agent_instructions ?? type.data?.agent_instructions ?? "";
+  const nextNeeds = nextStepNeeds(shownState, wfDef, artifactTypes);
+  const acceptance = acceptanceCriteria(wfDef, brief.data?.result_schema ?? type.data?.result_schema, artifactTypes);
+  const preds = brief.data?.predecessor_results ?? [];
+  const predState = (tid: string) => brief.data?.predecessors.find((p) => p.id === tid)?.state;
 
   return (
     <div>
@@ -163,7 +186,7 @@ export function TaskDetail() {
             <span>/</span>
           </>
         )}
-        <span className="telemetry">{x.id}</span>
+        {x.number != null ? <TaskNumber n={x.number} copy className="!text-caption" /> : <span className="telemetry">{x.id}</span>}
       </div>
       <div className="mb-3">
         <div className="-mx-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md px-2" data-motion={headMotion}>
@@ -193,53 +216,234 @@ export function TaskDetail() {
       <AssignDialog task={x} open={assigning} onClose={() => setAssigning(false)} executors={executors} onDone={reloadAll} />
 
       {/* 主栏自适应，侧栏固定 380px（≥1920 时 420px） */}
-      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px] 3xl:grid-cols-[minmax(0,1fr)_420px]">
-        <div className="space-y-4">
-          <Panel index={1} title={t("task.description")}>
-            <InlineText value={x.description} editable={editNotes} placeholder={t("task.noDescription")} onSave={(v) => save({ description: v }, { description: v })} />
-            {hasFields && (
-              <div className="mt-4 border-t border-hairline pt-4">
-                <h3 className="eyebrow mb-3 text-ink-subtle">{t("task.customFields")}</h3>
-                <InlineFields
-                  schema={type.data?.task_schema}
-                  values={x.fields}
-                  editable={editNotes}
-                  stateOf={(k) => st(`field:${k}`)}
-                  onChange={(k, v) => {
-                    const next = { ...x.fields };
-                    if (v === null || v === undefined || v === "") delete next[k]; else next[k] = v;
-                    patch(`field:${k}`, { fields: { [k]: v === undefined ? null : v } }, { fields: next });
-                  }}
-                />
-              </div>
-            )}
-          </Panel>
-
-          {Object.keys(x.participants).length > 0 && (
-            <Panel index={idx()} icon={<IconCollab />} title={t("task.participants")} padded={false}>
-              <InlineParticipants
-                participants={x.participants}
-                executors={executors}
-                pendingSlot={x.pending_participant}
-                editable={editPlan}
-                roles={roles}
-                stateOf={(slot) => st(`p:${slot}`)}
-                onChange={(slot, eid) => patch(`p:${slot}`, { participants: { [slot]: eid ?? "" } }, { participants: { ...x.participants, [slot]: { ...x.participants[slot], executor: execById(eid) } } })}
-              />
+      <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] 3xl:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="space-y-6">
+          {/* ① 现在要做什么 */}
+          <BriefSection n="01" title={t("brief.now")} hint={t("brief.nowHint")}>
+            <Panel title={t("task.description")}>
+              <InlineText value={x.description} editable={editNotes} placeholder={t("task.noDescription")} onSave={(v) => save({ description: v }, { description: v })} />
+              {hasFields && (
+                <div className="mt-4 border-t border-hairline pt-4">
+                  <h3 className="eyebrow mb-3 text-ink-subtle">{t("task.customFields")}</h3>
+                  <InlineFields
+                    schema={type.data?.task_schema}
+                    values={x.fields}
+                    editable={editNotes}
+                    stateOf={(k) => st(`field:${k}`)}
+                    onChange={(k, v) => {
+                      const next = { ...x.fields };
+                      if (v === null || v === undefined || v === "") delete next[k]; else next[k] = v;
+                      patch(`field:${k}`, { fields: { [k]: v === undefined ? null : v } }, { fields: next });
+                    }}
+                  />
+                </div>
+              )}
+              {instructions && (
+                <div className="mt-4 rounded-md border border-hairline bg-surface-2 px-3 py-2.5" data-brief-instructions>
+                  <div className="eyebrow mb-1 normal-case text-ink-subtle">{t("brief.instructions", { type: x.type_title })}</div>
+                  <p className="whitespace-pre-wrap text-body text-ink-muted">{instructions}</p>
+                </div>
+              )}
+              {nextNeeds && !closed && (
+                <p className="mt-3 text-caption text-ink-subtle" data-brief-next>{nextNeeds}</p>
+              )}
             </Panel>
-          )}
 
-          <Relations task={x} onChanged={reloadAll} index={idx()} ghosts={ghosts} />
-          <Artifacts task={x} onChanged={reloadAll} artifactTypes={artifactTypes} index={idx()} />
-          <Thread task={x} onChanged={reloadAll} index={idx()} />
+            {Object.keys(x.participants).length > 0 && (
+              <Panel icon={<IconCollab />} title={t("task.participants")} padded={false}>
+                <InlineParticipants
+                  participants={x.participants}
+                  executors={executors}
+                  pendingSlot={x.pending_participant}
+                  editable={editPlan}
+                  roles={roles}
+                  stateOf={(slot) => st(`p:${slot}`)}
+                  onChange={(slot, eid) => patch(`p:${slot}`, { participants: { [slot]: eid ?? "" } }, { participants: { ...x.participants, [slot]: { ...x.participants[slot], executor: execById(eid) } } })}
+                />
+              </Panel>
+            )}
+          </BriefSection>
 
-          <Panel index={idx()} icon={<IconLog />} title={t("task.events")} telemetry={events.data ? t("panel.rows", { n: events.data.length }) : undefined}>
-            {events.loading && !events.data ? <ListSkeleton rows={4} /> : <EventList events={events.data ?? []} currentTaskId={x.id} poll={{ limit: 60, filter: (e) => e.task_id === x.id }} onNew={onNewEvents} />}
-          </Panel>
+          {/* ② 为什么做 */}
+          <BriefSection n="02" title={t("brief.why")} hint={t("brief.whyHint")}>
+            <Panel>
+              <InlineTable>
+                <InlineField label={t("task.goalRow")} status={st("goal").status} error={st("goal").error}>
+                  <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
+                    {chain.slice(0, -1).map((g) => (
+                      <span key={g.id} className="inline-flex items-center gap-1 text-ink-muted">
+                        <Link href={`/goals/${encodeURIComponent(g.id)}/`} className="hover:text-accent-hover">{g.title}</Link>
+                        <span className="text-ink-tertiary">›</span>
+                      </span>
+                    ))}
+                    <InlineSelect value={x.goal_id} options={goalOptions} editable={editPlan} nullable nullLabel={t("taskDialog.noGoal")} ariaLabel={t("task.goalRow")} loading={goalTree.loading && !goalTree.data}
+                      display={x.goal ? <Link href={`/goals/${encodeURIComponent(x.goal.id)}/`} className="inl-text inline-flex items-center gap-1 hover:text-accent-hover" onClick={(e) => editPlan && e.preventDefault()}><IconGoal size={14} className="text-ink-subtle" />{x.goal.title}</Link> : <span className="text-ink-subtle">{t("taskDialog.noGoal")}</span>}
+                      onChange={(gid) => { const g = gid ? goalById.get(gid) : undefined; patch("goal", { goal_id: gid ?? "" }, { goal_id: gid, goal: gid && g ? { id: g.id, title: g.title } : null }); }} />
+                  </span>
+                </InlineField>
+                {x.goal && (
+                  <InlineField label={t("brief.milestone")}>
+                    {nextMilestone ? (
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span>{nextMilestone.title}</span>
+                        <span className="telemetry text-ink-subtle">{fmtDate(nextMilestone.due_on, true)}</span>
+                        {nextMilestone.status === "overdue" && <Tag tone="danger">{t("ms.status.overdue")}</Tag>}
+                      </span>
+                    ) : <span className="text-ink-subtle">{milestones.loading && !milestones.data ? "…" : t("brief.noMilestone")}</span>}
+                  </InlineField>
+                )}
+                <InlineField label={t("taskDialog.priority")} status={st("priority").status} error={st("priority").error}>
+                  <InlineSelect value={x.priority} options={PRIORITIES.map((p) => ({ value: p, label: priorityTitle(p) }))} editable={editPlan} ariaLabel={t("taskDialog.priority")}
+                    display={x.priority === "normal" ? <span>{priorityTitle(x.priority)}</span> : <PriorityTag priority={x.priority} />}
+                    onChange={(p) => p && patch("priority", { priority: p as Task["priority"] }, { priority: p as Task["priority"] })} />
+                </InlineField>
+                <InlineField label={t("task.plannedStart")} status={st("planned_start").status} error={st("planned_start").error}>
+                  <InlineDate value={x.planned_start} editable={editPlan} ariaLabel={t("task.plannedStart")} onChange={(d) => patch("planned_start", { planned_start: d }, { planned_start: d })} />
+                </InlineField>
+                <InlineField label={t("task.plannedEnd")} status={st("planned_end").status} error={st("planned_end").error}>
+                  <InlineDate value={x.planned_end} editable={editPlan} ariaLabel={t("task.plannedEnd")} className={cx(isOverdue(x) && "text-danger")} onChange={(d) => patch("planned_end", { planned_end: d }, { planned_end: d })} />
+                </InlineField>
+                <InlineField label={t("task.sprint")} status={st("sprint").status} error={st("sprint").error}>
+                  <InlineSelect value={x.sprint?.id ?? null} options={sprintOptions} editable={editPlan} nullable nullLabel={t("task.noSprint")} ariaLabel={t("task.sprint")} loading={sprints.loading && !sprints.data}
+                    display={x.sprint ? <Link href={`/sprints/${encodeURIComponent(x.sprint.id)}/`} className="inl-text hover:text-accent-hover" onClick={(e) => editPlan && e.preventDefault()}>{x.sprint.name}</Link> : <span className="text-ink-subtle">{t("task.noSprint")}</span>}
+                    onChange={(sid) => { const s = (sprints.data ?? []).find((y) => y.id === sid); patch("sprint", { sprint_id: sid ?? "" }, { sprint: sid && s ? { id: s.id, name: s.name } : null }); }} />
+                </InlineField>
+                <InlineField label={t("task.parentTask")} status={st("parent").status} error={st("parent").error}>
+                  <InlineSelect value={x.parent_id} options={parentOptions} editable={editPlan} nullable nullLabel={t("inline.topTask")} ariaLabel={t("task.parentTask")} loading={allTasks.loading && !allTasks.data}
+                    display={x.parent_id ? <TaskLink id={x.parent_id} title={parentOptions.find((o) => o.value === x.parent_id)?.label ?? (allTasks.data ?? []).find((tk) => tk.id === x.parent_id)?.title ?? x.parent_id} inline className="inl-text" /> : <span className="text-ink-subtle">{t("inline.topTask")}</span>}
+                    onChange={(pid) => patch("parent", { parent_id: pid ?? "" }, { parent_id: pid })} />
+                </InlineField>
+              </InlineTable>
+            </Panel>
+          </BriefSection>
+
+          {/* ③ 前面发生了什么 */}
+          <BriefSection n="03" title={t("brief.before")} hint={t("brief.beforeHint")}>
+            {(preds.length > 0 || (brief.loading && !brief.data)) && (
+              <Panel icon={<IconBlocks />} title={t("brief.predecessors")} telemetry={preds.length ? t("panel.rows", { n: preds.length }) : undefined}>
+                {brief.loading && !brief.data ? <ListSkeleton rows={2} /> : (
+                  <ul className="space-y-3">
+                    {preds.map((p) => {
+                      const s = predState(p.task_id);
+                      const summary = typeof p.result === "string" ? p.result : p.result && typeof p.result === "object" && "summary" in p.result ? String((p.result as { summary?: unknown }).summary ?? "") : "";
+                      return (
+                        <li key={p.task_id} className="text-body">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <TaskLink id={p.task_id} title={p.title} inline className="font-medium" />
+                            {s && <StateBadge state={s} />}
+                          </div>
+                          {summary ? <p className="mt-1 whitespace-pre-wrap text-ink-muted">{summary}</p> : <p className="mt-1 text-caption text-ink-subtle">{t("brief.noResultYet")}</p>}
+                          {p.artifacts.length > 0 && (
+                            <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-caption">
+                              {p.artifacts.map((a) => (
+                                <li key={a.id}><a href={a.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-accent-hover"><Tag tone="accent">{artifactTypeTitle(a.type, artifactTypes)}</Tag>{a.title}<IconExternal className="text-ink-subtle" /></a></li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </Panel>
+            )}
+            <Links task={x} editable={canEdit} onChanged={reloadAll} />
+            <Relations task={x} onChanged={reloadAll} ghosts={ghosts} />
+            <Artifacts task={x} onChanged={reloadAll} artifactTypes={artifactTypes} />
+            <Thread task={x} onChanged={reloadAll} />
+            <Panel icon={<IconRun />} title={t("task.runs")} telemetry={t("panel.rows", { n: x.runs.length })} padded={false}>
+              {x.runs.length === 0 ? (
+                <p className="px-4 py-4 text-body text-ink-muted">{t("task.noRuns")}</p>
+              ) : (
+                <Table>
+                  <thead>
+                    <tr>
+                      <th className="w-[120px]">{t("task.stage")}</th><th className="w-[160px]">{t("task.executor")}</th><th className="w-[200px]">{t("task.started")}</th><th className="w-[96px]">{t("task.duration")}</th><th className="w-[80px]">{t("task.outcome")}</th><th className="w-full min-w-[260px]">{t("task.usage")}</th><th className="num w-[110px]">{t("task.cost")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {x.runs.map((r) => (
+                      <tr key={r.id}>
+                        <td className="whitespace-nowrap">{r.state_title}</td>
+                        <td className="whitespace-nowrap"><ExecutorName executor={r.executor} /></td>
+                        <td className="telemetry whitespace-nowrap">{fmtDateTime(r.started_at)} – {r.ended_at ? fmtDateTime(r.ended_at) : t("common.inProgress")}</td>
+                        <td className="telemetry whitespace-nowrap">{fmtDuration(r.started_at, r.ended_at)}</td>
+                        <td><Tag tone={r.outcome === "running" ? "accent" : "neutral"} dark={r.outcome === "cancelled"}>{runOutcomeTitle(r.outcome)}</Tag></td>
+                        <td>
+                          {r.usage.length === 0 ? <span className="text-ink-subtle">—</span> : (
+                            <ul className="space-y-0.5 text-caption">
+                              {r.usage.map((u) => <li key={u.model} className="telemetry whitespace-nowrap"><span className="text-ink-muted">{u.model}</span> · {t("task.tokens", { n: fmtTokens(u.total_tokens) })} · {t("task.toolCalls", { n: u.tool_calls })}</li>)}
+                              <li className="font-mono text-ink-subtle">{t("task.totalTokens", { n: fmtTokens(r.total_tokens) })}</li>
+                            </ul>
+                          )}
+                        </td>
+                        <td className="num telemetry whitespace-nowrap">{fmtMoney(r.cost, currency)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={5}>{t("task.total")}</td>
+                      <td className="telemetry">{t("task.tokens", { n: fmtTokens(x.total_tokens) })}</td>
+                      <td className="num telemetry font-medium">{fmtMoney(x.cost, currency)}</td>
+                    </tr>
+                  </tfoot>
+                </Table>
+              )}
+            </Panel>
+            <Panel icon={<IconLog />} title={t("task.events")} telemetry={events.data ? t("panel.rows", { n: events.data.length }) : undefined}>
+              {events.loading && !events.data ? <ListSkeleton rows={4} /> : <EventList events={events.data ?? []} currentTaskId={x.id} poll={{ limit: 60, filter: (e) => e.task_id === x.id }} onNew={onNewEvents} />}
+            </Panel>
+          </BriefSection>
+
+          {/* ④ 如何验收 */}
+          <BriefSection n="04" title={t("brief.accept")} hint={t("brief.acceptHint")}>
+            <Panel>
+              <InlineTable>
+                <InlineField label={t("task.reviewer")} status={st("reviewer").status} error={st("reviewer").error}>
+                  <InlineSelect value={x.reviewer.id} options={exOptions} editable={editPlan} display={<ExecutorName executor={x.reviewer} />} ariaLabel={t("task.reviewer")} loading={ex.loading && !ex.data}
+                    onChange={(eid) => { const e = execById(eid); if (eid && e) patch("reviewer", { reviewer_id: eid }, { reviewer: e }); }} />
+                </InlineField>
+                <InlineField label={t("brief.criteria")}>
+                  {acceptance.length ? (
+                    <ul className="space-y-0.5" data-brief-criteria>
+                      {acceptance.map((line) => <li key={line} className="flex items-start gap-2"><span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-hairline-tertiary" aria-hidden="true" />{line}</li>)}
+                    </ul>
+                  ) : <span className="text-ink-subtle">{t("brief.criteriaDefault")}</span>}
+                </InlineField>
+                <InlineField label={t("task.estimate")} status={st("estimate").status} error={st("estimate").error}>
+                  <InlineNumber value={x.estimate} editable={editPlan} min={0} step={0.5} suffix={t("inline.hours")} placeholder={t("task.estimateUnset")} ariaLabel={t("task.estimate")} onChange={(v) => patch("estimate", { estimate: v }, { estimate: v })} />
+                </InlineField>
+                <InlineField label={t("task.points")}>
+                  <span className="flex flex-wrap items-center gap-2"><PointsChip value={x.points} />{editPlan && <PointsChips value={x.points} onChange={setPoints} busy={points.busy === "points"} size="sm" />}</span>
+                </InlineField>
+                <InlineField label={t("task.cost")}><span className="telemetry">{fmtMoney(x.cost, currency)}</span></InlineField>
+                <InlineField label={t("task.usage")}><span className="telemetry inline-flex items-center gap-1.5"><IconUsage size={14} className="text-ink-subtle" />{t("task.tokens", { n: fmtTokens(x.total_tokens) })}</span></InlineField>
+              </InlineTable>
+            </Panel>
+          </BriefSection>
         </div>
 
+        {/* 右栏：先一张验收小卡（不用翻过长长的动态就知道谁验收、按什么验收），再是次要的基本信息 */}
         <div className="space-y-4">
-          <Panel index={2} title={t("task.info")}>
+          <Panel icon={<IconAccept />} title={t("brief.acceptCard")}>
+            <InlineTable>
+              <InlineField label={t("task.reviewer")}><span className="inl-static"><ExecutorName executor={x.reviewer} /></span></InlineField>
+              <InlineField label={t("brief.criteria")}>
+                {acceptance.length ? <span className="line-clamp-2" title={acceptance.join("\n")}>{acceptance[0]}</span> : <span className="text-ink-subtle">{t("brief.criteriaDefault")}</span>}
+              </InlineField>
+              <InlineField label={t("task.points")}>
+                <span className="flex flex-wrap items-center gap-2">
+                  <PointsChip value={x.points} />
+                  <span className="text-ink-subtle">·</span>
+                  <span className="telemetry">{x.estimate != null ? `${x.estimate} ${t("inline.hours")}` : t("task.estimateUnset")}</span>
+                </span>
+              </InlineField>
+              <InlineField label={t("task.cost")}><span className="telemetry">{fmtMoney(x.cost, currency)}</span></InlineField>
+            </InlineTable>
+            {acceptance.length > 1 && <p className="mt-2 text-caption text-ink-subtle">{t("brief.acceptCardMore")}</p>}
+          </Panel>
+          <Panel title={t("task.info")}>
             <InlineTable>
               <InlineField label={t("common.id")}><IdLine id={x.id} /></InlineField>
               {/* 负责人：仍走指派（交接确认框），这一行的值就是打开它的控件 */}
@@ -251,47 +455,12 @@ export function TaskDetail() {
                   </button>
                 ) : <span className="inl-static"><ExecutorName executor={x.assignee} empty={t("task.unclaimed")} /></span>}
               </InlineField>
-              <InlineField label={t("task.reviewer")} status={st("reviewer").status} error={st("reviewer").error}>
-                <InlineSelect value={x.reviewer.id} options={exOptions} editable={editPlan} display={<ExecutorName executor={x.reviewer} />} ariaLabel={t("task.reviewer")} loading={ex.loading && !ex.data}
-                  onChange={(eid) => { const e = execById(eid); if (eid && e) patch("reviewer", { reviewer_id: eid }, { reviewer: e }); }} />
-              </InlineField>
               <InlineField label={t("task.creator")}><span className="inl-static"><ExecutorName executor={x.creator} /></span></InlineField>
+              <InlineField label={t("task.createdAt")}><RelativeTime iso={x.created_at} className="telemetry" /></InlineField>
               <InlineField label={t("task.type")}>{t("task.typeVersion", { title: x.type_title, version: x.type_version })}</InlineField>
               <InlineField label={t("task.label")}>{stateLabel(shownState.label)}</InlineField>
               <InlineField label={t("task.progress")}><span className="flex items-center gap-2"><ProgressBar value={x.progress} tone={x.state.label === "terminal_success" ? "success" : "accent"} className="w-24" /><span className="tabular-nums">{x.progress}%</span></span></InlineField>
-              <InlineField label={t("taskDialog.priority")} status={st("priority").status} error={st("priority").error}>
-                <InlineSelect value={x.priority} options={PRIORITIES.map((p) => ({ value: p, label: priorityTitle(p) }))} editable={editPlan} ariaLabel={t("taskDialog.priority")}
-                  display={x.priority === "normal" ? <span>{priorityTitle(x.priority)}</span> : <PriorityTag priority={x.priority} />}
-                  onChange={(p) => p && patch("priority", { priority: p as Task["priority"] }, { priority: p as Task["priority"] })} />
-              </InlineField>
-              <InlineField label={t("task.plannedStart")} status={st("planned_start").status} error={st("planned_start").error}>
-                <InlineDate value={x.planned_start} editable={editPlan} ariaLabel={t("task.plannedStart")} onChange={(d) => patch("planned_start", { planned_start: d }, { planned_start: d })} />
-              </InlineField>
-              <InlineField label={t("task.plannedEnd")} status={st("planned_end").status} error={st("planned_end").error}>
-                <InlineDate value={x.planned_end} editable={editPlan} ariaLabel={t("task.plannedEnd")} className={cx(isOverdue(x) && "text-danger")} onChange={(d) => patch("planned_end", { planned_end: d }, { planned_end: d })} />
-              </InlineField>
               <InlineField label={t("task.actual")}>{x.actual_start ? `${fmtDate(x.actual_start)} – ${x.actual_end ? fmtDate(x.actual_end) : t("common.inProgress")}` : "—"}</InlineField>
-              <InlineField label={t("task.estimate")} status={st("estimate").status} error={st("estimate").error}>
-                <InlineNumber value={x.estimate} editable={editPlan} min={0} step={0.5} suffix={t("inline.hours")} placeholder={t("task.estimateUnset")} ariaLabel={t("task.estimate")} onChange={(v) => patch("estimate", { estimate: v }, { estimate: v })} />
-              </InlineField>
-              <InlineField label={t("task.points")}>
-                <span className="flex flex-wrap items-center gap-2"><PointsChip value={x.points} />{editPlan && <PointsChips value={x.points} onChange={setPoints} busy={points.busy === "points"} size="sm" />}</span>
-              </InlineField>
-              <InlineField label={t("task.sprint")} status={st("sprint").status} error={st("sprint").error}>
-                <InlineSelect value={x.sprint?.id ?? null} options={sprintOptions} editable={editPlan} nullable nullLabel={t("task.noSprint")} ariaLabel={t("task.sprint")} loading={sprints.loading && !sprints.data}
-                  display={x.sprint ? <Link href={`/sprints/${encodeURIComponent(x.sprint.id)}/`} className="inl-text hover:text-accent-hover" onClick={(e) => editPlan && e.preventDefault()}>{x.sprint.name}</Link> : <span className="text-ink-subtle">{t("task.noSprint")}</span>}
-                  onChange={(sid) => { const s = (sprints.data ?? []).find((y) => y.id === sid); patch("sprint", { sprint_id: sid ?? "" }, { sprint: sid && s ? { id: s.id, name: s.name } : null }); }} />
-              </InlineField>
-              <InlineField label={t("task.goalRow")} status={st("goal").status} error={st("goal").error}>
-                <InlineSelect value={x.goal_id} options={goalOptions} editable={editPlan} nullable nullLabel={t("taskDialog.noGoal")} ariaLabel={t("task.goalRow")} loading={goalTree.loading && !goalTree.data}
-                  display={x.goal ? <Link href={`/goals/${encodeURIComponent(x.goal.id)}/`} className="inl-text hover:text-accent-hover" onClick={(e) => editPlan && e.preventDefault()}>{x.goal.title}</Link> : <span className="text-ink-subtle">{t("taskDialog.noGoal")}</span>}
-                  onChange={(gid) => { const g = gid ? goalById.get(gid) : undefined; patch("goal", { goal_id: gid ?? "" }, { goal_id: gid, goal: gid && g ? { id: g.id, title: g.title } : null }); }} />
-              </InlineField>
-              <InlineField label={t("task.parentTask")} status={st("parent").status} error={st("parent").error}>
-                <InlineSelect value={x.parent_id} options={parentOptions} editable={editPlan} nullable nullLabel={t("inline.topTask")} ariaLabel={t("task.parentTask")} loading={allTasks.loading && !allTasks.data}
-                  display={x.parent_id ? <TaskLink id={x.parent_id} title={parentOptions.find((o) => o.value === x.parent_id)?.label ?? (allTasks.data ?? []).find((tk) => tk.id === x.parent_id)?.title ?? x.parent_id} inline className="inl-text" /> : <span className="text-ink-subtle">{t("inline.topTask")}</span>}
-                  onChange={(pid) => patch("parent", { parent_id: pid ?? "" }, { parent_id: pid })} />
-              </InlineField>
               <InlineField label={t("task.humanOnly")} status={st("human_only").status} error={st("human_only").error}>
                 <InlineToggle checked={!!x.human_only} editable={editPlan} ariaLabel={t("task.humanOnly")} hint={t("task.humanOnlyHint")} onChange={(v) => patch("human_only", { human_only: v }, { human_only: v })} />
               </InlineField>
@@ -299,213 +468,55 @@ export function TaskDetail() {
                 <InlineCapabilities value={x.required_capabilities} titles={capTitles} editable={editPlan} onChange={(list) => patch("caps", { required_capabilities: list }, { required_capabilities: list })} />
               </InlineField>
               {x.required_role && <InlineField label={t("task.requiredRole")}>{roleTitle(x.required_role, roles)}</InlineField>}
-              <InlineField label={t("task.cost")}><span className="telemetry">{fmtMoney(x.cost, currency)}</span></InlineField>
-              <InlineField label={t("task.usage")}><span className="telemetry inline-flex items-center gap-1.5"><IconUsage size={14} className="text-ink-subtle" />{t("task.tokens", { n: fmtTokens(x.total_tokens) })}</span></InlineField>
-              <InlineField label={t("task.createdAt")}><RelativeTime iso={x.created_at} className="telemetry" /></InlineField>
             </InlineTable>
           </Panel>
         </div>
       </div>
-      <div className="mt-4">
-      <Panel index={idx()} icon={<IconRun />} title={t("task.runs")} telemetry={t("panel.rows", { n: x.runs.length })} padded={false}>
-        {x.runs.length === 0 ? (
-          <p className="px-4 py-4 text-body text-ink-muted">{t("task.noRuns")}</p>
-        ) : (
-          <Table>
-            <thead>
-              <tr>
-                <th className="w-[120px]">{t("task.stage")}</th><th className="w-[160px]">{t("task.executor")}</th><th className="w-[200px]">{t("task.started")}</th><th className="w-[96px]">{t("task.duration")}</th><th className="w-[80px]">{t("task.outcome")}</th><th className="w-full">{t("task.usage")}</th><th className="num w-[110px]">{t("task.cost")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {x.runs.map((r) => (
-                <tr key={r.id}>
-                  <td className="whitespace-nowrap">{r.state_title}</td>
-                  <td className="whitespace-nowrap"><ExecutorName executor={r.executor} /></td>
-                  <td className="telemetry whitespace-nowrap">{fmtDateTime(r.started_at)} – {r.ended_at ? fmtDateTime(r.ended_at) : t("common.inProgress")}</td>
-                  <td className="telemetry whitespace-nowrap">{fmtDuration(r.started_at, r.ended_at)}</td>
-                  <td><Tag tone={r.outcome === "running" ? "accent" : "neutral"} dark={r.outcome === "cancelled"}>{runOutcomeTitle(r.outcome)}</Tag></td>
-                  <td>
-                    {r.usage.length === 0 ? <span className="text-ink-subtle">—</span> : (
-                      <ul className="space-y-0.5 text-caption">
-                        {r.usage.map((u) => <li key={u.model} className="telemetry"><span className="text-ink-muted">{u.model}</span> · {t("task.tokens", { n: fmtTokens(u.total_tokens) })} · {t("task.toolCalls", { n: u.tool_calls })}</li>)}
-                        <li className="font-mono text-ink-subtle">{t("task.totalTokens", { n: fmtTokens(r.total_tokens) })}</li>
-                      </ul>
-                    )}
-                  </td>
-                  <td className="num telemetry whitespace-nowrap">{fmtMoney(r.cost, currency)}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td colSpan={5}>{t("task.total")}</td>
-                <td className="telemetry">{t("task.tokens", { n: fmtTokens(x.total_tokens) })}</td>
-                <td className="num telemetry font-medium">{fmtMoney(x.cost, currency)}</td>
-              </tr>
-            </tfoot>
-          </Table>
-        )}
-      </Panel>
-      </div>
     </div>
   );
 }
 
-// ---------- 动作栏（吸顶） ----------
-type StepKind = "forward" | "secondary" | "danger";
-/** 阻塞 / 解除阻塞 / 提问等待：不是向前也不是危险，用默认按钮。 */
-const SECONDARY_STEPS = new Set(["block", "unblock", "ask_for_input", "answer", "resume"]);
-/** 取消 / 打回 / 测试不通过 / 不修：危险描边。 */
-const DANGER_STEPS = new Set(["cancel", "reject", "test_fail", "wont_fix"]);
-/** 回退类：重开、标记重复——既不是主动作也不危险。 */
-const BACKWARD_STEPS = new Set(["reopen", "duplicate"]);
-function stepKind(tr: TransitionAvailability): StepKind | "backward" {
-  if (SECONDARY_STEPS.has(tr.name)) return "secondary";
-  if (DANGER_STEPS.has(tr.name) || tr.label_to === "terminal_failure") return "danger";
-  if (BACKWARD_STEPS.has(tr.name)) return "backward";
-  return "forward";
+/** 流程里"要求"的界面名：deps_done / artifact:<类型> / comment / no_open_bugs / result */
+function requirementTitle(req: string, artifactTypes?: Record<string, string>): string {
+  if (req === "deps_done") return t("brief.req.depsDone");
+  if (req === "comment") return t("brief.req.comment");
+  if (req === "no_open_bugs") return t("brief.req.noOpenBugs");
+  if (req === "result") return t("brief.req.result");
+  if (req.startsWith("artifact:")) return t("brief.req.artifact", { type: artifactTypeTitle(req.slice("artifact:".length), artifactTypes) });
+  return req;
 }
-/** 每组内能走的在前。回退类步骤跟在次要组后面（默认按钮，不当主动作）。 */
-function groupTransitions(transitions: TransitionAvailability[]) {
-  const byAvail = (a: TransitionAvailability, b: TransitionAvailability) => Number(b.available) - Number(a.available);
-  const forward = transitions.filter((tr) => stepKind(tr) === "forward").sort(byAvail);
-  const secondary = [...transitions.filter((tr) => stepKind(tr) === "secondary"), ...transitions.filter((tr) => stepKind(tr) === "backward")].sort(byAvail);
-  const danger = transitions.filter((tr) => stepKind(tr) === "danger").sort(byAvail);
-  return { forward, secondary, danger };
+/** ①里的一句：从当前状态向前走的步骤各自需要什么（只列有要求的步骤） */
+function nextStepNeeds(state: TaskState, wf: WorkflowDef | undefined, artifactTypes?: Record<string, string>): string | null {
+  if (!wf) return null;
+  const lines = wf.transitions
+    .filter((tr) => (tr.from.includes("*") || tr.from.includes(state.name)) && tr.requires.length > 0)
+    .filter((tr) => { const to = wf.states[tr.to]; return !to || to.label !== "terminal_failure"; })
+    .map((tr) => t("brief.nextNeeds", { step: tr.title, needs: tr.requires.map((r) => requirementTitle(r, artifactTypes)).join(t("brief.listSep")) }));
+  return lines.length ? lines.join(t("brief.lineSep")) : null;
 }
-
-function ActionBar({ task, wf, wfError, stateTitles, onOptimistic, onDone, onAssign }: { task: Task; wf: WorkflowAvailability | null; wfError: string | null; stateTitles?: Record<string, { title: string }>; onOptimistic: (s: TaskState | null) => void; onDone: () => void; onAssign: () => void }) {
-  const toast = useToast();
-  const [pending, setPending] = useState<TransitionAvailability | null>(null);
-  const [comment, setComment] = useState("");
-  const [result, setResult] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  const run = async (fn: () => Promise<unknown>, okMessage: string, rollback?: () => void) => {
-    setBusy(true);
-    setFormError(null);
-    try {
-      await fn();
-      toast.ok(okMessage);
-      onDone();
-      return true;
-    } catch (e) {
-      rollback?.();
-      const m = errorMessage(e);
-      setFormError(m);
-      toast.fail(rollback ? t("toast.rollback", { reason: m }) : m);
-      return false;
-    } finally {
-      setBusy(false);
+/** ④里的验收条件：进入待验收 / 成功终态的步骤各要求什么，加上结果要填的字段 */
+function acceptanceCriteria(wf: WorkflowDef | undefined, resultSchema: Record<string, unknown> | null | undefined, artifactTypes?: Record<string, string>): string[] {
+  const out: string[] = [];
+  if (wf) {
+    for (const tr of wf.transitions) {
+      const to = wf.states[tr.to];
+      if (!to) continue;
+      const intoAccept = isAcceptanceWait(to, wf);
+      const intoDone = to.label === "terminal_success";
+      if (!intoAccept && !intoDone) continue;
+      const who = tr.by.map((b) => (b === "reviewer" ? t("task.reviewer") : b === "creator" ? t("task.creator") : b === "assignee" ? t("task.assignee") : b === "anyone" ? t("brief.anyone") : b.startsWith("role:") ? b.slice(5) : b.startsWith("participant:") ? b.slice(12) : b)).join(t("brief.listSep"));
+      const needs = tr.requires.map((r) => requirementTitle(r, artifactTypes)).join(t("brief.listSep"));
+      out.push(intoDone ? t("brief.criteriaDone", { step: tr.title, who, needs: needs || t("brief.noExtra") }) : t("brief.criteriaSubmit", { step: tr.title, needs: needs || t("brief.noExtra") }));
     }
-  };
-  const targetState = (tr: TransitionAvailability): TaskState => ({ name: tr.to, title: stateTitles?.[tr.to]?.title ?? tr.title, label: tr.label_to });
-  const fire = (tr: TransitionAvailability) => {
-    if (tr.requires.length) { setPending(tr); setComment(""); setResult(""); setFormError(null); return; }
-    const target = targetState(tr);
-    onOptimistic(target);
-    void run(() => api.tasks.transition(task.id, tr.name), t("toast.transitioned", { state: target.title }), () => onOptimistic(null));
-  };
-  const confirmPending = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!pending) return;
-    const target = targetState(pending);
-    onOptimistic(target);
-    const ok = await run(() => api.tasks.transition(task.id, pending.name, { comment: comment || undefined, result: pending.requires.includes("result") ? { summary: result } : undefined }), t("toast.transitioned", { state: target.title }), () => onOptimistic(null));
-    if (ok) setPending(null);
-  };
-
-  const terminal = isTerminal(task.state.label);
-  // 分组：向前的步骤 | 阻塞 / 提问等待 | 取消 / 打回。每组内能走的在前，不能走的置灰并用气泡解释原因。
-  const groups = groupTransitions(wf?.transitions ?? []);
-  const primaryName = groups.forward.find((tr) => tr.available)?.name;
-  const renderStep = (tr: TransitionAvailability, kind: StepKind) => (
-    <Tip key={tr.name} tip={tr.available ? null : tr.reasons.join("\n")} placement="bottom">
-      <Button variant={kind === "danger" ? "danger" : tr.name === primaryName ? "primary" : "default"} disabled={!tr.available || busy} onClick={() => fire(tr)}>
-        {tr.title}
-      </Button>
-    </Tip>
-  );
-  const divider = <span className="mx-1 h-5 w-px bg-hairline-strong" aria-hidden="true" />;
-  const forwardCount = groups.forward.length + (wf ? 2 : 0);
-
-  return (
-    <div className="hud sticky top-0 z-30 rounded-lg border border-hairline bg-surface-1 px-3 py-2 shadow-panel">
-      <HudCorners />
-      <div className="flex flex-wrap items-center gap-2">
-        {wfError && <span className="text-body text-danger">{wfError}</span>}
-        {!wf && !wfError && <span className="text-caption text-ink-subtle">{t("task.loadingWorkflow")}</span>}
-        {groups.forward.map((tr) => renderStep(tr, "forward"))}
-        {wf && (
-          <>
-            <Tip tip={wf.can_claim ? null : wf.claim_reasons.join("\n")} placement="bottom"><Button icon={<IconHand />} disabled={!wf.can_claim || busy} onClick={() => void run(() => api.tasks.claim(task.id), t("toast.claimed"))}>{t("task.claim")}</Button></Tip>
-            <Tip tip={wf.can_begin ? null : wf.begin_reasons.join("\n")} placement="bottom"><Button icon={<IconPlay />} disabled={!wf.can_begin || busy} onClick={() => void run(() => api.tasks.begin(task.id), t("toast.begun"))}>{t("task.begin")}</Button></Tip>
-          </>
-        )}
-        {groups.secondary.length > 0 && forwardCount > 0 && divider}
-        {groups.secondary.map((tr) => renderStep(tr, "secondary"))}
-        {groups.danger.length > 0 && forwardCount + groups.secondary.length > 0 && divider}
-        {groups.danger.map((tr) => renderStep(tr, "danger"))}
-        {wf && wf.transitions.length === 0 && <span className="text-caption text-ink-subtle">{terminal ? t("task.ended.noNext") : t("task.noTransitions")}</span>}
-        <span className="ml-auto inline-flex flex-wrap items-center gap-1">
-          <Tip tip={terminal ? t("task.ended.noNext") : null} placement="bottom">
-            <Button variant="ghost" icon={<IconUser />} disabled={busy || terminal} onClick={onAssign}>{t("task.assign")}</Button>
-          </Tip>
-          <a href="#artifacts" className="inline-flex"><Button variant="ghost" icon={<IconPlus />} disabled={terminal} tabIndex={-1}>{t("task.attach")}</Button></a>
-          <a href="#comments" className="inline-flex"><Button variant="ghost" icon={<IconComment />} tabIndex={-1}>{t("task.writeComment")}</Button></a>
-        </span>
-      </div>
-      {wf?.active_run && (
-        <div className="telemetry mt-1.5 text-ink-subtle">{t("task.activeRun", { name: task.runs.find((r) => r.id === wf.active_run?.id)?.executor.name ?? wf.active_run.executor_id, id: wf.active_run.id })}</div>
-      )}
-
-      <Dialog open={!!pending} onClose={() => setPending(null)} title={pending?.title ?? ""} footer={<><Button onClick={() => setPending(null)}>{t("common.cancel")}</Button><Button variant="primary" form="transition-form" type="submit" disabled={busy}>{t("common.confirm")}</Button></>}>
-        <form id="transition-form" onSubmit={confirmPending} className="space-y-3">
-          {pending?.requires.includes("comment") && <Field label={t("task.commentRequired")}><Textarea value={comment} onChange={(e) => setComment(e.target.value)} required autoFocus /></Field>}
-          {pending?.requires.includes("result") && <Field label={t("task.resultRequired")}><Textarea value={result} onChange={(e) => setResult(e.target.value)} required /></Field>}
-          {formError && <p className="text-caption text-danger" role="alert">{formError}</p>}
-        </form>
-      </Dialog>
-    </div>
-  );
-}
-
-/** 指派 = 交接确认框：人与 Agent 之间交接时，标题前的双星 12s 慢速环绕（只在这里出现）。动作栏的「指派」与信息表的「负责人」一行都打开它。 */
-function AssignDialog({ task, open, onClose, executors, onDone }: { task: Task; open: boolean; onClose: () => void; executors: ExecutorRef[]; onDone: () => void }) {
-  const toast = useToast();
-  const [assignee, setAssignee] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [lastOpen, setLastOpen] = useState(false);
-  if (open !== lastOpen) {
-    setLastOpen(open);
-    if (open) { setAssignee(task.assignee?.id ?? ""); setError(null); }
   }
-  // 交接：当前负责人与选中的执行者一人一机（或从无人到 Agent）
-  const picked = executors.find((e) => e.id === assignee);
-  const handoff = !!picked && (task.assignee ? task.assignee.kind !== picked.kind : picked.kind === "agent");
-  const confirm = async () => {
-    setBusy(true); setError(null);
-    try { await api.tasks.assign(task.id, assignee || null); toast.ok(t("toast.assigned")); onDone(); onClose(); }
-    catch (e) { const m = errorMessage(e); setError(m); toast.fail(m); }
-    finally { setBusy(false); }
-  };
-  return (
-    <Dialog open={open} onClose={onClose} title={<span className="inline-flex items-center gap-2"><IconCollab size={20} className={cx("text-ink-subtle", handoff && "orbit-slow")} />{t("task.assignTitle")}</span>} footer={<><Button onClick={onClose}>{t("common.cancel")}</Button><Button variant="primary" disabled={busy} onClick={() => void confirm()}>{t("common.confirm")}</Button></>}>
-      <Field label={t("task.assignee")} hint={t("task.assignHint")} error={error}>
-        <Select value={assignee} onChange={(e) => setAssignee(e.target.value)} autoFocus>
-          <option value="">{t("task.assignClear")}</option>
-          {executors.map((e) => <option key={e.id} value={e.id}>{e.name}{e.kind === "agent" ? t("common.agentSuffix") : ""}</option>)}
-        </Select>
-      </Field>
-    </Dialog>
-  );
+  const props = schemaProps(resultSchema);
+  const fields = Object.entries(props).map(([k, v]) => (v && typeof v === "object" && "title" in v && typeof (v as { title?: unknown }).title === "string" ? (v as { title: string }).title : k));
+  if (fields.length) out.push(t("brief.criteriaFields", { fields: fields.join(t("brief.listSep")) }));
+  return Array.from(new Set(out));
 }
 
 // ---------- 关联 ----------
-function Relations({ task, onChanged, index, ghosts }: { task: Task; onChanged: () => void; index?: number; ghosts: Relation[] }) {
+function Relations({ task, onChanged, ghosts }: { task: Task; onChanged: () => void; ghosts: Relation[] }) {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [type, setType] = useState<RelationType>("blocks");
@@ -543,8 +554,8 @@ function Relations({ task, onChanged, index, ghosts }: { task: Task; onChanged: 
   const dirLabel = type === "blocks" ? [t("task.dir.blocksFrom"), t("task.dir.blocksTo")] : type === "found_in" ? [t("task.dir.foundFrom"), t("task.dir.foundTo")] : [t("task.rel.related"), t("task.rel.related")];
 
   return (
-    <Panel index={index} title={t("task.relations")} actions={<Button size="sm" icon={<IconLink />} onClick={() => setOpen(true)}>{t("task.link")}</Button>}>
-      {rows.length === 0 ? <p className="text-body text-ink-subtle">{t("task.noRelations")}</p> : (
+    <Panel title={t("task.relations")} actions={<Button size="sm" icon={<IconLink />} onClick={() => setOpen(true)}>{t("task.link")}</Button>}>
+      {rows.length === 0 ? <p className="text-body text-ink-subtle">{t("task.noRelationsHint")}</p> : (
         <ul className="space-y-2 text-body">
           {rows.map(({ r, ghost }) => { const d = describe(r); return (
             <li key={r.id} className="flex flex-wrap items-center gap-2" data-motion={ghost ? "unlink" : undefined} aria-hidden={ghost || undefined}>
@@ -582,8 +593,86 @@ function Relations({ task, onChanged, index, ghosts }: { task: Task; onChanged: 
   );
 }
 
+// ---------- 外部链接（ADR 0020） ----------
+/**
+ * ③ 里的「外部链接」：PR、Issue、设计稿、文档。代码平台来的那几条由回调自动建与更新（带状态与操作人），
+ * 其它手工挂。一行一条：类型标签、标题（点开去那边）、状态标签、谁做的、移除。
+ */
+function Links({ task, editable, onChanged }: { task: Task; editable: boolean; onChanged: () => void }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState<LinkKind>("doc");
+  const [url, setUrl] = useState("");
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<ExternalLink | null>(null);
+  const links = task.links ?? [];
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setError(null);
+    try {
+      await api.tasks.addLink(task.id, { kind, url, title: title.trim() || undefined });
+      toast.ok(t("task.linkAdded"));
+      setOpen(false); setUrl(""); setTitle(""); onChanged();
+    } catch (err) { const m = errorMessage(err); setError(m); toast.fail(m); } finally { setBusy(false); }
+  };
+  const remove = async (l: ExternalLink) => {
+    setBusy(true);
+    try { await api.tasks.removeLink(task.id, l.id); toast.ok(t("task.linkRemoved")); setRemoving(null); onChanged(); }
+    catch (err) { toast.fail(errorMessage(err)); } finally { setBusy(false); }
+  };
+
+  return (
+    <Panel id="links" icon={<IconLink />} title={t("task.links")} telemetry={links.length ? t("panel.rows", { n: links.length }) : undefined}
+      actions={editable && <Button size="sm" icon={<IconPlus />} onClick={() => { setError(null); setOpen(true); }}>{t("task.addLink")}</Button>}>
+      {links.length === 0 ? <p className="text-body text-ink-subtle">{t("task.noLinks")}</p> : (
+        <ul className="space-y-2 text-body" data-task-links>
+          {links.map((l) => (
+            <li key={l.id} className="flex flex-wrap items-center gap-2" data-link={l.id} data-kind={l.kind}>
+              <Tag>{l.kind_title}</Tag>
+              <a href={l.url} target="_blank" rel="noreferrer noopener" className="inline-flex min-w-0 items-center gap-1 font-medium hover:text-accent-hover" title={l.url}>
+                <span className="truncate">{l.title || l.url}</span>
+                <IconExternal className="shrink-0 text-ink-subtle" aria-hidden="true" />
+              </a>
+              {l.status && l.status_title && <Tag tone={LINK_STATUS_TONE[l.status] ?? "neutral"}>{l.status_title}</Tag>}
+              {l.actor_name && <span className="text-caption text-ink-subtle">{t("task.linkBy", { name: l.actor_name })}</span>}
+              <RelativeTime iso={l.updated_at} className="text-caption text-ink-subtle" />
+              {editable && (
+                <Button size="sm" variant="ghost" className="ml-auto" icon={<IconClose />} aria-label={t("task.linkRemove")} onClick={() => setRemoving(l)}>{t("task.linkRemove")}</Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <Dialog open={open} onClose={() => setOpen(false)} title={t("task.addLinkTitle")} footer={<><Button onClick={() => setOpen(false)}>{t("common.cancel")}</Button><Button variant="primary" form="link-form" type="submit" disabled={busy}>{t("common.confirm")}</Button></>}>
+        <form id="link-form" onSubmit={submit} className="space-y-3">
+          <Field label={t("task.linkKind")}>
+            <Select value={kind} onChange={(e) => setKind(e.target.value as LinkKind)}>
+              {LINK_KINDS.map((k) => <option key={k} value={k}>{t(`link.kind.${k}` as Key)}</option>)}
+            </Select>
+          </Field>
+          <Field label={t("task.linkUrl")} error={error}><Input type="url" value={url} onChange={(e) => setUrl(e.target.value)} required autoFocus placeholder="https://" /></Field>
+          <Field label={t("task.linkName")} hint={t("task.linkNameHint")}><Input value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+        </form>
+      </Dialog>
+      <ConfirmDialog
+        open={!!removing}
+        title={t("task.linkRemoveTitle")}
+        message={removing ? t("task.linkRemoveMsg", { title: removing.title || removing.url }) : ""}
+        confirmLabel={t("task.linkRemove")}
+        danger
+        busy={busy}
+        onConfirm={() => removing && void remove(removing)}
+        onClose={() => setRemoving(null)}
+      />
+    </Panel>
+  );
+}
+
 // ---------- 交付物 ----------
-function Artifacts({ task, onChanged, artifactTypes, index }: { task: Task; onChanged: () => void; artifactTypes?: Record<string, string>; index?: number }) {
+function Artifacts({ task, onChanged, artifactTypes }: { task: Task; onChanged: () => void; artifactTypes?: Record<string, string> }) {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [type, setType] = useState("");
@@ -601,7 +690,7 @@ function Artifacts({ task, onChanged, artifactTypes, index }: { task: Task; onCh
     catch (err) { const m = errorMessage(err); setError(m); toast.fail(m); } finally { setBusy(false); }
   };
   return (
-    <Panel id="artifacts" index={index} title={t("task.artifacts")} actions={<Tip tip={terminal ? t("task.ended.noNext") : null}><Button size="sm" icon={<IconPlus />} onClick={() => { setType(Object.keys(types)[0] ?? ""); setOpen(true); }} disabled={terminal}>{t("task.attach")}</Button></Tip>}>
+    <Panel id="artifacts" title={t("task.artifacts")} actions={<Tip tip={terminal ? t("task.ended.noNext") : null}><Button size="sm" icon={<IconPlus />} onClick={() => { setType(Object.keys(types)[0] ?? ""); setOpen(true); }} disabled={terminal}>{t("task.attach")}</Button></Tip>}>
       {task.artifacts.length === 0 ? <p className="text-body text-ink-subtle">{t("task.noArtifacts")}</p> : (
         <ul className="space-y-2 text-body">
           {task.artifacts.map((a) => (
@@ -629,7 +718,7 @@ function Artifacts({ task, onChanged, artifactTypes, index }: { task: Task; onCh
 }
 
 // ---------- 评论 / 工作日志 ----------
-function Thread({ task, onChanged, index }: { task: Task; onChanged: () => void; index?: number }) {
+function Thread({ task, onChanged }: { task: Task; onChanged: () => void }) {
   const toast = useToast();
   const [showNotes, setShowNotes] = useState(false);
   const [body, setBody] = useState("");
@@ -659,8 +748,8 @@ function Thread({ task, onChanged, index }: { task: Task; onChanged: () => void;
     catch (err) { const m = errorMessage(err); setError(m); toast.fail(m); } finally { setBusy(false); }
   };
   return (
-    <Panel id="comments" index={index} title={t("task.comments")} telemetry={t("panel.rows", { n: list.length })} actions={notes > 0 && <Checkbox className="text-caption text-ink-muted" checked={showNotes} onChange={(e) => setShowNotes(e.target.checked)} label={t("task.showNotes", { n: notes })} />}>
-      {list.length === 0 ? <p className="text-body text-ink-subtle">{t("task.noComments")}</p> : (
+    <Panel id="comments" title={t("task.comments")} telemetry={t("panel.rows", { n: list.length })} actions={notes > 0 && <Checkbox className="text-caption text-ink-muted" checked={showNotes} onChange={(e) => setShowNotes(e.target.checked)} label={t("task.showNotes", { n: notes })} />}>
+      {list.length === 0 ? <p className="text-body text-ink-subtle">{t("task.noCommentsHint")}</p> : (
         <ul className="space-y-4">
           {list.map((c) => (
             <li key={c.id} id={`comment-${c.id}`} className="comment-row flex gap-3 rounded-md">

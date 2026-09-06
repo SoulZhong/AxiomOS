@@ -2700,3 +2700,194 @@ html[data-kbd] tr[data-motion] > td {
     margin-left: auto;
   }
 }
+
+/* ---------- 执行简报（DESIGN.md §17）：四段眉标 ---------- */
+.brief-eyebrow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--c-ink);
+}
+.brief-eyebrow > .text-telemetry {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.brief-eyebrow::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--c-hairline);
+  align-self: center;
+}
+.brief-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--c-ink-subtle);
+}
+/* 抽屉里的动作栏：不吸顶、不带面板外框 */
+.task-actions-compact {
+  padding: 0;
+}
+
+/* ---------- 筛选芯片（DESIGN.md §18）：生效中的条件，每枚可以单独 × 掉 ---------- */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--c-accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--c-accent-bg);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.filter-chip.is-off {
+  border-color: var(--c-hairline-strong);
+  background: var(--c-surface-2);
+  opacity: 0.7;
+}
+.filter-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  color: var(--c-ink-subtle);
+}
+.filter-chip-x:hover {
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+}
+
+/* ---------- 键盘选中（j / k）：表格行左侧一道 2px accent，看板卡片 accent 边 ---------- */
+tr[data-kbd-selected] > td {
+  background: var(--c-surface-2);
+}
+tr[data-kbd-selected] > td:first-child {
+  box-shadow: inset 2px 0 0 var(--c-accent);
+}
+.bd-card[data-kbd-selected] {
+  border-color: var(--c-accent-border);
+  box-shadow: 0 0 0 2px var(--c-accent-bg);
+}
+
+/* ---------- 前缀快捷键提示（DESIGN.md §19）：右下角，按下 t / g / v / n 后出现 ---------- */
+.chord-hint {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--c-hairline-strong);
+  border-radius: var(--radius-md);
+  background: var(--c-surface-2);
+  font-size: 12px;
+  box-shadow: var(--fx-panel);
+  animation: fade-in 120ms var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chord-hint {
+    animation: none;
+  }
+}
+
+/* ---------- 任务序号 #123（DESIGN.md §20）：等宽小字，标题前；可复制的那一枚是按钮 ---------- */
+.task-no {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+  color: var(--c-ink-subtle);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.task-no-copy {
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: -4px;
+  cursor: copy;
+}
+.task-no-copy:hover {
+  background: var(--c-surface-2);
+  color: var(--c-ink);
+}
+
+/* ---------- 紧凑模式（显示偏好 compact → body[data-density="compact"]）：表格行、面板内边距、看板卡片都收紧 ---------- */
+body[data-density="compact"] .tbl thead th {
+  padding: 6px 12px;
+}
+body[data-density="compact"] .tbl tbody td {
+  padding: 6px 12px;
+}
+body[data-density="compact"] .tbl th.actions,
+body[data-density="compact"] .tbl td.actions {
+  padding: 3px 12px 3px 0;
+}
+body[data-density="compact"] .tbl {
+  font-size: 13px;
+}
+body[data-density="compact"] main.page-enter {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+/* ---------- 开关（显示偏好里的紧凑 / 侧栏默认收起） ---------- */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid var(--c-hairline-strong);
+  background: var(--c-surface-2);
+  transition: background 150ms var(--ease-out), border-color 150ms var(--ease-out);
+  flex-shrink: 0;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--c-ink-subtle);
+  transition: transform 150ms var(--ease-out), background 150ms var(--ease-out);
+}
+.switch[aria-checked="true"] {
+  background: var(--c-accent);
+  border-color: var(--c-accent);
+}
+.switch[aria-checked="true"]::after {
+  transform: translateX(14px);
+  background: #fff;
+}
+.switch:disabled {
+  opacity: 0.5;
+}
+/* 偏好行：标签 + 控件 + 来源标签 */
+.pref-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  align-items: start;
+  padding: 12px 0;
+  border-top: 1px solid var(--c-hairline);
+}
+.pref-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}

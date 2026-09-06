@@ -26,6 +26,8 @@ type App struct {
 
 	// SecretKey 是加密组织凭据（外部目录的保密字段等）的服务端密钥，32 字节（ADR 0014、0017）。
 	SecretKey []byte
+	// failCodeEvent 只在测试里置真：让一次代码平台回调在去重占位之后失败。
+	failCodeEvent bool
 
 	syncing sync.Map // org id → 正在同步
 }
@@ -36,11 +38,13 @@ func New(s *store.Store) *App {
 
 // Session 是一次请求的身份：组织 + 执行者（成员或 Agent）+ 语言 + 权限。
 type Session struct {
-	OrgID       string
-	Actor       *domain.Executor
-	MemberID    string // 成员本人，或 Agent 的所有者
-	AgentID     string // Agent 请求时非空
-	AccountID   string
+	OrgID     string
+	Actor     *domain.Executor
+	MemberID  string // 成员本人，或 Agent 的所有者
+	AgentID   string // Agent 请求时非空
+	AccountID string
+	// ClientIP 是这次请求的来源地址（HTTP 层填，MCP 与后台任务为空），只给进程内的尝试次数限制用。
+	ClientIP    string
 	Locale      i18n.Locale
 	IsOwner     bool
 	Permissions map[string]bool
@@ -155,6 +159,9 @@ func (a *App) loadContext(ctx context.Context, tx pgx.Tx, sess *Session, taskID 
 	if err != nil {
 		return nil, err
 	}
+	if err := a.requireTaskVisible(ctx, tx, sess, t); err != nil {
+		return nil, err
+	}
 	tt, err := a.Store.TaskType(ctx, tx, t.TypeName, t.TypeVersion)
 	if err != nil {
 		return nil, fmt.Errorf("任务类型 %s v%d 不存在: %w", t.TypeName, t.TypeVersion, err)
@@ -183,6 +190,23 @@ func (a *App) loadContext(ctx context.Context, tx pgx.Tx, sess *Session, taskID 
 		}
 	}
 	return &domain.Context{Task: t, Type: tt, Predecessors: pre, Bugs: bugs, Types: types, ActiveRun: run, ActorRuns: actorRuns, Now: time.Now(), NewID: store.NewID}, nil
+}
+
+// requireTaskVisible 按组织的协作数据可见性策略判断这个任务在不在请求者的可见域里（ADR 0013）：
+// 列表按范围裁剪，详情、任务说明与各项命令也要同一口径，否则拿着 ID 就能绕过策略。
+// 默认策略（全员可见）下不查任何东西；任务的归口团队为空（未分组）时视为可见。
+func (a *App) requireTaskVisible(ctx context.Context, tx pgx.Tx, sess *Session, t *domain.Task) error {
+	if sess == nil || sess.CollabAll() {
+		return nil
+	}
+	ix, err := a.OrgIndex(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if team := ix.TeamOfTask(t); team != "" && !sess.CanSeeCollabTeam(team) {
+		return Forbidden("err.task_hidden")
+	}
+	return nil
 }
 
 // persist 把内核的结果写回数据库，并派生通知。
@@ -265,7 +289,8 @@ func (a *App) localeOfMember(ctx context.Context, tx pgx.Tx, orgID, memberID str
 
 // notify 按动态派生站内通知：被指派、待验收、Agent 提问、进入待领取。文案按收件人语言渲染。
 func (a *App) notify(ctx context.Context, tx pgx.Tx, sess *Session, tt *domain.TaskType, t *domain.Task, events []domain.Event) error {
-	send := func(memberID string, title, body i18n.Msg) error {
+	// kind 是外发的事件类型（ADR 0019）：指派给我、等我验收、提问会按收件人的规则排外发；进入待领取只在站内（kind 为空）。
+	send := func(memberID string, kind string, title, body i18n.Msg) error {
 		if memberID == "" || memberID == sess.Actor.ID {
 			return nil
 		}
@@ -273,13 +298,13 @@ func (a *App) notify(ctx context.Context, tx pgx.Tx, sess *Session, tt *domain.T
 			memberID = ag.OwnerMemberID
 		}
 		l := a.localeOfMember(ctx, tx, sess.OrgID, memberID)
-		return a.Store.InsertNotification(ctx, tx, sess.OrgID, domain.Notification{MemberID: memberID, Title: title.Render(l), Body: body.Render(l), TaskID: t.ID})
+		return a.notifyAndDeliver(ctx, tx, sess.OrgID, kind, domain.Notification{MemberID: memberID, Title: title.Render(l), Body: body.Render(l), TaskID: t.ID}, "")
 	}
 	for _, e := range events {
 		switch e.Type {
 		case "TaskAssigned":
 			if to, _ := e.Data["to"].(string); to != "" {
-				if err := send(to, i18n.M("notif.assigned", t.Title), i18n.M("notif.assigned_by", sess.Actor.Name)); err != nil {
+				if err := send(to, domain.NotifyAssigned, i18n.M("notif.assigned", t.Title), i18n.M("notif.assigned_by", sess.Actor.Name)); err != nil {
 					return err
 				}
 			}
@@ -290,17 +315,17 @@ func (a *App) notify(ctx context.Context, tx pgx.Tx, sess *Session, tt *domain.T
 				title = tx
 			}
 			if st := tt.Workflow.State(to); st != nil && st.Label == domain.LabelWaiting && to != "waiting" && to != "blocked" {
-				if err := send(t.ReviewerID, i18n.M("notif.review", t.Title), i18n.M("notif.review_body", sess.Actor.Name, title)); err != nil {
+				if err := send(t.ReviewerID, domain.NotifyReview, i18n.M("notif.review", t.Title), i18n.M("notif.review_body", sess.Actor.Name, title)); err != nil {
 					return err
 				}
 			}
 			if to == "waiting" {
-				if err := send(t.CreatorID, i18n.M("notif.question", sess.Actor.Name, t.Title), i18n.M("ev.generic", lastComment(t), "")); err != nil {
+				if err := send(t.CreatorID, domain.NotifyQuestion, i18n.M("notif.question", sess.Actor.Name, t.Title), i18n.M("ev.generic", lastComment(t), "")); err != nil {
 					return err
 				}
 			}
 		case "TaskSentToBacklog":
-			if err := send(t.CreatorID, i18n.M("notif.backlog", t.Title), i18n.M("notif.backlog_body")); err != nil {
+			if err := send(t.CreatorID, "", i18n.M("notif.backlog", t.Title), i18n.M("notif.backlog_body")); err != nil {
 				return err
 			}
 		}

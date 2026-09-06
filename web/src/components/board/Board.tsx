@@ -5,10 +5,11 @@ import { api, type BoardCard as BoardCardData, type BoardColumn, type BoardData,
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { errorMessage, useLoad } from "@/lib/hooks";
 import { getLocale, t } from "@/lib/i18n";
+import { usePreferences } from "@/lib/preferences";
 import { useSession } from "@/components/AppShell";
-import { isOverdue, OverdueTag, PriorityTag, TypeLabel } from "@/components/TaskTable";
+import { isOverdue, OverdueTag, PriorityTag, PrChip, TypeLabel } from "@/components/TaskTable";
 import { useToast } from "@/components/toast";
-import { Avatar, Button, Dialog, ErrorBox, Field, Skeleton, StatusLED, Textarea, cx } from "@/components/ui";
+import { Avatar, Button, Dialog, ErrorBox, Field, Skeleton, StatusLED, TaskNumber, Textarea, cx } from "@/components/ui";
 import { PointsChip } from "./PointsChips";
 import { usePointerDrag } from "./usePointerDrag";
 
@@ -21,6 +22,8 @@ import { usePointerDrag } from "./usePointerDrag";
  * 高度 = 视口剩余高度（与甘特图一致，把空间全给图），内部滚动，列头吸顶。
  */
 export type BoardDensity = "comfortable" | "compact";
+/** 卡片字段键（GET /me/preferences/catalog 的 card_fields）：序号、负责人、截止日、优先级、工作量、目标 */
+export type CardField = "number" | "assignee" | "due" | "priority" | "points" | "goal";
 
 const LANE_NONE = "_";
 const laneOf = (card: BoardCardData, lane: BoardQuery["lane"]) => (lane === "goal" ? (card.goal?.id ?? LANE_NONE) : lane === "assignee" ? (card.assignee?.id ?? LANE_NONE) : LANE_NONE);
@@ -35,10 +38,12 @@ interface PendingStep {
   tr: TransitionAvailability;
 }
 
-export function Board({ query, density = "comfortable", className, onData }: { query: BoardQuery; density?: BoardDensity; className?: string; onData?: (data: BoardData) => void }) {
+export function Board({ query, density = "comfortable", cardFields, className, onData, onOpen, filterCard }: { query: BoardQuery; density?: BoardDensity; /** 卡片显示哪些字段（缺省按显示偏好 DESIGN.md §20） */ cardFields?: string[]; className?: string; onData?: (data: BoardData) => void; /** 点卡片 / 回车：默认进详情页；任务页传入后改为开抽屉（DESIGN.md §17） */ onOpen?: (id: string) => void; /** 接口不认的筛选（优先级 / 截止日 / 关键词）在前端按卡片过滤 */ filterCard?: (card: BoardCardData) => boolean }) {
   const router = useRouter();
   const toast = useToast();
   const { session } = useSession();
+  const { prefs } = usePreferences();
+  const fields = useMemo(() => new Set((cardFields ?? prefs.task_card_fields) as CardField[]), [cardFields, prefs.task_card_fields]);
   const currency = session?.organization.currency;
   const key = JSON.stringify(query);
   const res = useLoad(() => api.board.get(query), [key]);
@@ -77,7 +82,12 @@ export function Board({ query, density = "comfortable", className, onData }: { q
     return () => window.removeEventListener("resize", measure);
   }, []);
 
-  const columns = useMemo(() => local?.columns ?? [], [local]);
+  const columns = useMemo(() => {
+    const cols = local?.columns ?? [];
+    if (!filterCard) return cols;
+    return cols.map((c) => { const cards = c.cards.filter(filterCard); return { ...c, cards, count: cards.length, over_limit: c.wip_limit != null && cards.length > c.wip_limit }; });
+  }, [local, filterCard]);
+  const open = useCallback((id: string) => { if (onOpen) onOpen(id); else router.push(`/tasks/${encodeURIComponent(id)}/`); }, [onOpen, router]);
   const lanes = useMemo(() => (query.lane && query.lane !== "none" && local?.lanes?.length ? local.lanes : null), [query.lane, local]);
 
   const findCard = useCallback(
@@ -192,7 +202,7 @@ export function Board({ query, density = "comfortable", className, onData }: { q
       if (to < 0) return;
       void move(hit.card, hit.col, to);
     },
-    onClick: (id) => router.push(`/tasks/${encodeURIComponent(id)}/`),
+    onClick: open,
   });
   const dragging = drag ? findCard(drag.id) : null;
   const over = parseDrop(drag?.over ?? null);
@@ -211,7 +221,7 @@ export function Board({ query, density = "comfortable", className, onData }: { q
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (picked) dropKb(card);
-      else router.push(`/tasks/${encodeURIComponent(card.id)}/`);
+      else open(card.id);
     } else if (picked && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       e.preventDefault();
       const next = Math.max(0, Math.min(columns.length - 1, kb.target + (e.key === "ArrowLeft" ? -1 : 1)));
@@ -291,6 +301,7 @@ export function Board({ query, density = "comfortable", className, onData }: { q
             key={card.id}
             card={card}
             density={density}
+            fields={fields}
             currency={currency}
             lifting={drag?.id === card.id}
             picked={kb?.id === card.id}
@@ -335,7 +346,7 @@ export function Board({ query, density = "comfortable", className, onData }: { q
       {drag && dragging && (
         <div className="bd-ghost" style={{ width: drag.rect.w, transform: `translate(${drag.rect.x + drag.dx}px, ${drag.rect.y + drag.dy}px)` }} aria-hidden="true">
           <div className="bd" data-density={density} style={{ height: "auto", minHeight: 0, border: 0, background: "transparent", boxShadow: "none", overflow: "visible" }}>
-            <Card card={dragging.card} density={density} currency={currency} ghost />
+            <Card card={dragging.card} density={density} fields={fields} currency={currency} ghost />
           </div>
         </div>
       )}
@@ -354,59 +365,60 @@ export function Board({ query, density = "comfortable", className, onData }: { q
   );
 }
 
-function Card({ card, density, currency, lifting, picked, pending, landed, ghost, onPointerDown, onKeyDown }: { card: BoardCardData; density: BoardDensity; currency?: string; lifting?: boolean; picked?: boolean; pending?: boolean; landed?: boolean; ghost?: boolean; onPointerDown?: (e: ReactPointerEvent<HTMLDivElement>) => void; onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void }) {
+function Card({ card, density, fields, currency, lifting, picked, pending, landed, ghost, onPointerDown, onKeyDown }: { card: BoardCardData; density: BoardDensity; fields: Set<CardField>; currency?: string; lifting?: boolean; picked?: boolean; pending?: boolean; landed?: boolean; ghost?: boolean; onPointerDown?: (e: ReactPointerEvent<HTMLDivElement>) => void; onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void }) {
   const overdue = isOverdue(card);
   const compact = density === "compact";
+  const has = (f: CardField) => fields.has(f);
+  const due = has("due") && card.planned_end ? (
+    <span className="bd-card-date" data-overdue={overdue ? "" : undefined}>
+      {overdue && <StatusLED tone="danger" className="!h-1.5 !w-1.5" />}
+      {fmtDate(card.planned_end)}
+    </span>
+  ) : null;
+  // 第二行有内容才画：负责人 / 目标 / 截止日 / 成本（按显示偏好）
+  const secondary = !compact && (has("assignee") || has("goal") || has("due") || card.cost > 0);
   return (
     <div
       className="bd-card"
       data-card-id={ghost ? undefined : card.id}
+      data-task-row={ghost ? undefined : card.id}
       data-lifting={lifting ? "" : undefined}
       data-picked={picked ? "" : undefined}
       data-pending={pending ? "" : undefined}
       data-landed={landed ? "" : undefined}
       tabIndex={ghost ? -1 : 0}
       role={ghost ? undefined : "button"}
-      aria-label={ghost ? undefined : `${card.title} · ${card.state.title}`}
+      aria-label={ghost ? undefined : `${has("number") && card.number != null ? `#${card.number} ` : ""}${card.title} · ${card.state.title}`}
       aria-pressed={ghost ? undefined : !!picked}
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
     >
-      <div className="bd-card-title">{card.title}</div>
-      <div className="bd-card-row">
-        {compact && card.assignee && <Avatar name={card.assignee.name} kind={card.assignee.kind} size={16} />}
-        <TypeLabel type={card.type} title={card.type_title} tag />
-        {card.priority !== "normal" && <PriorityTag priority={card.priority} />}
-        <PointsChip value={card.points} />
-        <span className="grow" />
-        {compact ? (
-          card.planned_end && (
-            <span className="bd-card-date" data-overdue={overdue ? "" : undefined}>
-              {overdue && <StatusLED tone="danger" className="!h-1.5 !w-1.5" />}
-              {fmtDate(card.planned_end)}
-            </span>
-          )
-        ) : (
-          overdue && <OverdueTag>{t("board.overdue")}</OverdueTag>
-        )}
+      <div className="bd-card-title">
+        {has("number") && <TaskNumber n={card.number} className="mr-1.5" />}
+        {card.title}
       </div>
-      {!compact && (
+      <div className="bd-card-row">
+        {compact && has("assignee") && card.assignee && <Avatar name={card.assignee.name} kind={card.assignee.kind} size={16} />}
+        <TypeLabel type={card.type} title={card.type_title} tag />
+        {has("priority") && card.priority !== "normal" && <PriorityTag priority={card.priority} />}
+        {has("points") && <PointsChip value={card.points} />}
+        {card.pr && <PrChip pr={card.pr} />}
+        <span className="grow" />
+        {compact ? due : overdue && <OverdueTag>{t("board.overdue")}</OverdueTag>}
+      </div>
+      {secondary && (
         <div className="bd-card-row" data-secondary="">
-          {card.assignee ? (
+          {has("assignee") && (card.assignee ? (
             <>
               <Avatar name={card.assignee.name} kind={card.assignee.kind} size={18} />
               <span className="bd-card-name">{card.assignee.name}</span>
             </>
           ) : (
             <span className="bd-card-name text-ink-tertiary">{t("taskTable.unclaimed")}</span>
-          )}
+          ))}
+          {has("goal") && card.goal && <span className="bd-card-name text-ink-subtle" title={card.goal.title}>{card.goal.title}</span>}
           <span className="grow" />
-          {card.planned_end && (
-            <span className="bd-card-date" data-overdue={overdue ? "" : undefined}>
-              {overdue && <StatusLED tone="danger" className="!h-1.5 !w-1.5" />}
-              {fmtDate(card.planned_end)}
-            </span>
-          )}
+          {due}
           {card.cost > 0 && <span className="bd-card-cost">{fmtMoney(card.cost, currency)}</span>}
         </div>
       )}

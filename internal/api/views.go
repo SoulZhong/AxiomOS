@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/teemo/axiomos/internal/app"
+	"github.com/teemo/axiomos/internal/directory"
 	"github.com/teemo/axiomos/internal/domain"
 	"github.com/teemo/axiomos/internal/i18n"
 	"github.com/teemo/axiomos/internal/store"
@@ -109,6 +110,37 @@ func buildRefs(idx map[string]app.ExecutorInfo) refs {
 }
 
 // roleTitle 用组织角色表翻译角色名，缺失时回退内置。
+// fieldTitles 把动态里记下的字段名换成提供方声明的显示名，拼成一句「访问令牌和接口地址」。
+// 动态里只有字段名、没有字段值（配置值可能是内网地址或用户名）。
+func fieldTitles(provider string, raw any, loc i18n.Locale) string {
+	list, ok := raw.([]any)
+	if !ok || len(list) == 0 {
+		return ""
+	}
+	prov, known := directory.Lookup(provider)
+	var titles []string
+	for _, x := range list {
+		key, _ := x.(string)
+		if key == "" {
+			continue
+		}
+		title := key
+		if known {
+			if f, ok := prov.Field(key); ok {
+				title = f.Title.In(loc)
+			} else if f, ok := prov.MessagingField(key); ok {
+				title = f.Title.In(loc)
+			} else if key == "proxy_url" {
+				title = i18n.Tr(loc, "directory.field.proxy_url")
+			}
+		} else if key == "proxy_url" {
+			title = i18n.Tr(loc, "directory.field.proxy_url")
+		}
+		titles = append(titles, title)
+	}
+	return strings.Join(titles, i18n.Tr(loc, "sep.list"))
+}
+
 func roleTitle(roles map[string]i18n.Text, r string, loc i18n.Locale) string {
 	if t, ok := roles[r]; ok && !t.IsZero() {
 		return t.In(loc)
@@ -514,10 +546,11 @@ func (in GoalInputV) toUpdate() (app.UpdateGoalInput, error) {
 // ---------- 任务 ----------
 
 type TaskRefV struct {
-	ID    string    `json:"id"`
-	Title string    `json:"title"`
-	Type  string    `json:"type"`
-	State TaskState `json:"state"`
+	ID     string    `json:"id"`
+	Number int       `json:"number"`
+	Title  string    `json:"title"`
+	Type   string    `json:"type"`
+	State  TaskState `json:"state"`
 }
 
 type RelationV struct {
@@ -603,6 +636,7 @@ type ParticipantV struct {
 
 type TaskV struct {
 	ID                   string                  `json:"id"`
+	Number               int                     `json:"number"` // 组织内序号，界面上写成 #123
 	GoalID               *string                 `json:"goal_id"`
 	Goal                 *GoalRefV               `json:"goal"`
 	ParentID             *string                 `json:"parent_id"`
@@ -639,8 +673,11 @@ type TaskV struct {
 	Fields               map[string]any          `json:"fields"`
 	Points               *int                    `json:"points"`
 	Sprint               *SprintRefV             `json:"sprint"`
-	CreatedAt            time.Time               `json:"created_at"`
-	UpdatedAt            time.Time               `json:"updated_at"`
+	// 外部链接与 PR 小标（ADR 0020）
+	Links     []app.LinkView `json:"links"`
+	PR        *app.TaskPR    `json:"pr,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 // GoalRefV 是任务上的目标引用。
@@ -664,7 +701,7 @@ func sprintRef(id string, st sprintTitleFn) *SprintRefV {
 }
 
 func taskRef(t *domain.Task, tt *domain.TaskType, loc i18n.Locale) TaskRefV {
-	return TaskRefV{ID: t.ID, Title: t.Title, Type: t.TypeName, State: stateView(tt, t.State, loc)}
+	return TaskRefV{ID: t.ID, Number: t.Number, Title: t.Title, Type: t.TypeName, State: stateView(tt, t.State, loc)}
 }
 
 func relationTypeOut(t domain.RelationType) string {
@@ -684,14 +721,32 @@ func relationTypeIn(s string) domain.RelationType {
 // taskView 从详情组装任务视图。
 func taskView(d *app.TaskDetail, incoming []app.IncomingRelation, related map[string]*domain.Task, types map[string]*domain.TaskType, r refs, goalTitle goalTitleFn, sprintTitle sprintTitleFn, loc i18n.Locale) TaskV {
 	t, tt := d.Task, d.Type
-	v := TaskV{ID: t.ID, GoalID: nullable(t.GoalID), ParentID: nullable(t.ParentID), Type: t.TypeName, TypeTitle: tt.Title.In(loc), TypeVersion: t.TypeVersion, Title: t.Title, Description: t.Description,
+	v := TaskV{ID: t.ID, Number: t.Number, GoalID: nullable(t.GoalID), ParentID: nullable(t.ParentID), Type: t.TypeName, TypeTitle: tt.Title.In(loc), TypeVersion: t.TypeVersion, Title: t.Title, Description: t.Description,
 		State: stateView(tt, t.State, loc), PreviousState: nullable(t.PreviousState), Creator: r.must(t.CreatorID), Assignee: r.get(t.AssigneeID), Reviewer: r.must(t.ReviewerID),
 		Participants: map[string]ParticipantV{}, RequiredRole: nullable(t.RequiredRole), PendingParticipant: nullable(t.PendingSlot), RequiredCapabilities: t.RequiredCapabilities, HumanOnly: t.HumanOnly,
-		Relations: []RelationV{}, Artifacts: []ArtifactV{}, Comments: []CommentV{}, Runs: []RunV{}, Subtasks: []TaskRefV{},
+		Relations: []RelationV{}, Artifacts: []ArtifactV{}, Comments: []CommentV{}, Runs: []RunV{}, Subtasks: []TaskRefV{}, Links: d.Links,
 		PlannedStart: dateStr(t.PlannedStart), PlannedEnd: dateStr(t.PlannedEnd), ActualStart: dateStr(t.ActualStart), ActualEnd: dateStr(t.ActualEnd),
 		Estimate: t.EstimateHours, Priority: priorityName(t.Priority), Progress: d.Progress, Overdue: d.Overdue, Cost: d.Cost, Fields: t.Fields, Points: t.Points, Sprint: sprintRef(t.SprintID, sprintTitle), CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
 	if v.RequiredCapabilities == nil {
 		v.RequiredCapabilities = []string{}
+	}
+	if v.Links == nil {
+		v.Links = []app.LinkView{}
+	}
+	// PR 小标：最近更新的那条 PR 链接
+	var latest *app.LinkView
+	prCount := 0
+	for i := range v.Links {
+		if v.Links[i].Kind != "pr" {
+			continue
+		}
+		prCount++
+		if latest == nil || v.Links[i].UpdatedAt.After(latest.UpdatedAt) {
+			latest = &v.Links[i]
+		}
+	}
+	if latest != nil {
+		v.PR = &app.TaskPR{Status: latest.Status, StatusTitle: latest.StatusTitle, URL: latest.URL, Title: latest.Title, Count: prCount}
 	}
 	if v.Fields == nil {
 		v.Fields = map[string]any{}
@@ -729,17 +784,17 @@ func taskView(d *app.TaskDetail, incoming []app.IncomingRelation, related map[st
 		v.Runs = append(v.Runs, rv)
 	}
 	for _, s := range d.Subtasks {
-		v.Subtasks = append(v.Subtasks, TaskRefV{ID: s.ID, Title: s.Title, Type: s.TypeName, State: TaskState{Name: s.State.Name, Title: s.State.Title, Label: s.State.Label}})
+		v.Subtasks = append(v.Subtasks, TaskRefV{ID: s.ID, Number: s.Number, Title: s.Title, Type: s.TypeName, State: TaskState{Name: s.State.Name, Title: s.State.Title, Label: s.State.Label}})
 	}
 	return v
 }
 
 // taskListView 把摘要转成列表用的（精简）任务视图。
 func taskListView(s app.TaskSummary, r refs, goalTitle goalTitleFn, sprintTitle sprintTitleFn) TaskV {
-	v := TaskV{ID: s.ID, GoalID: nullable(s.GoalID), ParentID: nullable(s.ParentID), Type: s.TypeName, TypeTitle: s.TypeTitle, Title: s.Title,
+	v := TaskV{ID: s.ID, Number: s.Number, GoalID: nullable(s.GoalID), ParentID: nullable(s.ParentID), Type: s.TypeName, TypeTitle: s.TypeTitle, Title: s.Title,
 		State: TaskState{Name: s.State.Name, Title: s.State.Title, Label: s.State.Label}, Assignee: r.get(s.AssigneeID), Creator: ExecutorRef{}, Reviewer: ExecutorRef{},
 		Participants: map[string]ParticipantV{}, RequiredRole: nullable(s.RequiredRole), RequiredCapabilities: []string{}, HumanOnly: s.HumanOnly,
-		Relations: []RelationV{}, Artifacts: []ArtifactV{}, Comments: []CommentV{}, Runs: []RunV{}, Subtasks: []TaskRefV{},
+		Relations: []RelationV{}, Artifacts: []ArtifactV{}, Comments: []CommentV{}, Runs: []RunV{}, Subtasks: []TaskRefV{}, Links: []app.LinkView{}, PR: s.PR,
 		PlannedStart: dateStr(s.PlannedStart), PlannedEnd: dateStr(s.PlannedEnd), ActualStart: dateStr(s.ActualStart), ActualEnd: dateStr(s.ActualEnd),
 		Priority: priorityName(s.Priority), Progress: s.Progress, Overdue: s.Overdue, Cost: s.Cost, Fields: map[string]any{}, Points: s.Points, Sprint: sprintRef(s.SprintID, sprintTitle), CreatedAt: s.CreatedAt, UpdatedAt: s.CreatedAt}
 	if s.GoalID != "" {
@@ -912,6 +967,8 @@ type TransitionDefV struct {
 	Requires []string     `json:"requires"`
 	Grant    domain.Grant `json:"grant,omitempty"`
 	AssignTo *string      `json:"assign_to"`
+	// 由外部事件触发（ADR 0020）；不填表示只能由人或 Agent 触发
+	TriggeredBy *domain.Trigger `json:"triggered_by,omitempty"`
 }
 
 type WorkflowDefV struct {
@@ -946,7 +1003,7 @@ func taskTypeView(tt *domain.TaskType, loc i18n.Locale) TaskTypeV {
 		v.Workflow.StateOrder = append(v.Workflow.StateOrder, s.Name)
 	}
 	for _, t := range tt.Workflow.Transitions {
-		d := TransitionDefV{Name: t.Name, Title: t.Title.In(loc), From: t.From, To: t.To, By: t.By, Requires: orEmpty(t.Requires), Grant: t.Grant}
+		d := TransitionDefV{Name: t.Name, Title: t.Title.In(loc), From: t.From, To: t.To, By: t.By, Requires: orEmpty(t.Requires), Grant: t.Grant, TriggeredBy: t.TriggeredBy}
 		if t.AssignTo != "" {
 			a := t.AssignTo
 			d.AssignTo = &a
@@ -970,6 +1027,7 @@ type BacklogItemV struct {
 
 type GanttTaskV struct {
 	ID           string       `json:"id"`
+	Number       int          `json:"number"`
 	Title        string       `json:"title"`
 	Type         string       `json:"type"`
 	TypeTitle    string       `json:"type_title"`
@@ -1030,7 +1088,7 @@ func ganttView(group string, rows []*app.GanttRow, r refs, from, to string) Gant
 			v.Goal = &GanttGoalV{ID: row.Key, PlannedStart: dateStr(row.Start), PlannedEnd: dateStr(row.End), Deadline: dateStr(row.Deadline), Progress: row.Progress, Milestones: ganttMilestones(row.Milestones)}
 		}
 		for _, t := range row.Tasks {
-			v.Tasks = append(v.Tasks, GanttTaskV{ID: t.ID, Title: t.Title, Type: t.TypeName, TypeTitle: t.TypeTitle, State: TaskState{Name: t.State.Name, Title: t.State.Title, Label: t.State.Label}, Assignee: r.get(t.AssigneeID), GoalID: nullable(t.GoalID),
+			v.Tasks = append(v.Tasks, GanttTaskV{ID: t.ID, Number: t.Number, Title: t.Title, Type: t.TypeName, TypeTitle: t.TypeTitle, State: TaskState{Name: t.State.Name, Title: t.State.Title, Label: t.State.Label}, Assignee: r.get(t.AssigneeID), GoalID: nullable(t.GoalID),
 				PlannedStart: dateStr(t.PlannedStart), PlannedEnd: dateStr(t.PlannedEnd), ActualStart: dateStr(t.ActualStart), ActualEnd: dateStr(t.ActualEnd), Progress: t.Progress, Cost: t.Cost, Overdue: t.Overdue})
 			for _, b := range t.Blockers {
 				k := b + ">" + t.ID
@@ -1109,15 +1167,16 @@ func proposalView(p *app.ProposalView) ProposalV {
 // ---------- 动态 ----------
 
 type EventV struct {
-	ID        string         `json:"id"`
-	Kind      string         `json:"kind"`
-	TaskID    *string        `json:"task_id"`
-	TaskTitle *string        `json:"task_title"`
-	GoalID    *string        `json:"goal_id"`
-	Actor     *ExecutorRef   `json:"actor"`
-	Summary   string         `json:"summary"`
-	Data      map[string]any `json:"data"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID         string         `json:"id"`
+	Kind       string         `json:"kind"`
+	TaskID     *string        `json:"task_id"`
+	TaskTitle  *string        `json:"task_title"`
+	TaskNumber *int           `json:"task_number,omitempty"`
+	GoalID     *string        `json:"goal_id"`
+	Actor      *ExecutorRef   `json:"actor"`
+	Summary    string         `json:"summary"`
+	Data       map[string]any `json:"data"`
+	CreatedAt  time.Time      `json:"created_at"`
 }
 
 func eventView(e *store.EventRow, r refs, taskTitle, goalOf map[string]string, roles map[string]i18n.Text, loc i18n.Locale) EventV {
@@ -1157,6 +1216,16 @@ func textOf(v any, loc i18n.Locale) string {
 		return t.In(loc)
 	}
 	return ""
+}
+
+// externalWho 把「系统」换成外部操作者（如「GitHub 用户 alice」），动态里带了来源与登录名时用。
+func externalWho(who string, e *store.EventRow, loc i18n.Locale) string {
+	src := textOf(e.Data["external_source"], loc)
+	name := textOf(e.Data["external_user_name"], loc)
+	if e.ActorID != "" || src == "" || name == "" {
+		return who
+	}
+	return i18n.Trf(loc, "external.actor", app.SourceTitle(src, loc), name)
 }
 
 func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles map[string]i18n.Text, loc i18n.Locale) string {
@@ -1229,6 +1298,27 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 		return i18n.Trf(loc, "ev."+e.Type, who, s("goal_title"), s("title"), due)
 	case "AgentRegistered":
 		return i18n.Trf(loc, "ev.AgentRegistered", who, s("name"))
+	case "AgentConnected":
+		return i18n.Trf(loc, "ev.AgentConnected", who, s("name"), i18n.Tr(loc, "device.client."+s("client")))
+	case "PreferencesUpdated":
+		cleared, _ := e.Data["cleared"].(bool)
+		var fields []string
+		if keys, ok := e.Data["fields"].([]any); ok {
+			for _, k := range keys {
+				fields = append(fields, i18n.Tr(loc, "pref.field."+textOf(k, loc)))
+			}
+		}
+		if s("target") == "role" {
+			role := roleTitle(roles, s("role"), loc)
+			if cleared {
+				return i18n.Trf(loc, "ev.PreferencesRoleCleared", who, role)
+			}
+			return i18n.Trf(loc, "ev.PreferencesRole", who, role, fields)
+		}
+		if cleared {
+			return i18n.Trf(loc, "ev.PreferencesPersonalCleared", who)
+		}
+		return i18n.Trf(loc, "ev.PreferencesPersonal", who, fields)
 	case "AgentRemoved", "AgentRevoked":
 		return i18n.Trf(loc, "ev.AgentRemoved", who)
 	case "AgentUpdated":
@@ -1329,7 +1419,68 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 	case "DirectoryUnbound":
 		return i18n.Trf(loc, "ev.DirectoryUnbound", who, s("name"))
 	case "DirectoryConfigured":
+		if names := fieldTitles(s("provider"), e.Data["fields"], loc); names != "" {
+			return i18n.Trf(loc, "ev.DirectoryFieldsChanged", who, app.SourceTitle(s("provider"), loc), names)
+		}
 		return i18n.Trf(loc, "ev.DirectoryConfigured", who, app.SourceTitle(s("provider"), loc))
+	// 代码平台与外部事件（ADR 0020）
+	case "CodePlatformDisconnected":
+		return i18n.Trf(loc, "ev.CodePlatformDisconnected", who, app.SourceTitle(s("provider"), loc))
+	case "DirectoryDisconnected":
+		return i18n.Trf(loc, "ev.DirectoryDisconnected", who, app.SourceTitle(s("provider"), loc))
+	case "CodePlatformConfigured":
+		fresh, _ := e.Data["fresh"].(bool)
+		switched, _ := e.Data["provider_switched"].(bool)
+		if names := fieldTitles(s("provider"), e.Data["fields"], loc); names != "" && !fresh && !switched {
+			return i18n.Trf(loc, "ev.CodePlatformFieldsChanged", who, app.SourceTitle(s("provider"), loc), names)
+		}
+		return i18n.Trf(loc, "ev.CodePlatformConfigured", who, app.SourceTitle(s("provider"), loc))
+	case "CodeWebhookSecretRotated", "CodeWebhookSecretRevealed":
+		return i18n.Trf(loc, "ev."+e.Type, who, app.SourceTitle(s("provider"), loc))
+	case "CodeIdentityBound":
+		if login := s("login"); login != "" {
+			return i18n.Trf(loc, "ev.CodeIdentityBound", who, app.SourceTitle(s("provider"), loc), login)
+		}
+		return i18n.Trf(loc, "ev.CodeIdentityUnbound", who, app.SourceTitle(s("provider"), loc))
+	case "ExternalLinkAdded":
+		return i18n.Trf(loc, "ev.ExternalLinkAdded", externalWho(who, e, loc), task, s("kind_title"), s("title"))
+	case "ExternalLinkUpdated":
+		return i18n.Trf(loc, "ev.ExternalLinkUpdated", task, s("kind_title"), s("title"), s("status_title"))
+	case "ExternalLinkRemoved":
+		return i18n.Trf(loc, "ev.ExternalLinkRemoved", who, task, s("title"))
+	case "ExternalEventApplied":
+		return i18n.Trf(loc, "ev.ExternalEventApplied", app.SourceTitle(s("external_source"), loc), s("external_ref"),
+			i18n.Tr(loc, "external.verb."+s("external_event")), task, s("to_title"))
+	case "ExternalEventIgnored":
+		return i18n.Trf(loc, "ev.ExternalEventIgnored", app.SourceTitle(s("external_source"), loc), s("external_ref"),
+			i18n.Tr(loc, "external.verb."+s("external_event")), task, s("reason"))
+	case "NotificationChannelConfigured":
+		title := s("channel")
+		if p, ok := directory.Lookup(s("channel")); ok {
+			title = p.Title.In(loc)
+		}
+		if enabled, _ := e.Data["enabled"].(bool); !enabled {
+			return i18n.Trf(loc, "ev.NotificationChannelDisabled", who, title)
+		}
+		return i18n.Trf(loc, "ev.NotificationChannelConfigured", who, title)
+	case "NotificationPolicyChanged":
+		var titles []i18n.Text
+		if keys, ok := e.Data["allowed_kinds"].([]any); ok {
+			for _, k := range keys {
+				if t, ok := domain.NotifyKindTitle[textOf(k, loc)]; ok {
+					titles = append(titles, t)
+				}
+			}
+		}
+		if len(titles) == 0 {
+			return i18n.Trf(loc, "ev.NotificationPolicyNone", who)
+		}
+		return i18n.Trf(loc, "ev.NotificationPolicyChanged", who, titles)
+	case "NotificationPreferencesUpdated":
+		if cleared, _ := e.Data["cleared"].(bool); cleared {
+			return i18n.Trf(loc, "ev.NotificationPreferencesCleared", who)
+		}
+		return i18n.Trf(loc, "ev.NotificationPreferencesUpdated", who)
 	case "DirectoryDetached":
 		return i18n.Trf(loc, "ev.DirectoryDetached", who, s("name"), app.SourceTitle(s("old_provider"), loc))
 	case "DirectorySyncRan":
@@ -1597,7 +1748,7 @@ type errorBody struct {
 func errBody(status int, msg string) errorBody {
 	var b errorBody
 	b.Error.Message = msg
-	b.Error.Code = map[int]string{400: "bad_request", 401: "unauthenticated", 403: "forbidden", 404: "not_found", 409: "rejected", 500: "internal"}[status]
+	b.Error.Code = map[int]string{400: "bad_request", 401: "unauthenticated", 403: "forbidden", 404: "not_found", 409: "rejected", 429: "slow_down", 500: "internal"}[status]
 	if b.Error.Code == "" {
 		b.Error.Code = strings.ToLower(fmt.Sprint(status))
 	}

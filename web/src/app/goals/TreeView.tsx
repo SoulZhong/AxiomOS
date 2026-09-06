@@ -12,7 +12,7 @@ import { IconCancel, IconCheck, IconChevronRight, IconGoal, IconPlus, IconTrash 
 import { ArcGauge } from "@/components/instruments/ArcGauge";
 import { Odometer } from "@/components/instruments/Odometer";
 import { goalSummary, tallyGoals, type GoalTally } from "./goalStatus";
-import { Avatar, Button, ConfirmDialog, Empty, ErrorBox, ListSkeleton, Panel, StatChips, Tag, Tip, cx } from "@/components/ui";
+import { Avatar, Button, ConsequenceDialog, Empty, ErrorBox, ListSkeleton, Panel, StatChips, Tag, Tip, cx } from "@/components/ui";
 
 /**
  * 「目标 · 树」（DESIGN.md §9）：树形行，缩进 20px/层带引导线；每行给任务完成数、状态摘要句、计划区间、预算与已花，右侧弧形仪表。
@@ -25,12 +25,15 @@ export function TreeView({ reloadKey, highlight, onAddChild, onNew }: { reloadKe
   const tasks = useLoad(() => api.tasks.list({ limit: 500 }), [reloadKey]);
   const types = useTaskTypeIndex();
   const [deleting, setDeleting] = useState<Goal | null>(null);
+  const [abandoning, setAbandoning] = useState<Goal | null>(null);
   const { busy, run } = useAction();
-  // 放弃 / 重新开始：保留全部历史，只是从"在做的事"里拿掉；删除只对空目标开放
-  const abandon = (g: Goal) => {
+  // 放弃 / 重新开始：保留全部历史，只是从"在做的事"里拿掉；放弃先过后果对话框（几个子目标、几个未结束任务），重新开始直接做；删除只对空目标开放
+  const doAbandon = (g: Goal) => {
     const next = g.status === "abandoned" ? "active" : "abandoned";
-    void run(g.id, () => api.goals.update(g.id, { status: next }), next === "abandoned" ? t("goals.abandonedToast", { title: g.title }) : t("goals.resumedToast", { title: g.title })).then((ok) => ok && goals.reload());
+    void run(g.id, () => api.goals.update(g.id, { status: next }), next === "abandoned" ? t("goals.abandonedToast", { title: g.title }) : t("goals.resumedToast", { title: g.title })).then((ok) => { if (ok) { setAbandoning(null); goals.reload(); } });
   };
+  const abandon = (g: Goal) => (g.status === "abandoned" ? doAbandon(g) : setAbandoning(g));
+
   const achieve = (g: Goal) => {
     void run(g.id, () => api.goals.update(g.id, { achieved: true }), t("goals.achievedToast", { title: g.title })).then((ok) => ok && goals.reload());
   };
@@ -47,6 +50,9 @@ export function TreeView({ reloadKey, highlight, onAddChild, onNew }: { reloadKe
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const flat = useMemo(() => flattenGoals(goals.data ?? []), [goals.data]);
   const tally = useMemo(() => tallyGoals(goals.data ?? [], tasks.data ?? [], (x) => isAcceptanceWait(x.state, types[x.type]?.workflow)), [goals.data, tasks.data, types]);
+  const abandonTally = abandoning ? tally.get(abandoning.id) : undefined;
+  const abandonOpen = abandonTally ? abandonTally.overdue + abandonTally.waiting + abandonTally.active + abandonTally.pending : 0;
+  const abandonKids = abandoning ? flattenGoals(abandoning.children ?? []).length : 0;
   const currency = session?.organization.currency;
   const achieved = flat.filter((x) => x.goal.achieved).length;
   const over = flat.filter((x) => x.goal.budget !== null && x.goal.cost > x.goal.budget).length;
@@ -85,7 +91,17 @@ export function TreeView({ reloadKey, highlight, onAddChild, onNew }: { reloadKe
           </ul>
         )}
       </Panel>
-      <ConfirmDialog open={!!deleting} title={t("goals.deleteTitle")} message={deleting ? t("goals.deleteMessage", { title: deleting.title }) : undefined} confirmLabel={t("common.delete")} danger busy={busy === deleting?.id} onConfirm={doDelete} onClose={() => setDeleting(null)} />
+      <ConsequenceDialog open={!!deleting} title={t("goals.deleteTitle")} effects={[deleting ? t("goals.deleteMessage", { title: deleting.title }) : null]} confirmLabel={t("common.delete")} danger busy={busy === deleting?.id} onConfirm={doDelete} onClose={() => setDeleting(null)} />
+      <ConsequenceDialog
+        open={!!abandoning}
+        title={abandoning ? t("goals.abandonTitle", { title: abandoning.title }) : ""}
+        effects={[abandonKids > 0 ? t("goals.abandonEffect.children", { n: abandonKids }) : null, abandonOpen > 0 ? t("goals.abandonEffect.tasks", { n: abandonOpen }) : t("goals.abandonEffect.noOpenTasks"), t("goals.abandonEffect.kept")]}
+        confirmLabel={t("goals.abandon")}
+        danger
+        busy={busy === abandoning?.id}
+        onConfirm={() => abandoning && doAbandon(abandoning)}
+        onClose={() => setAbandoning(null)}
+      />
     </div>
   );
 }

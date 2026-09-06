@@ -13,6 +13,8 @@ const isPref = (v: unknown): v is Exclude<SidebarPref, null> => v === "collapsed
 
 let current: SidebarPref = null;
 let resolved = false;
+/** 显示偏好里的「侧栏默认收起」（lib/preferences.ts）：没有显式偏好时的兜底；不写 localStorage，只作用到 html[data-sidebar] */
+let fallbackCollapsed: boolean | null = null;
 const listeners = new Set<() => void>();
 
 export function getSidebarPref(): SidebarPref {
@@ -28,11 +30,21 @@ export function getSidebarPref(): SidebarPref {
   return current;
 }
 
-/** 当前实际是否收起：显式偏好优先，否则按断点。 */
+/** 当前实际是否收起：显式偏好优先，其次显示偏好里的默认，否则按断点。 */
 export function isSidebarCollapsed(): boolean {
   const p = getSidebarPref();
   if (p) return p === "collapsed";
+  if (fallbackCollapsed) return true;
   return typeof window !== "undefined" ? !window.matchMedia("(min-width: 1200px)").matches : false;
+}
+
+/** 显示偏好给的默认（个人 / 角色 / 系统默认）：这个人在这台浏览器上没有手动收起 / 展开过时才生效。 */
+export function setSidebarDefault(collapsed: boolean) {
+  fallbackCollapsed = collapsed;
+  if (typeof document === "undefined" || getSidebarPref()) return;
+  if (collapsed) document.documentElement.setAttribute("data-sidebar", "collapsed");
+  else document.documentElement.removeAttribute("data-sidebar");
+  listeners.forEach((fn) => fn());
 }
 
 export function setSidebarPref(p: Exclude<SidebarPref, null>) {

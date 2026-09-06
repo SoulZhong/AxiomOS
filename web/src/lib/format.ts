@@ -66,13 +66,15 @@ export function fmtRelative(s: string | null | undefined): string {
   const d = parseDate(s);
   if (!d) return "—";
   const diff = Date.now() - d.getTime();
-  const m = Math.round(diff / 60000);
+  // 将来的时刻（接入验证码的过期时间）要说「15 分钟后」，不能一律说「刚刚」
+  const ahead = diff < 0;
+  const m = Math.round(Math.abs(diff) / 60000);
   if (m < 1) return t("time.justNow");
-  if (m < 60) return t("time.minutesAgo", { n: m });
+  if (m < 60) return t(ahead ? "time.inMinutes" : "time.minutesAgo", { n: m });
   const h = Math.round(m / 60);
-  if (h < 24) return t("time.hoursAgo", { n: h });
+  if (h < 24) return t(ahead ? "time.inHours" : "time.hoursAgo", { n: h });
   const days = Math.round(h / 24);
-  if (days < 30) return t("time.daysAgo", { n: days });
+  if (days < 30) return t(ahead ? "time.inDays" : "time.daysAgo", { n: days });
   return fmtDate(s);
 }
 
