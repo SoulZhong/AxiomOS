@@ -65,16 +65,16 @@ func (s *Store) CreateInvitation(ctx context.Context, q Querier, inv *domain.Inv
 	if inv.Roles == nil {
 		inv.Roles = []string{}
 	}
-	_, err = q.Exec(ctx, `insert into invitations(id,org_id,email,name,roles,token_hash,invited_by,expires_at,created_at) values($1,$2,$3,$4,$5,$6,nullif($7,''),$8,$9)`,
-		inv.ID, inv.OrgID, inv.Email, inv.Name, inv.Roles, HashToken(token), inv.InvitedBy, inv.ExpiresAt, inv.CreatedAt)
+	_, err = q.Exec(ctx, `insert into invitations(id,org_id,email,name,roles,token_hash,invited_by,expires_at,created_at,team_id,member_id) values($1,$2,$3,$4,$5,$6,nullif($7,''),$8,$9,nullif($10,''),nullif($11,''))`,
+		inv.ID, inv.OrgID, inv.Email, inv.Name, inv.Roles, HashToken(token), inv.InvitedBy, inv.ExpiresAt, inv.CreatedAt, inv.TeamID, inv.MemberID)
 	return token, err
 }
 
-const invCols = `id,org_id,email,name,roles,coalesce(invited_by,''),expires_at,accepted_at,created_at`
+const invCols = `id,org_id,email,name,roles,coalesce(invited_by,''),expires_at,accepted_at,created_at,coalesce(team_id,''),coalesce(member_id,'')`
 
 func scanInvitation(r interface{ Scan(...any) error }) (*domain.Invitation, error) {
 	inv := &domain.Invitation{}
-	err := r.Scan(&inv.ID, &inv.OrgID, &inv.Email, &inv.Name, &inv.Roles, &inv.InvitedBy, &inv.ExpiresAt, &inv.AcceptedAt, &inv.CreatedAt)
+	err := r.Scan(&inv.ID, &inv.OrgID, &inv.Email, &inv.Name, &inv.Roles, &inv.InvitedBy, &inv.ExpiresAt, &inv.AcceptedAt, &inv.CreatedAt, &inv.TeamID, &inv.MemberID)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -104,6 +104,18 @@ func (s *Store) ListInvitations(ctx context.Context, q Querier) ([]*domain.Invit
 // InvitationByToken 不受行级安全限制（接受邀请时还没有组织上下文）。
 func (s *Store) InvitationByToken(ctx context.Context, q Querier, token string) (*domain.Invitation, error) {
 	return scanInvitation(q.QueryRow(ctx, `select `+invCols+` from invitations where token_hash=$1`, HashToken(token)))
+}
+
+// InvitationByID 在组织内按编号查邀请。
+func (s *Store) InvitationByID(ctx context.Context, q Querier, id string) (*domain.Invitation, error) {
+	return scanInvitation(q.QueryRow(ctx, `select `+invCols+` from invitations where id=$1`, id))
+}
+
+// CountOpenInvitationsForMember 数某个待激活成员还剩几条未接受、未过期的邀请。
+func (s *Store) CountOpenInvitationsForMember(ctx context.Context, q Querier, memberID string) (int, error) {
+	var n int
+	err := q.QueryRow(ctx, `select count(*) from invitations where member_id=$1 and accepted_at is null and expires_at > now()`, memberID).Scan(&n)
+	return n, err
 }
 
 func (s *Store) DeleteInvitation(ctx context.Context, q Querier, id string) error {

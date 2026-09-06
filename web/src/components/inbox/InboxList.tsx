@@ -7,15 +7,15 @@ import { fmtDate } from "@/lib/format";
 import { errorMessage, useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { prefersReducedMotion } from "@/lib/motion";
-import { IconApprove, IconChevronRight, IconInbox, IconPlay } from "@/components/icons";
-import { HELM_MS, RejectDialog } from "@/components/proposals/RejectDialog";
-import { Odometer } from "@/components/ship-status/Odometer";
+import { IconApprove, IconChevronRight, IconPlay } from "@/components/icons";
+import { HELM_MS } from "@/components/proposals/RejectDialog";
 import { refreshShipTelemetry } from "@/components/ship-status/telemetry";
 import { useToast } from "@/components/toast";
-import { Avatar, Button, Empty, ErrorBox, ListSkeleton, Panel, RelativeTime, Tag, Tip, cx } from "@/components/ui";
+import { Avatar, Button, RelativeTime, Tag, Tip, cx } from "@/components/ui";
+import type { CompactRow } from "@/components/blocks/BlockPanel";
 
 /*
- * 待我处理（DESIGN.md §12、CONTEXT.md「待我处理」）：「我的工作」顶部的固定区，不属于工作台布局，不能隐藏或挪走。
+ * 待我处理（DESIGN.md §12、CONTEXT.md「待我处理」）：「我的工作」里的一个区块（InboxBlock，ADR 0015 补记四：可拖动、改大小、移除），这里是它的取数、动作与行。
  * GET /inbox 给六组事项（按紧急度：逾期 → 待确认 → 待验收 → 待答复 → 未开始 → 通知，空组省略），只看本人、不受范围影响。
  * 每条右侧就是它的动作：
  *   逾期任务 → 打开 · 待确认操作 → 确认 / 拒绝（与待确认操作页同一套：转舵 240ms、拒绝要写完整理由）· 等我验收 → 去验收
@@ -29,9 +29,12 @@ const FOLD_MS = 220;
 /** 通知组在屏幕上停留这么久之后自动标已读 */
 const AUTO_READ_MS = 3000;
 
-const rowKey = (kind: InboxKind, id: string | number) => `${kind}:${id}`;
+export const rowKey = (kind: InboxKind, id: string | number) => `${kind}:${id}`;
 
-export function InboxSection({ className }: { className?: string }) {
+/**
+ * 待我处理的状态与动作（取数、乐观收拢、确认 / 拒绝 / 开始 / 标已读）。「待我处理」区块（InboxBlock）用它；渲染在 InboxGroups 里。
+ */
+export function useInbox() {
   const toast = useToast();
   const router = useRouter();
   const inbox = useLoad(() => api.inbox.get(), []);
@@ -194,57 +197,67 @@ export function InboxSection({ className }: { className?: string }) {
   const total = visible.reduce((s, g) => s + g.items.filter((it) => !closing.has(rowKey(g.kind, idOf(g.kind, it))) && !(g.kind === "notifications" && autoRead.has((it as Notification).id))).length, 0);
   const allEmpty = !!data && visible.length === 0;
 
+  return { inbox, data, visible, total, allEmpty, handled, autoRead, helm, busy, rejecting, setRejecting, approve, reject, begin, markRead, autoMark };
+}
+
+/** 全部可见的组，一组接一组（区块的正常尺寸）。 */
+export function InboxGroups({ ib }: { ib: ReturnType<typeof useInbox> }) {
   return (
-    <Panel
-      className={className}
-      icon={<IconInbox />}
-      title={
-        <span className="inline-flex items-center gap-2">
-          {t("inbox.title")}
-          {data && <Odometer text={String(total)} className={cx("inbox-count", total > 0 && "inbox-count-warm")} />}
-        </span>
-      }
-      actions={
-        <Link href="/proposals/" className="inline-flex items-center gap-0.5 text-caption text-ink-muted hover:text-accent-hover">
-          {t("inbox.history")}
-          <IconChevronRight />
-        </Link>
-      }
-      padded={false}
-    >
-      {inbox.loading && !data ? (
-        <div className="p-4">
-          <ListSkeleton rows={3} />
-        </div>
-      ) : inbox.error && !data ? (
-        <div className="p-4">
-          <ErrorBox message={inbox.error} onRetry={inbox.reload} />
-        </div>
-      ) : allEmpty ? (
-        <Empty text={data?.empty || t("inbox.empty")} className="py-8" />
-      ) : (
-        visible.map((g) => (
-          <Group
-            key={g.kind}
-            group={g}
-            handled={handled}
-            autoRead={autoRead}
-            helm={helm}
-            busy={busy}
-            onApprove={(p) => void approve(p)}
-            onReject={setRejecting}
-            onBegin={(task) => void begin(task)}
-            onRead={(n) => void markRead(n)}
-            onAutoRead={(ids) => void autoMark(ids)}
-          />
-        ))
-      )}
-      <RejectDialog proposal={rejecting} busy={!!busy} onClose={() => setRejecting(null)} onSubmit={reject} />
-    </Panel>
+    <>
+      {ib.visible.map((g) => (
+        <Group
+          key={g.kind}
+          group={g}
+          handled={ib.handled}
+          autoRead={ib.autoRead}
+          helm={ib.helm}
+          busy={ib.busy}
+          onApprove={(p) => void ib.approve(p)}
+          onReject={ib.setRejecting}
+          onBegin={(task) => void ib.begin(task)}
+          onRead={(n) => void ib.markRead(n)}
+          onAutoRead={(ids) => void ib.autoMark(ids)}
+        />
+      ))}
+    </>
   );
 }
 
-const idOf = (kind: InboxKind, it: InboxTask | Proposal | InboxQuestion | Notification): string | number =>
+/** 每组还剩几条没处理（通知只算未读） */
+export function liveCount(ib: ReturnType<typeof useInbox>, g: InboxGroup): number {
+  return (g.items as Array<InboxTask | Proposal | InboxQuestion | Notification>).filter((it) => !ib.handled(rowKey(g.kind, idOf(g.kind, it))) && !(g.kind === "notifications" && ib.autoRead.has((it as Notification).id))).length;
+}
+
+/** 窄区块（≤ 4 栏）的行：每条事项一行标题 + 右侧这一组的短名，按组的紧急度顺序排。 */
+export function compactRows(ib: ReturnType<typeof useInbox>): CompactRow[] {
+  const rows: CompactRow[] = [];
+  for (const g of ib.visible) {
+    const meta = <span className={cx(g.kind === "overdue" && "text-danger")}>{t(`inbox.short.${g.kind}`)}</span>;
+    for (const it of g.items as Array<InboxTask | Proposal | InboxQuestion | Notification>) {
+      const key = rowKey(g.kind, idOf(g.kind, it));
+      if (ib.handled(key)) continue;
+      if (g.kind === "notifications" && ib.autoRead.has((it as Notification).id)) continue;
+      let title: ReactNode;
+      if (g.kind === "proposals") {
+        const p = it as Proposal;
+        title = <Link href="/proposals/" className="block truncate hover:text-accent-hover">{p.agent.name} · {p.action_title}</Link>;
+      } else if (g.kind === "questions") {
+        const q = it as InboxQuestion;
+        title = <Link href={`${taskHref(q.task.id)}#comment-${encodeURIComponent(q.comment.id)}`} className="block truncate hover:text-accent-hover">{q.comment.author.name} · {q.comment.body}</Link>;
+      } else if (g.kind === "notifications") {
+        const n = it as Notification;
+        title = n.task_id ? <Link href={taskHref(n.task_id)} className="block truncate hover:text-accent-hover">{n.title}</Link> : <span className="block truncate">{n.title}</span>;
+      } else {
+        const task = it as InboxTask;
+        title = <Link href={taskHref(task.id)} className="block truncate hover:text-accent-hover">{task.title}</Link>;
+      }
+      rows.push({ key, title, meta });
+    }
+  }
+  return rows;
+}
+
+export const idOf = (kind: InboxKind, it: InboxTask | Proposal | InboxQuestion | Notification): string | number =>
   kind === "questions" ? (it as InboxQuestion).comment.id : (it as InboxTask | Proposal | Notification).id;
 
 const groupTitle = (g: InboxGroup) => g.title || t(`inbox.group.${g.kind}`);
@@ -354,7 +367,7 @@ function LinkAction({ href, children, icon }: { href: string; children: ReactNod
   );
 }
 
-const taskHref = (id: string) => `/tasks/${encodeURIComponent(id)}/`;
+export const taskHref = (id: string) => `/tasks/${encodeURIComponent(id)}/`;
 
 /** 任务类的行：标题 + 一行说明（目标 · 类型 · 状态，逾期几天 / 谁提交的 / 计划何时开始），右侧按组给动作。 */
 function TaskRow({ kind, task, onBegin }: { kind: "overdue" | "review" | "unstarted"; task: InboxTask; onBegin: () => void }) {

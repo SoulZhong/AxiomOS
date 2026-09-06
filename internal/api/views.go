@@ -39,6 +39,22 @@ func (d *Date) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// OptDate 是修改输入里的日期：区分「没带」「带了 null / ""（清空）」「带了日期」。
+type OptDate struct {
+	Set bool
+	T   *time.Time
+}
+
+func (d *OptDate) UnmarshalJSON(b []byte) error {
+	d.Set = true
+	var inner Date
+	if err := inner.UnmarshalJSON(b); err != nil {
+		return err
+	}
+	d.T = inner.T
+	return nil
+}
+
 func dateStr(t *time.Time) *string {
 	if t == nil {
 		return nil
@@ -147,6 +163,9 @@ type MemberV struct {
 	TeamID    *string   `json:"team_id"`
 	Locale    string    `json:"locale"`
 	CreatedAt time.Time `json:"created_at"`
+	// 来源与激活状态（ADR 0017）：manual 或提供方代码名；active | pending_activation | inactive
+	Source string `json:"source"`
+	Status string `json:"status"`
 }
 
 type RoleV struct {
@@ -160,6 +179,14 @@ type TeamV struct {
 	LeadID     *string `json:"lead_id"`
 	ParentID   *string `json:"parent_id"`
 	IsBoundary bool    `json:"is_boundary"`
+	// 来源（ADR 0017）：manual 或提供方代码名；ExternalName 是外部目录里的原名；Active 为假表示外部目录里已不存在
+	Source       string  `json:"source"`
+	ExternalName *string `json:"external_name"`
+	Active       bool    `json:"active"`
+}
+
+func teamVOf(t *domain.Team) TeamV {
+	return TeamV{ID: t.ID, Name: t.Name, LeadID: nullable(t.LeadMemberID), ParentID: nullable(t.ParentID), IsBoundary: t.IsBoundary, Source: t.Source, ExternalName: nullable(t.ExternalName), Active: !t.Inactive}
 }
 
 // ScopeV 是范围选择器里的一档（ADR 0013）。
@@ -199,7 +226,7 @@ func nullable(s string) *string {
 }
 
 func memberView(m *domain.Member, email string, teamOf map[string]string) MemberV {
-	v := MemberV{ID: m.ID, Name: m.Name, Email: email, Roles: m.Roles, CreatedAt: m.CreatedAt}
+	v := MemberV{ID: m.ID, Name: m.Name, Email: email, Roles: m.Roles, CreatedAt: m.CreatedAt, Source: m.Source, Status: m.DerivedStatus()}
 	if v.Roles == nil {
 		v.Roles = []string{}
 	}
@@ -221,7 +248,7 @@ func sessionView(me *app.Me, email string, teams []*domain.Team, teamOf map[stri
 	}
 	tv := []TeamV{}
 	for _, t := range teams {
-		tv = append(tv, TeamV{ID: t.ID, Name: t.Name, LeadID: nullable(t.LeadMemberID), ParentID: nullable(t.ParentID), IsBoundary: t.IsBoundary})
+		tv = append(tv, teamVOf(t))
 	}
 	capNames := make([]string, 0, len(caps))
 	capTitles := map[string]string{}
@@ -280,15 +307,17 @@ type AgentV struct {
 	MaxConcurrency int         `json:"max_concurrency"`
 	Runtime        string      `json:"runtime"`
 	CreatedAt      time.Time   `json:"created_at"`
+	// CanManage：当前用户能否修改 / 吊销它（所有者、组织负责人或持「组织设置」权限的成员）
+	CanManage bool `json:"can_manage"`
 }
 
-func agentView(a *domain.Agent, r refs, now time.Time) AgentV {
+func agentView(a *domain.Agent, r refs, now time.Time, canManage bool) AgentV {
 	grants := []GrantV{}
 	for g, m := range a.Grants {
 		grants = append(grants, GrantV{Name: g, Mode: m})
 	}
 	sort.Slice(grants, func(i, j int) bool { return grants[i].Name < grants[j].Name })
-	return AgentV{ID: a.ID, Name: a.Name, Owner: r.must(a.OwnerMemberID), Shared: a.Shared, Capabilities: a.Capabilities, Grants: grants, Online: a.Online(now), LastSeenAt: timeStr(a.LastSeenAt), MaxConcurrency: a.MaxConcurrent, Runtime: a.Runtime, CreatedAt: a.CreatedAt}
+	return AgentV{ID: a.ID, Name: a.Name, Owner: r.must(a.OwnerMemberID), Shared: a.Shared, Capabilities: a.Capabilities, Grants: grants, Online: a.Online(now), LastSeenAt: timeStr(a.LastSeenAt), MaxConcurrency: a.MaxConcurrent, Runtime: a.Runtime, CreatedAt: a.CreatedAt, CanManage: canManage}
 }
 
 type AgentInputV struct {
@@ -419,13 +448,67 @@ type GoalInputV struct {
 	OwnerID      *string  `json:"owner_id"`
 	ParentID     *string  `json:"parent_id"`
 	TeamID       *string  `json:"team_id"`
-	Budget       *float64 `json:"budget"`
-	PlannedStart *Date    `json:"planned_start"`
-	PlannedEnd   *Date    `json:"planned_end"`
-	Deadline     *Date    `json:"deadline"`
+	Budget       OptFloat `json:"budget"`        // null 表示清空
+	PlannedStart OptDate  `json:"planned_start"` // 修改时 null / "" 表示清空
+	PlannedEnd   OptDate  `json:"planned_end"`
+	Deadline     OptDate  `json:"deadline"`
 	Achieved     *bool    `json:"achieved"`
 	// "active" | "abandoned"：放弃目标 / 重新开始（"achieved" 请用 achieved 字段）
 	Status *string `json:"status"`
+}
+
+// toUpdate 把接口层的目标输入换成应用层的修改输入：null / "" 的日期与 null 的预算表示清空；
+// 计划结束同时也是截止日（与创建时一致），显式带了 deadline 时以 deadline 为准。
+func (in GoalInputV) toUpdate() (app.UpdateGoalInput, error) {
+	ui := app.UpdateGoalInput{Title: in.Title, Description: in.Description, OwnerMemberID: in.OwnerID, TeamID: in.TeamID, ParentID: in.ParentID}
+	if in.Budget.Set {
+		if in.Budget.V == nil {
+			ui.Clear = append(ui.Clear, "budget")
+		} else {
+			ui.Budget = in.Budget.V
+		}
+	}
+	if in.PlannedStart.Set {
+		if in.PlannedStart.T == nil {
+			ui.Clear = append(ui.Clear, "planned_start")
+		}
+		ui.PlannedStart = in.PlannedStart.T
+	}
+	if in.PlannedEnd.Set {
+		if in.PlannedEnd.T == nil {
+			ui.Clear = append(ui.Clear, "planned_end", "deadline")
+		}
+		ui.PlannedEnd, ui.Deadline = in.PlannedEnd.T, in.PlannedEnd.T
+	}
+	if in.Deadline.Set {
+		if in.Deadline.T == nil {
+			ui.Clear = append(ui.Clear, "deadline")
+		} else {
+			ui.Clear = removeStr(ui.Clear, "deadline")
+		}
+		ui.Deadline = in.Deadline.T
+	}
+	if in.Achieved != nil {
+		st := domain.GoalActive
+		if *in.Achieved {
+			st = domain.GoalAchieved
+		}
+		ui.Status = &st
+	}
+	if in.Status != nil {
+		// 只开放「放弃」与「重新开始」；达成走 achieved 字段，草稿不从这里改
+		switch *in.Status {
+		case string(domain.GoalAbandoned):
+			st := domain.GoalAbandoned
+			ui.Status = &st
+		case string(domain.GoalActive):
+			st := domain.GoalActive
+			ui.Status = &st
+		default:
+			return ui, app.Bad("err.goal_status", *in.Status)
+		}
+	}
+	return ui, nil
 }
 
 // ---------- 任务 ----------
@@ -676,14 +759,23 @@ type TaskInputV struct {
 	Participants         map[string]string `json:"participants"`
 	RequiredCapabilities []string          `json:"required_capabilities"`
 	HumanOnly            *bool             `json:"human_only"`
-	PlannedStart         *Date             `json:"planned_start"`
-	PlannedEnd           *Date             `json:"planned_end"`
-	Estimate             *float64          `json:"estimate"`
+	PlannedStart         OptDate           `json:"planned_start"` // 修改时 null / "" 表示清空
+	PlannedEnd           OptDate           `json:"planned_end"`
+	Estimate             OptFloat          `json:"estimate"` // 与 estimate_hours 等价；null 表示清空
+	EstimateHours        OptFloat          `json:"estimate_hours"`
 	Priority             *string           `json:"priority"`
 	Fields               map[string]any    `json:"fields"`
 	Points               OptInt            `json:"points"`
 	SprintID             *string           `json:"sprint_id"`
 	Ready                *bool             `json:"ready"`
+}
+
+// estimate 取 estimate 与 estimate_hours 里带了的那个（两者等价）。
+func (in TaskInputV) estimate() OptFloat {
+	if in.Estimate.Set {
+		return in.Estimate
+	}
+	return in.EstimateHours
 }
 
 func str(p *string) string {
@@ -695,7 +787,7 @@ func str(p *string) string {
 
 func (in TaskInputV) toCreate() app.CreateTaskInput {
 	out := app.CreateTaskInput{GoalID: str(in.GoalID), ParentID: str(in.ParentID), TypeName: str(in.Type), Title: str(in.Title), Description: str(in.Description), AssigneeID: str(in.AssigneeID), ReviewerID: str(in.ReviewerID),
-		Participants: in.Participants, RequiredCapabilities: in.RequiredCapabilities, EstimateHours: in.Estimate, Fields: in.Fields, Ready: true, Points: in.Points.V, SprintID: str(in.SprintID)}
+		Participants: in.Participants, RequiredCapabilities: in.RequiredCapabilities, EstimateHours: in.estimate().V, Fields: in.Fields, Ready: true, Points: in.Points.V, SprintID: str(in.SprintID)}
 	if in.HumanOnly != nil {
 		out.HumanOnly = *in.HumanOnly
 	}
@@ -707,26 +799,44 @@ func (in TaskInputV) toCreate() app.CreateTaskInput {
 			out.Priority = &p
 		}
 	}
-	if in.PlannedStart != nil {
+	if in.PlannedStart.Set {
 		out.PlannedStart = in.PlannedStart.T
 	}
-	if in.PlannedEnd != nil {
+	if in.PlannedEnd.Set {
 		out.PlannedEnd = in.PlannedEnd.T
 	}
 	return out
 }
 
 func (in TaskInputV) toUpdate() app.UpdateTaskInput {
-	out := app.UpdateTaskInput{Title: in.Title, Description: in.Description, ReviewerID: in.ReviewerID, EstimateHours: in.Estimate, HumanOnly: in.HumanOnly, GoalID: in.GoalID, Participants: in.Participants, Fields: in.Fields, Points: in.Points.V, SetPoints: in.Points.Set, SprintID: in.SprintID}
+	out := app.UpdateTaskInput{Title: in.Title, Description: in.Description, ReviewerID: in.ReviewerID, HumanOnly: in.HumanOnly, GoalID: in.GoalID, ParentID: in.ParentID,
+		Participants: in.Participants, Fields: in.Fields, Points: in.Points.V, SetPoints: in.Points.Set, SprintID: in.SprintID}
+	if in.RequiredCapabilities != nil {
+		caps := in.RequiredCapabilities
+		out.RequiredCapabilities = &caps
+	}
+	if est := in.estimate(); est.Set {
+		if est.V == nil {
+			out.Clear = append(out.Clear, "estimate_hours")
+		} else {
+			out.EstimateHours = est.V
+		}
+	}
 	if in.Priority != nil {
 		if p, ok := priorityValues[*in.Priority]; ok {
 			out.Priority = &p
 		}
 	}
-	if in.PlannedStart != nil {
+	if in.PlannedStart.Set {
+		if in.PlannedStart.T == nil {
+			out.Clear = append(out.Clear, "planned_start")
+		}
 		out.PlannedStart = in.PlannedStart.T
 	}
-	if in.PlannedEnd != nil {
+	if in.PlannedEnd.Set {
+		if in.PlannedEnd.T == nil {
+			out.Clear = append(out.Clear, "planned_end")
+		}
 		out.PlannedEnd = in.PlannedEnd.T
 	}
 	return out
@@ -1107,6 +1217,10 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 		return i18n.Trf(loc, "ev.GoalCreated", who, s("title"))
 	case "GoalUpdated":
 		return i18n.Trf(loc, "ev.GoalUpdated", who)
+	case "GoalFieldChanged":
+		return fieldChangeSummary(e, r, loc, who, "goal", i18n.Trf(loc, "ev.obj.goal", s("title")))
+	case "TaskFieldChanged":
+		return fieldChangeSummary(e, r, loc, who, "task", i18n.Trf(loc, "ev.obj.task", task))
 	case "MilestoneCreated", "MilestoneUpdated", "MilestoneReached", "MilestoneUnreached", "MilestoneDeleted":
 		var due any = s("due_on")
 		if t, err := time.ParseInLocation("2006-01-02", s("due_on"), time.Local); err == nil {
@@ -1125,6 +1239,8 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 		return i18n.Trf(loc, "ev.TaskTypeSaved", who, s("name"))
 	case "MemberInvited":
 		return i18n.Trf(loc, "ev.MemberInvited", who, s("email"))
+	case "InvitationRevoked":
+		return i18n.Trf(loc, "ev.InvitationRevoked", who, s("email"))
 	case "OrgSettingsUpdated":
 		return i18n.Trf(loc, "ev.OrgSettingsUpdated", who, i18n.Tr(loc, "visibility."+s("collaboration_visibility")), i18n.Tr(loc, "visibility."+s("finance_visibility")))
 	case "WorkspaceLayoutUpdated":
@@ -1164,6 +1280,68 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 		return i18n.Trf(loc, "ev.TeamBoundaryOff", who, s("name"))
 	case "MemberJoined":
 		return i18n.Trf(loc, "ev.MemberJoined", who)
+	case "TeamDeactivated":
+		if manual, _ := e.Data["manual"].(bool); manual {
+			return i18n.Trf(loc, "ev.TeamDeactivatedManual", who, s("name"))
+		}
+		return i18n.Trf(loc, "ev.TeamDeactivated", who, s("name"))
+	case "TeamMoved":
+		if s("parent_id") == "" {
+			return i18n.Trf(loc, "ev.TeamMovedTop", who, s("name"))
+		}
+		return i18n.Trf(loc, "ev.TeamMoved", who, s("name"), s("parent_name"))
+	case "MemberSynced", "MemberUpdated", "MemberDeactivated", "MemberActivated", "MemberReactivated", "MemberImported", "MemberTeamCleared", "TeamReactivated":
+		return i18n.Trf(loc, "ev."+e.Type, who, s("name"))
+	case "MemberRenamed":
+		return i18n.Trf(loc, "ev.MemberRenamed", who, s("from"), s("name"))
+	case "MemberRolesChanged":
+		var titles []string
+		if names, ok := e.Data["roles"].([]any); ok {
+			for _, n := range names {
+				titles = append(titles, roleTitle(roles, textOf(n, loc), loc))
+			}
+		}
+		if len(titles) == 0 {
+			return i18n.Trf(loc, "ev.MemberRolesCleared", who, s("name"))
+		}
+		return i18n.Trf(loc, "ev.MemberRolesChanged", who, s("name"), titles)
+	case "MemberTeamChanged":
+		if s("mode") == "add" {
+			return i18n.Trf(loc, "ev.MemberTeamAdded", who, s("name"), s("team_name"))
+		}
+		return i18n.Trf(loc, "ev.MemberTeamChanged", who, s("name"), s("team_name"))
+	case "TeamMerged", "MemberMerged":
+		return i18n.Trf(loc, "ev."+e.Type, who, s("name"), s("into_name"))
+	case "DirectoryDecided":
+		ext := s("external_name")
+		if ext == "" {
+			ext = s("external_id")
+		}
+		switch s("decision") {
+		case "merge":
+			return i18n.Trf(loc, "ev.DirectoryDecidedMerge", who, ext, s("local_name"))
+		case "create":
+			return i18n.Trf(loc, "ev.DirectoryDecidedCreate", who, ext)
+		case "skip":
+			return i18n.Trf(loc, "ev.DirectoryDecidedSkip", who, ext)
+		}
+		return i18n.Trf(loc, "ev.DirectoryDecidedReconsider", who, ext)
+	case "DirectoryUnbound":
+		return i18n.Trf(loc, "ev.DirectoryUnbound", who, s("name"))
+	case "DirectoryConfigured":
+		return i18n.Trf(loc, "ev.DirectoryConfigured", who, app.SourceTitle(s("provider"), loc))
+	case "DirectoryDetached":
+		return i18n.Trf(loc, "ev.DirectoryDetached", who, s("name"), app.SourceTitle(s("old_provider"), loc))
+	case "DirectorySyncRan":
+		if s("status") == "failed" {
+			return i18n.Trf(loc, "ev.DirectorySyncFailed", s("error"))
+		}
+		n := func(k string) int { v, _ := numOf(e.Data[k]); return v }
+		out := i18n.Trf(loc, "ev.DirectorySyncRan", n("added_teams"), n("added_members"), n("updated_teams"), n("updated_members"), n("deactivated_teams"), n("deactivated_members"))
+		if k := n("errors"); k > 0 {
+			out += i18n.Trf(loc, "ev.DirectorySyncErrors", k)
+		}
+		return out
 	case "SprintCreated", "SprintUpdated", "SprintStarted":
 		return i18n.Trf(loc, "ev."+e.Type, who, s("name"))
 	case "SprintClosed":
@@ -1178,20 +1356,168 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 		}
 		return i18n.Trf(loc, "ev.PointsCleared", who, task)
 	case "ProposalCreated":
-		return i18n.Trf(loc, "ev.ProposalCreated", who, s("summary"))
+		return i18n.Trf(loc, "ev.ProposalCreated", who, proposalSummary(s("summary")))
 	case "ProposalApproved", "ProposalRejected":
 		agent := s("agent_id")
 		if a := r.get(agent); a != nil {
 			agent = a.Name
 		}
 		if e.Type == "ProposalRejected" {
-			return i18n.Trf(loc, "ev.ProposalRejected", who, agent, s("summary"), s("reason"))
+			return i18n.Trf(loc, "ev.ProposalRejected", who, agent, proposalSummary(s("summary")), s("reason"))
 		}
-		return i18n.Trf(loc, "ev.ProposalApproved", who, agent, s("summary"))
+		return i18n.Trf(loc, "ev.ProposalApproved", who, agent, proposalSummary(s("summary")))
 	case "ProposalExpired":
-		return i18n.Trf(loc, "ev.ProposalExpired", s("summary"))
+		return i18n.Trf(loc, "ev.ProposalExpired", proposalSummary(s("summary")))
 	}
 	return i18n.Trf(loc, "ev.generic", who, e.Type)
+}
+
+// fieldChangeSummary 把一条就地编辑动态（GoalFieldChanged / TaskFieldChanged）渲染成一句话：
+// 「某人 把目标「X」的负责人从「李明」改成了「王芳」」。数据里 field 是字段名，from / to 是旧值新值，
+// 引用类字段另带 from_title / to_title（当时的名字）。kind 是 goal | task，object 是「目标「X」」/「任务「X」」。
+func fieldChangeSummary(e *store.EventRow, r refs, loc i18n.Locale, who, kind, object string) string {
+	d := e.Data
+	field, _ := d["field"].(string)
+	str := func(v any) string {
+		switch x := v.(type) {
+		case nil:
+			return ""
+		case string:
+			return x
+		case float64:
+			return i18n.Number(x)
+		case bool:
+			if x {
+				return "true"
+			}
+			return "false"
+		}
+		return textOf(v, loc)
+	}
+	// 引用类字段的名字：优先动态里记下的名字，其次现在的执行者索引，最后原 ID
+	name := func(idKey, titleKey string) string {
+		if v, ok := d[titleKey]; ok && v != nil {
+			switch x := v.(type) {
+			case []any:
+				parts := make([]string, 0, len(x))
+				for _, item := range x {
+					parts = append(parts, textOf(item, loc))
+				}
+				return strings.Join(parts, i18n.Tr(loc, "sep.list"))
+			default:
+				if t := textOf(x, loc); t != "" {
+					return t
+				}
+			}
+		}
+		id := str(d[idKey])
+		if a := r.get(id); a != nil {
+			return a.Name
+		}
+		return id
+	}
+	date := func(v any) any {
+		if t, err := time.ParseInLocation("2006-01-02", str(v), time.Local); err == nil {
+			return i18n.Date(t)
+		}
+		return str(v)
+	}
+	label := i18n.Tr(loc, "field."+field)
+	from, to := d["from"], d["to"]
+	// 空列表（所需能力清空）等同于「没有」
+	if arr, ok := from.([]any); ok && len(arr) == 0 {
+		from = nil
+	}
+	if arr, ok := to.([]any); ok && len(arr) == 0 {
+		to = nil
+	}
+	// 值的呈现：quoted 为真时套引号（名字、文字），否则裸写（日期、数字、金额）
+	var fromS, toS string
+	quoted := true
+	switch field {
+	case "title":
+		return i18n.Trf(loc, "ev.fc.title", who, i18n.Tr(loc, "ev.kind."+kind), str(from), str(to))
+	case "description":
+		return i18n.Trf(loc, "ev.fc.description", who, object)
+	case "parent_id":
+		fromN, toN := name("from", "from_title"), name("to", "to_title")
+		switch {
+		case to == nil || toN == "":
+			return i18n.Trf(loc, "ev.fc.parent_top", who, object)
+		case from == nil || fromN == "":
+			return i18n.Trf(loc, "ev.fc.parent_set", who, object, toN)
+		default:
+			return i18n.Trf(loc, "ev.fc.parent_moved", who, object, fromN, toN)
+		}
+	case "human_only":
+		if on, _ := to.(bool); on {
+			return i18n.Trf(loc, "ev.fc.human_only_on", who, object)
+		}
+		return i18n.Trf(loc, "ev.fc.human_only_off", who, object)
+	case "status":
+		switch {
+		case str(to) == string(domain.GoalAchieved):
+			return i18n.Trf(loc, "ev.fc.status.achieved", who, object)
+		case str(to) == string(domain.GoalAbandoned):
+			return i18n.Trf(loc, "ev.fc.status.abandoned", who, object)
+		case str(to) == string(domain.GoalActive) && str(from) == string(domain.GoalAbandoned):
+			return i18n.Trf(loc, "ev.fc.status.resumed", who, object)
+		case str(to) == string(domain.GoalActive) && str(from) == string(domain.GoalAchieved):
+			return i18n.Trf(loc, "ev.fc.status.unachieved", who, object)
+		}
+		fromS, toS = i18n.Tr(loc, "goal.status."+str(from)), i18n.Tr(loc, "goal.status."+str(to))
+	case "owner_member_id", "team_id", "reviewer_id", "goal_id", "required_capabilities", "participants":
+		fromS, toS = name("from", "from_title"), name("to", "to_title")
+		if field == "participants" {
+			label = textOf(d["label"], loc)
+		}
+	case "fields":
+		label = i18n.Trf(loc, "ev.fc.custom_label", str(d["key"]))
+		fromS, toS = str(from), str(to)
+	case "priority":
+		fromS, toS = i18n.Tr(loc, "priority."+str(from)), i18n.Tr(loc, "priority."+str(to))
+	case "deadline", "planned_start", "planned_end":
+		quoted = false
+		fromS, toS = i18n.Arg(loc, date(from)).(string), i18n.Arg(loc, date(to)).(string)
+	case "budget":
+		quoted = false
+		cur := str(d["currency"])
+		if f, ok := from.(float64); ok {
+			fromS = i18n.Money{Amount: f, Currency: cur}.Render(loc)
+		}
+		if f, ok := to.(float64); ok {
+			toS = i18n.Money{Amount: f, Currency: cur}.Render(loc)
+		}
+	case "estimate_hours":
+		quoted = false
+		if f, ok := from.(float64); ok {
+			fromS = i18n.Trf(loc, "unit.hours", i18n.Number(f))
+		}
+		if f, ok := to.(float64); ok {
+			toS = i18n.Trf(loc, "unit.hours", i18n.Number(f))
+		}
+	case "progress_override":
+		quoted = false
+		if f, ok := from.(float64); ok {
+			fromS = i18n.Number(f) + "%"
+		}
+		if f, ok := to.(float64); ok {
+			toS = i18n.Number(f) + "%"
+		}
+	default:
+		fromS, toS = str(from), str(to)
+	}
+	suffix := ""
+	if quoted {
+		suffix = "_q"
+	}
+	switch {
+	case toS == "" && to == nil:
+		return i18n.Trf(loc, "ev.fc.cleared", who, object, label)
+	case fromS == "" && from == nil:
+		return i18n.Trf(loc, "ev.fc.set"+suffix, who, object, label, toS)
+	}
+	return i18n.Trf(loc, "ev.fc.changed"+suffix, who, object, label, fromS, toS)
 }
 
 // approvalNote 是被确认后执行的动态尾巴：「经<确认人>确认」。
@@ -1391,4 +1717,9 @@ func loadView(x app.LoadRow) LoadV {
 	return LoadV{Executor: ExecutorRef{ID: x.ExecutorID, Kind: x.Kind, Name: x.Name}, Team: x.Team, TeamID: nullable(x.TeamID),
 		OpenTasks: x.OpenTasks, ActiveTasks: x.ActiveTasks, PointsOpen: x.PointsOpen, PlannedHoursThisWeek: x.PlannedHoursThisWeek,
 		Overdue: x.Overdue, CapacityHint: x.CapacityHint, ActiveRuns: x.ActiveRuns, MaxConcurrent: x.MaxConcurrent, Online: x.Online}
+}
+
+// proposalSummary 去掉待确认操作摘要句末的句号：摘要本身是一句完整的话，嵌进动态句子里时由模板负责标点，避免出现「。。」。
+func proposalSummary(sum string) string {
+	return strings.TrimRight(strings.TrimSpace(sum), "。.")
 }

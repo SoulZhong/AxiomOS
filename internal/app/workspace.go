@@ -12,14 +12,18 @@ import (
 	"github.com/teemo/axiomos/internal/store"
 )
 
-// 工作台（ADR 0015）：首页由区块按顺序组成。解析顺序：个人微调 → 各角色布局并集（按成员的
-// 角色顺序、首次出现去重）→ 默认（组织负责人全局视角，其他人执行视角）。
+// 工作台（ADR 0015）：首页由区块摆在 12 栏网格上组成，每块带坐标与宽高（补记三）。解析顺序：个人微调 →
+// 各角色布局并集（按成员的角色顺序、首次出现去重，撞格的重新排布后压实）→ 默认（组织负责人全局视角，其他人执行视角）。
 // 布局按角色配是组织的管理策略；区块与预设的集合是系统定义的（ADR 0014）。
 
 // WorkspaceBlock 是已解析工作台里的一个区块。
 type WorkspaceBlock struct {
 	Key   string `json:"key"`
 	Title string `json:"title"`
+	X     int    `json:"x"` // 左上角所在栏（0 起），X+W ≤ 12
+	Y     int    `json:"y"` // 左上角所在行（0 起）
+	W     int    `json:"w"` // 宽度（栏），该区块 min_w…12
+	H     int    `json:"h"` // 高度（行），1…6，行高单位约 120px
 }
 
 // Workspace 是某个人已解析好的工作台。
@@ -35,14 +39,17 @@ type BlockInfo struct {
 	Key         string `json:"key"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	DefaultW    int    `json:"default_w"`
+	DefaultH    int    `json:"default_h"`
+	MinW        int    `json:"min_w"`
 }
 
 // PresetInfo 是目录里的一个预设。
 type PresetInfo struct {
-	Key         string   `json:"key"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Blocks      []string `json:"blocks"`
+	Key         string               `json:"key"`
+	Title       string               `json:"title"`
+	Description string               `json:"description"`
+	Blocks      []domain.LayoutBlock `json:"blocks"`
 }
 
 // WorkspaceCatalogView 是全部区块与预设。
@@ -53,18 +60,18 @@ type WorkspaceCatalogView struct {
 
 // RoleLayoutView 是组织设置里一个角色的布局。没有配置时 Blocks 是解析出来的默认值，Preset 为 null。
 type RoleLayoutView struct {
-	Role        string   `json:"role"`
-	RoleTitle   string   `json:"role_title"`
-	Blocks      []string `json:"blocks"`
-	Preset      *string  `json:"preset"`
-	MemberCount int      `json:"member_count"`
+	Role        string               `json:"role"`
+	RoleTitle   string               `json:"role_title"`
+	Blocks      []domain.LayoutBlock `json:"blocks"`
+	Preset      *string              `json:"preset"`
+	MemberCount int                  `json:"member_count"`
 }
 
-func blockTitles(keys []string, loc i18n.Locale) []WorkspaceBlock {
-	out := make([]WorkspaceBlock, 0, len(keys))
-	for _, k := range keys {
-		b, _ := domain.BlockByKey(k)
-		out = append(out, WorkspaceBlock{Key: k, Title: b.Title.In(loc)})
+func blockTitles(blocks []domain.LayoutBlock, loc i18n.Locale) []WorkspaceBlock {
+	out := make([]WorkspaceBlock, 0, len(blocks))
+	for _, lb := range blocks {
+		b, _ := domain.BlockByKey(lb.Key)
+		out = append(out, WorkspaceBlock{Key: lb.Key, Title: b.Title.In(loc), X: lb.X, Y: lb.Y, W: lb.W, H: lb.H})
 	}
 	return out
 }
@@ -90,7 +97,7 @@ func (a *App) resolveFor(ctx context.Context, tx pgx.Tx, sess *Session, memberID
 	if err != nil {
 		return nil, err
 	}
-	var personal []string
+	var personal []domain.LayoutBlock
 	if pl, err := a.Store.MemberLayout(ctx, tx, memberID); err == nil {
 		personal = pl.Blocks
 	} else if err != store.ErrNotFound {
@@ -104,7 +111,7 @@ func (a *App) resolveFor(ctx context.Context, tx pgx.Tx, sess *Session, memberID
 	for _, l := range layouts {
 		byRole[l.RoleName] = l
 	}
-	var roleLayouts [][]string
+	var roleLayouts [][]domain.LayoutBlock
 	var used []string
 	for _, r := range m.Roles {
 		if l := byRole[r]; l != nil && len(l.Blocks) > 0 {
@@ -133,25 +140,25 @@ func (a *App) MyWorkspace(ctx context.Context, sess *Session) (*Workspace, error
 	return out, err
 }
 
-// SetMyWorkspace 保存个人微调，只影响自己。
-func (a *App) SetMyWorkspace(ctx context.Context, sess *Session, blocks []string) (*Workspace, error) {
+// SetMyWorkspace 保存个人微调，只影响自己。rawBlocks 接受 []string、[]domain.LayoutBlock 或 JSON 解出的 []any
+// （缺省宽高取目录默认值，缺 x / y 的按顺序致密排布，落库前纵向压实），见 domain.NormalizeLayout。
+func (a *App) SetMyWorkspace(ctx context.Context, sess *Session, rawBlocks any) (*Workspace, error) {
 	if err := requireHuman(sess); err != nil {
 		return nil, err
 	}
-	blocks = domain.DropRetiredBlocks(blocks) // 已移除的区块（proposals）不再落库
-	if err := domain.ValidateBlocks(blocks); err != nil {
+	blocks, err := domain.NormalizeLayout(rawBlocks) // 已移除的区块（proposals）在这里被丢掉，不再落库
+	if err != nil {
 		return nil, blocksError(err)
 	}
 	var out *Workspace
-	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+	err = a.tx(ctx, sess, func(tx pgx.Tx) error {
 		if err := a.Store.PutMemberLayout(ctx, tx, sess.OrgID, sess.MemberID, blocks); err != nil {
 			return err
 		}
 		if err := a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "WorkspaceLayoutUpdated", ActorID: sess.Actor.ID, At: time.Now(),
-			Data: map[string]any{"target": "member", "member": sess.MemberID, "blocks": blocks}}}); err != nil {
+			Data: map[string]any{"target": "member", "member": sess.MemberID, "blocks": domain.LayoutKeys(blocks)}}}); err != nil {
 			return err
 		}
-		var err error
 		out, err = a.resolveFor(ctx, tx, sess, sess.MemberID)
 		return err
 	})
@@ -184,10 +191,10 @@ func (a *App) WorkspaceCatalog(sess *Session) *WorkspaceCatalogView {
 	loc := sess.Loc()
 	out := &WorkspaceCatalogView{Blocks: []BlockInfo{}, Presets: []PresetInfo{}}
 	for _, b := range domain.Blocks {
-		out.Blocks = append(out.Blocks, BlockInfo{Key: b.Key, Title: b.Title.In(loc), Description: b.Description.In(loc)})
+		out.Blocks = append(out.Blocks, BlockInfo{Key: b.Key, Title: b.Title.In(loc), Description: b.Description.In(loc), DefaultW: b.DefaultW, DefaultH: b.DefaultH, MinW: b.MinW})
 	}
 	for _, p := range domain.Presets {
-		out.Presets = append(out.Presets, PresetInfo{Key: p.Key, Title: p.Title.In(loc), Description: p.Description.In(loc), Blocks: append([]string{}, p.Blocks...)})
+		out.Presets = append(out.Presets, PresetInfo{Key: p.Key, Title: p.Title.In(loc), Description: p.Description.In(loc), Blocks: append([]domain.LayoutBlock{}, p.Blocks...)})
 	}
 	return out
 }
@@ -195,8 +202,8 @@ func (a *App) WorkspaceCatalog(sess *Session) *WorkspaceCatalogView {
 // roleLayoutView 组一个角色的布局视图；没有布局时区块取非负责人的默认预设，preset 为 null。
 func roleLayoutView(r *domain.Role, l *domain.WorkspaceLayout, memberCount int, loc i18n.Locale) RoleLayoutView {
 	v := RoleLayoutView{Role: r.Name, RoleTitle: r.Title.In(loc), MemberCount: memberCount}
-	if l != nil && len(domain.DropRetiredBlocks(l.Blocks)) > 0 {
-		v.Blocks = domain.DropRetiredBlocks(l.Blocks) // 旧布局里的 proposals 静默丢弃
+	if l != nil && len(domain.DropRetiredLayout(l.Blocks)) > 0 {
+		v.Blocks = domain.DropRetiredLayout(l.Blocks) // 旧布局里的 proposals 静默丢弃
 		if l.Preset != "" {
 			p := l.Preset
 			v.Preset = &p
@@ -204,7 +211,7 @@ func roleLayoutView(r *domain.Role, l *domain.WorkspaceLayout, memberCount int, 
 		return v
 	}
 	def, _ := domain.PresetByKey(domain.DefaultPreset(false))
-	v.Blocks = append([]string{}, def.Blocks...)
+	v.Blocks = append([]domain.LayoutBlock{}, def.Blocks...)
 	return v
 }
 
@@ -271,13 +278,17 @@ func (a *App) roleByName(ctx context.Context, tx pgx.Tx, name string) (*domain.R
 	return nil, NotFound("err.role_unknown", name)
 }
 
-// SetRoleWorkspace 给角色配布局：给 preset 就整套套用，给 blocks 就逐块配置，二者选一。需要「组织设置」权限。
-func (a *App) SetRoleWorkspace(ctx context.Context, sess *Session, role string, blocks []string, preset string) (*RoleLayoutView, error) {
+// SetRoleWorkspace 给角色配布局：给 preset 就整套套用（带预设的坐标与宽高），给 blocks 就逐块配置，二者选一。
+// rawBlocks 的形状同 SetMyWorkspace。需要「组织设置」权限。
+func (a *App) SetRoleWorkspace(ctx context.Context, sess *Session, role string, rawBlocks any, preset string) (*RoleLayoutView, error) {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return nil, err
 	}
 	preset = strings.TrimSpace(preset)
-	blocks = domain.DropRetiredBlocks(blocks) // 已移除的区块（proposals）不再落库
+	blocks, err := domain.ParseLayout(rawBlocks) // 已移除的区块（proposals）不再落库
+	if err != nil {
+		return nil, blocksError(err)
+	}
 	if (preset == "") == (len(blocks) == 0) {
 		return nil, Bad("err.workspace_body")
 	}
@@ -286,12 +297,14 @@ func (a *App) SetRoleWorkspace(ctx context.Context, sess *Session, role string, 
 		if !ok {
 			return nil, Bad("err.preset_unknown", preset)
 		}
-		blocks = append([]string{}, p.Blocks...)
-	} else if err := domain.ValidateBlocks(blocks); err != nil {
+		blocks = append([]domain.LayoutBlock{}, p.Blocks...)
+	} else if err := domain.ValidateLayout(blocks); err != nil {
 		return nil, blocksError(err)
+	} else {
+		blocks = domain.CompactLayout(blocks) // 存下去的布局没有纵向空洞
 	}
 	var out *RoleLayoutView
-	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+	err = a.tx(ctx, sess, func(tx pgx.Tx) error {
 		r, err := a.roleByName(ctx, tx, role)
 		if err != nil {
 			return err
@@ -300,7 +313,7 @@ func (a *App) SetRoleWorkspace(ctx context.Context, sess *Session, role string, 
 			return err
 		}
 		if err := a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "WorkspaceLayoutUpdated", ActorID: sess.Actor.ID, At: time.Now(),
-			Data: map[string]any{"target": "role", "role": role, "preset": preset, "blocks": blocks}}}); err != nil {
+			Data: map[string]any{"target": "role", "role": role, "preset": preset, "blocks": domain.LayoutKeys(blocks)}}}); err != nil {
 			return err
 		}
 		l, err := a.Store.RoleLayout(ctx, tx, role)
@@ -331,7 +344,7 @@ func (a *App) ClearRoleWorkspace(ctx context.Context, sess *Session, role string
 		}
 		// 不物理删除，而是留一条空布局作为"明确清除"的记录：解析时空布局等同于没有布局，
 		// 但 EnsureOrgDefaults 看到有记录就不会在下次启动时把内置预设重新填回来。
-		if err := a.Store.PutRoleLayout(ctx, tx, sess.OrgID, role, []string{}, ""); err != nil {
+		if err := a.Store.PutRoleLayout(ctx, tx, sess.OrgID, role, []domain.LayoutBlock{}, ""); err != nil {
 			return err
 		}
 		if err := a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "WorkspaceLayoutUpdated", ActorID: sess.Actor.ID, At: time.Now(),
@@ -369,7 +382,7 @@ func (a *App) ensureRoleLayoutDefaults(ctx context.Context, tx pgx.Tx, orgID str
 		if !ok {
 			continue
 		}
-		if err := a.Store.PutRoleLayout(ctx, tx, orgID, br.Name, append([]string{}, p.Blocks...), key); err != nil {
+		if err := a.Store.PutRoleLayout(ctx, tx, orgID, br.Name, append([]domain.LayoutBlock{}, p.Blocks...), key); err != nil {
 			return err
 		}
 	}

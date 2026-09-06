@@ -205,6 +205,16 @@ func writeErr(w http.ResponseWriter, r *http.Request, err error) {
 	writeJSON(w, 500, errBody(500, i18n.Tr(loc, "err.internal")))
 }
 
+func removeStr(list []string, s string) []string {
+	out := list[:0]
+	for _, x := range list {
+		if x != s {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 func decode(r *http.Request, v any) error {
 	if r.Body == nil {
 		return nil
@@ -365,16 +375,16 @@ func (s *Server) createGoal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	ci := app.CreateGoalInput{ParentID: str(in.ParentID), TeamID: str(in.TeamID), OwnerMemberID: str(in.OwnerID), Title: str(in.Title), Description: str(in.Description), Budget: in.Budget}
-	if in.PlannedStart != nil {
+	ci := app.CreateGoalInput{ParentID: str(in.ParentID), TeamID: str(in.TeamID), OwnerMemberID: str(in.OwnerID), Title: str(in.Title), Description: str(in.Description), Budget: in.Budget.V}
+	if in.PlannedStart.Set {
 		ci.PlannedStart = in.PlannedStart.T
 	}
-	if in.PlannedEnd != nil {
+	if in.PlannedEnd.Set {
 		ci.PlannedEnd = in.PlannedEnd.T
 	}
-	if in.Deadline != nil {
+	if in.Deadline.Set {
 		ci.Deadline = in.Deadline.T
-	} else if in.PlannedEnd != nil {
+	} else if in.PlannedEnd.Set {
 		ci.Deadline = in.PlannedEnd.T
 	}
 	g, err := s.App.CreateGoal(r.Context(), sessionOf(r), ci)
@@ -405,37 +415,10 @@ func (s *Server) updateGoal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	ui := app.UpdateGoalInput{Title: in.Title, Description: in.Description, OwnerMemberID: in.OwnerID, TeamID: in.TeamID, Budget: in.Budget}
-	if in.PlannedStart != nil {
-		ui.PlannedStart = in.PlannedStart.T
-	}
-	if in.PlannedEnd != nil {
-		ui.PlannedEnd = in.PlannedEnd.T
-		ui.Deadline = in.PlannedEnd.T
-	}
-	if in.Deadline != nil {
-		ui.Deadline = in.Deadline.T
-	}
-	if in.Achieved != nil {
-		st := domain.GoalActive
-		if *in.Achieved {
-			st = domain.GoalAchieved
-		}
-		ui.Status = &st
-	}
-	if in.Status != nil {
-		// 只开放「放弃」与「重新开始」；达成走 achieved 字段，草稿不从这里改
-		switch *in.Status {
-		case string(domain.GoalAbandoned):
-			st := domain.GoalAbandoned
-			ui.Status = &st
-		case string(domain.GoalActive):
-			st := domain.GoalActive
-			ui.Status = &st
-		default:
-			writeErr(w, r, app.Bad("err.goal_status", *in.Status))
-			return
-		}
+	ui, err := in.toUpdate()
+	if err != nil {
+		writeErr(w, r, err)
+		return
 	}
 	if _, err := s.App.UpdateGoal(r.Context(), sessionOf(r), r.PathValue("id"), ui); err != nil {
 		writeErr(w, r, err)
@@ -826,9 +809,10 @@ func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	sess := sessionOf(r)
 	views := []AgentV{}
 	for _, a := range out {
-		views = append(views, agentView(a, rf, now))
+		views = append(views, agentView(a, rf, now, sess.CanManageAgent(a)))
 	}
 	writeJSON(w, 200, views)
 }
@@ -845,7 +829,7 @@ func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rf, _ := s.refsFor(r)
-	writeJSON(w, 200, map[string]any{"agent": agentView(ag, rf, time.Now()), "token": token})
+	writeJSON(w, 200, map[string]any{"agent": agentView(ag, rf, time.Now(), true), "token": token})
 }
 
 func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
@@ -860,7 +844,7 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rf, _ := s.refsFor(r)
-	writeJSON(w, 200, agentView(ag, rf, time.Now()))
+	writeJSON(w, 200, agentView(ag, rf, time.Now(), true))
 }
 
 func (s *Server) revokeAgent(w http.ResponseWriter, r *http.Request) {

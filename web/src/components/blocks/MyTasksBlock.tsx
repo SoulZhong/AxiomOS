@@ -6,13 +6,14 @@ import { t } from "@/lib/i18n";
 import { useSession } from "@/components/AppShell";
 import { IconTask } from "@/components/icons";
 import { isOverdue, TaskTable } from "@/components/TaskTable";
-import { TableSkeleton, cx } from "@/components/ui";
-import { BlockPanel, type BlockProps } from "./BlockPanel";
+import { StateBadge } from "@/components/StateBadge";
+import { TableSkeleton, TaskLink, cx } from "@/components/ui";
+import { BlockPanel, CompactList, type BlockProps } from "./BlockPanel";
 
 const LIMIT = 10;
 
 /** 我的任务：我（含我的 Agent）名下未结束的任务，逾期的排前面；右上角读数是进行中 / 逾期 / 待验收的数量。 */
-export function MyTasksBlock({ index, title, noLink }: BlockProps) {
+export function MyTasksBlock({ index, title, noLink, compact, dense }: BlockProps) {
   const { session } = useSession();
   const currency = session?.organization.currency;
   const mine = useLoad(() => api.tasks.list({ assignee: "me" }), []);
@@ -28,6 +29,7 @@ export function MyTasksBlock({ index, title, noLink }: BlockProps) {
     <BlockPanel
       index={index}
       noLink={noLink}
+      compact={compact}
       icon={<IconTask />}
       title={title ?? t("block.my_tasks")}
       telemetry={
@@ -49,7 +51,16 @@ export function MyTasksBlock({ index, title, noLink }: BlockProps) {
       emptyText={t("home.noMine")}
       skeleton={<TableSkeleton rows={4} cols={5} />}
     >
-      <TaskTable tasks={open.slice(0, LIMIT)} currency={currency} showGoal={false} compact onChanged={mine.reload} />
+      {compact || dense ? (
+        <CompactList
+          dense={dense}
+          count={open.length}
+          label={<span className={cx(overdue > 0 && "text-danger")}>{t("block.my_tasks.compact", { n: overdue })}</span>}
+          rows={open.map((x) => ({ key: x.id, title: <TaskLink id={x.id} title={x.title} className="min-w-0 truncate" />, meta: <StateBadge state={x.state} showLabel={false} /> }))}
+        />
+      ) : (
+        <div className="overflow-x-auto"><TaskTable tasks={open.slice(0, LIMIT)} currency={currency} showGoal={false} compact onChanged={mine.reload} /></div>
+      )}
     </BlockPanel>
   );
 }

@@ -885,11 +885,27 @@ func (a *App) Events(ctx context.Context, sess *Session, taskID string, limit in
 		for _, t := range ix.filterTasks(scope, tasks) {
 			inScope[t.ID] = true
 		}
+		// 只挂目标、没挂任务的动态（目标创建、目标字段修改、里程碑）按目标的归属团队判断范围。
+		goals, err := a.Store.ListGoals(ctx, tx)
+		if err != nil {
+			return err
+		}
+		goalInScope := map[string]bool{}
+		for _, g := range filterGoals(scope, goals) {
+			goalInScope[g.ID] = true
+		}
 		for _, e := range rows {
-			// 没挂任务的动态（组织级）在收窄范围时不出现，避免串到别的团队去。
-			if e.TaskID != "" && inScope[e.TaskID] {
-				out = append(out, e)
+			switch {
+			case e.TaskID != "":
+				if inScope[e.TaskID] {
+					out = append(out, e)
+				}
+			case eventGoalID(e) != "":
+				if goalInScope[eventGoalID(e)] {
+					out = append(out, e)
+				}
 			}
+			// 既没挂任务也没挂目标的动态（组织级）在收窄范围时不出现，避免串到别的团队去。
 		}
 		return nil
 	})
@@ -926,4 +942,15 @@ func (a *App) Notifications(ctx context.Context, sess *Session, markRead bool) (
 		return nil
 	})
 	return out, err
+}
+
+// eventGoalID 取动态所属的目标 id（目标类动态把它放在 data.goal_id 里）。
+func eventGoalID(e *store.EventRow) string {
+	if e == nil || e.Data == nil {
+		return ""
+	}
+	if g, ok := e.Data["goal_id"].(string); ok {
+		return g
+	}
+	return ""
 }

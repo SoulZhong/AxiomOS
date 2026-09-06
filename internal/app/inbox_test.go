@@ -8,6 +8,7 @@ import (
 
 	"github.com/teemo/axiomos/internal/domain"
 	"github.com/teemo/axiomos/internal/i18n"
+	"time"
 )
 
 func mustNotes(t *testing.T, a *App, ctx context.Context, sess *Session) []*domain.Notification {
@@ -133,7 +134,9 @@ func TestInboxGroupsAndCounts(t *testing.T) {
 		}
 		switch g.Kind {
 		case InboxOverdue:
-			if g.Tasks[0].Task.ID != overdue.ID || g.Tasks[0].DaysOverdue != 3 {
+			// 期望值用与实现相同的口径算（本地日历日），dayp 用 UTC 截断，靠近本地零点时会差一天
+			wantDays := daysOverdue(overdue.PlannedEnd, startOfDay(time.Now()))
+			if g.Tasks[0].Task.ID != overdue.ID || g.Tasks[0].DaysOverdue != wantDays {
 				t.Fatalf("逾期组应是「逾期任务」并逾期 3 天，实际 %+v", g.Tasks[0])
 			}
 		case InboxProposals:
@@ -304,10 +307,10 @@ func TestWorkspaceDropsRetiredProposalsBlock(t *testing.T) {
 	a, ctx := testApp(t)
 	f := newWorkspaceOrg(t, a, ctx)
 	if err := a.Store.WithOrg(ctx, f.orgID, func(tx pgx.Tx) error {
-		if err := a.Store.PutRoleLayout(ctx, tx, f.orgID, "developer", []string{"proposals", "my_review", "events"}, ""); err != nil {
+		if err := a.Store.PutRoleLayout(ctx, tx, f.orgID, "developer", domain.SizedBlocks("proposals", "my_review", "events"), ""); err != nil {
 			return err
 		}
-		return a.Store.PutRoleLayout(ctx, tx, f.orgID, "tester", []string{"proposals"}, "")
+		return a.Store.PutRoleLayout(ctx, tx, f.orgID, "tester", domain.SizedBlocks("proposals"), "")
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +322,7 @@ func TestWorkspaceDropsRetiredProposalsBlock(t *testing.T) {
 		t.Fatalf("角色布局里的 proposals 应被丢弃: %+v", ws)
 	}
 	if err := a.Store.WithOrg(ctx, f.orgID, func(tx pgx.Tx) error {
-		return a.Store.PutMemberLayout(ctx, tx, f.orgID, f.dev.MemberID, []string{"proposals", "sprint"})
+		return a.Store.PutMemberLayout(ctx, tx, f.orgID, f.dev.MemberID, domain.SizedBlocks("proposals", "sprint"))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +337,7 @@ func TestWorkspaceDropsRetiredProposalsBlock(t *testing.T) {
 	}
 	for _, l := range layouts {
 		for _, b := range l.Blocks {
-			if b == "proposals" {
+			if b.Key == "proposals" {
 				t.Fatalf("角色 %s 的布局视图不应含 proposals", l.Role)
 			}
 		}

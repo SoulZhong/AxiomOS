@@ -1,6 +1,6 @@
 "use client";
 import { api, type OverviewPeriod, type TrendPoint } from "@/lib/api";
-import { fmtDate, parseDate } from "@/lib/format";
+import { fmtDate, fmtMoney, parseDate } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { financeHiddenText, useScopeState } from "@/lib/useScope";
@@ -8,11 +8,11 @@ import { useSession } from "@/components/AppShell";
 import { IconChart } from "@/components/icons";
 import { ThroughputBars } from "@/components/instruments/ThroughputBars";
 import { ScopeMoney } from "@/components/ScopePicker";
-import { ListSkeleton } from "@/components/ui";
-import { BlockPanel, type BlockProps } from "./BlockPanel";
+import { ListSkeleton, cx } from "@/components/ui";
+import { BigFigure, BlockPanel, type BlockProps } from "./BlockPanel";
 
 /** 趋势与环比：这一段时间的成本折线（配上一段的对比线）与吞吐柱状图。首页默认按月；组织概览页把自己的时间段传进来。 */
-export function TrendBlock({ index, title, noLink, period = "month" }: BlockProps & { period?: OverviewPeriod }) {
+export function TrendBlock({ index, title, noLink, compact, dense, w, period = "month" }: BlockProps & { period?: OverviewPeriod }) {
   const { session } = useSession();
   const currency = session?.organization.currency;
   const overview = useLoad(() => api.stats.overview(period), [period]);
@@ -21,6 +21,9 @@ export function TrendBlock({ index, title, noLink, period = "month" }: BlockProp
     <BlockPanel
       index={index}
       noLink={noLink}
+      compact={compact}
+      dense={dense}
+      padded={!compact && !dense}
       icon={<IconChart />}
       title={title ?? t("block.trend")}
       telemetry={data ? t("overview.prevRange", { from: fmtDate(data.prev_range.from), to: fmtDate(data.prev_range.to) }) : undefined}
@@ -32,7 +35,8 @@ export function TrendBlock({ index, title, noLink, period = "month" }: BlockProp
       emptyText={t("overview.noTrend")}
       skeleton={<ListSkeleton rows={4} />}
     >
-      {data && data.trend.length > 0 && <Trend trend={data.trend} prev={data.prev_trend} prevCost={data.totals.prev.cost} currency={currency} />}
+      {data && data.trend.length > 0 && (compact || dense) && <TrendFigure trend={data.trend} prevCost={data.totals.prev.cost} currency={currency} dense={dense} />}
+      {data && data.trend.length > 0 && !compact && !dense && <Trend trend={data.trend} prev={data.prev_trend} prevCost={data.totals.prev.cost} currency={currency} twoCols={(w ?? 12) >= 8} />}
     </BlockPanel>
   );
 }
@@ -42,7 +46,35 @@ function shortDate(iso: string): string {
   return d ? `${d.getMonth() + 1}/${d.getDate()}` : iso;
 }
 
-export function Trend({ trend, prev, prevCost, currency }: { trend: TrendPoint[]; prev?: TrendPoint[]; prevCost: number | null; currency?: string }) {
+/** 窄区块：这一段的成本合计一枚大数字 + 一条小折线，说明里给与上一段的差；1 行高时只有大数字。 */
+function TrendFigure({ trend, prevCost, currency, dense }: { trend: TrendPoint[]; prevCost: number | null; currency?: string; dense?: boolean }) {
+  const scope = useScopeState();
+  const cost = trend.map((p) => p.cost ?? 0);
+  const total = cost.reduce((s, x) => s + x, 0);
+  const done = trend.reduce((s, p) => s + p.done, 0);
+  const max = Math.max(...cost, 1);
+  if (!scope.financial) return <BigFigure label={t("overview.throughput")} value={done} sub={t("overview.trendDone")} dense={dense} />;
+  const diff = prevCost !== null ? total - prevCost : null;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <BigFigure
+        className="flex-none"
+        dense={dense}
+        label={t("overview.trendCost")}
+        value={<ScopeMoney value={total} currency={currency} />}
+        sub={`${t("overview.throughput")} ${done}${diff !== null ? ` · ${diff >= 0 ? "+" : "−"}${fmtMoney(Math.abs(diff), currency)}` : ""}`}
+      />
+      {!dense && (
+        <div className="min-h-0 flex-1 px-4 pb-3">
+          <LineChart series={cost} compare={null} max={max} height={48} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** twoCols = 区块够宽（≥ 8 栏）时成本折线与吞吐柱并排；否则上下排。 */
+export function Trend({ trend, prev, prevCost, currency, twoCols = true }: { trend: TrendPoint[]; prev?: TrendPoint[]; prevCost: number | null; currency?: string; twoCols?: boolean }) {
   const scope = useScopeState();
   const cost = trend.map((p) => p.cost ?? 0);
   // 上一段时间的对比线：后端给了 prev_trend 就照画，没给就用上一段的平均值画一条横线
@@ -50,7 +82,7 @@ export function Trend({ trend, prev, prevCost, currency }: { trend: TrendPoint[]
   const prevLabel = prev?.length === trend.length ? t("overview.prevLine") : t("overview.prevAverage");
   const max = Math.max(...cost, ...(prevSeries ?? [0]), 1);
   return (
-    <div className="grid gap-6 xl:grid-cols-2">
+    <div className={cx("grid gap-6", twoCols && "xl:grid-cols-2")}>
       <div className="min-w-0">
         <div className="mb-2 flex items-baseline justify-between gap-2">
           <span className="eyebrow text-ink-subtle">{t("overview.trendCost")}</span>
@@ -104,13 +136,13 @@ export function Trend({ trend, prev, prevCost, currency }: { trend: TrendPoint[]
 }
 
 /** 一条实线（本段）+ 一条淡线（上一段）。只画数据，不做动画。 */
-function LineChart({ series, compare, max }: { series: number[]; compare: number[] | null; max: number }) {
+function LineChart({ series, compare, max, height = 120 }: { series: number[]; compare: number[] | null; max: number; height?: number }) {
   const path = (xs: number[]) =>
     xs
       .map((v, i) => `${i === 0 ? "M" : "L"} ${((i / Math.max(1, xs.length - 1)) * 100).toFixed(2)} ${(38 - (v / max) * 36).toFixed(2)}`)
       .join(" ");
   return (
-    <svg width="100%" height={120} viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label={t("overview.trendCost")}>
+    <svg width="100%" height={height} viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label={t("overview.trendCost")}>
       <line x1="0" y1="2" x2="100" y2="2" stroke="var(--c-hairline)" strokeWidth={1} vectorEffect="non-scaling-stroke" strokeDasharray="3 3" />
       <line x1="0" y1="20" x2="100" y2="20" stroke="var(--c-hairline)" strokeWidth={1} vectorEffect="non-scaling-stroke" strokeDasharray="3 3" />
       <line x1="0" y1="38" x2="100" y2="38" stroke="var(--c-hairline)" strokeWidth={1} vectorEffect="non-scaling-stroke" />

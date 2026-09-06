@@ -94,21 +94,26 @@ func (a *App) CreateGoal(ctx context.Context, sess *Session, in CreateGoalInput)
 	return g, err
 }
 
-// UpdateGoalInput 是可改字段。
+// UpdateGoalInput 是可改字段。指针为 nil 表示不改；要清空可空字段（预算、截止日、计划起止、进度）时把字段名写进 Clear。
+// ParentID 指向空字符串表示提为顶级目标。
 type UpdateGoalInput struct {
 	Title            *string            `json:"title"`
 	Description      *string            `json:"description"`
 	Status           *domain.GoalStatus `json:"status"`
 	OwnerMemberID    *string            `json:"owner_member_id"`
 	TeamID           *string            `json:"team_id"`
+	ParentID         *string            `json:"parent_id"`
 	Budget           *float64           `json:"budget"`
 	Deadline         *time.Time         `json:"deadline"`
 	PlannedStart     *time.Time         `json:"planned_start"`
 	PlannedEnd       *time.Time         `json:"planned_end"`
 	ProgressOverride *int               `json:"progress_override"`
+	Clear            []string           `json:"clear,omitempty"` // budget | deadline | planned_start | planned_end | progress_override
 }
 
 // UpdateGoal 修改目标；只有目标负责人、上级目标负责人或组织负责人可以。
+// 每个真正变了的字段各记一条 GoalFieldChanged 动态（带旧值与新值），没有变化就不记。
+// 换上级（parent_id）时整棵子树跟着走：目标不能挂到自己或自己的子目标下面，上级必须在调用者看得到的范围里。
 func (a *App) UpdateGoal(ctx context.Context, sess *Session, id string, in UpdateGoalInput) (*domain.Goal, error) {
 	var g *domain.Goal
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
@@ -119,43 +124,165 @@ func (a *App) UpdateGoal(ctx context.Context, sess *Session, id string, in Updat
 		if !a.canEditGoal(ctx, tx, sess, cur) {
 			return Forbidden("err.goal_edit_forbidden")
 		}
-		if in.Title != nil {
+		org, err := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
+		if err != nil {
+			return err
+		}
+		var changes []fieldChange
+		if in.Title != nil && *in.Title != cur.Title {
+			if *in.Title == "" {
+				return Bad("err.title_required")
+			}
+			changes = append(changes, fieldChange{Field: "title", From: cur.Title, To: *in.Title})
 			cur.Title = *in.Title
 		}
-		if in.Description != nil {
+		if in.Description != nil && *in.Description != cur.Description {
+			changes = append(changes, fieldChange{Field: "description", From: cur.Description, To: *in.Description})
 			cur.Description = *in.Description
 		}
-		if in.Status != nil {
+		if in.Status != nil && *in.Status != cur.Status {
+			changes = append(changes, fieldChange{Field: "status", From: string(cur.Status), To: string(*in.Status)})
 			cur.Status = *in.Status
 		}
-		if in.OwnerMemberID != nil {
+		if in.OwnerMemberID != nil && *in.OwnerMemberID != cur.OwnerMemberID {
+			if *in.OwnerMemberID == "" {
+				return Bad("err.member_missing")
+			}
+			if _, err := a.Store.MemberByID(ctx, tx, *in.OwnerMemberID); err != nil {
+				return Bad("err.member_missing")
+			}
+			changes = append(changes, fieldChange{Field: "owner_member_id", From: cur.OwnerMemberID, To: *in.OwnerMemberID,
+				FromTitle: a.executorName(ctx, tx, cur.OwnerMemberID), ToTitle: a.executorName(ctx, tx, *in.OwnerMemberID)})
 			cur.OwnerMemberID = *in.OwnerMemberID
 		}
-		if in.TeamID != nil {
+		if in.TeamID != nil && *in.TeamID != cur.TeamID {
+			names, err := a.teamNames(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if *in.TeamID != "" && names[*in.TeamID] == "" {
+				return Bad("err.team_missing")
+			}
+			changes = append(changes, fieldChange{Field: "team_id", From: nilIfEmpty(cur.TeamID), To: nilIfEmpty(*in.TeamID),
+				FromTitle: names[cur.TeamID], ToTitle: names[*in.TeamID]})
 			cur.TeamID = *in.TeamID
 		}
-		if in.Budget != nil {
+		if in.ParentID != nil && *in.ParentID != cur.ParentID {
+			goals, err := a.Store.ListGoals(ctx, tx)
+			if err != nil {
+				return err
+			}
+			titles := map[string]string{}
+			for _, x := range goals {
+				titles[x.ID] = x.Title
+			}
+			if *in.ParentID != "" {
+				var parent *domain.Goal
+				for _, x := range goals {
+					if x.ID == *in.ParentID {
+						parent = x
+					}
+				}
+				if parent == nil {
+					return Bad("err.parent_goal_missing")
+				}
+				if parent.TeamID != "" && !sess.CanSeeCollabTeam(parent.TeamID) {
+					return Forbidden("err.parent_goal_hidden")
+				}
+				if parent.ID == cur.ID || goalDescendants(goals, cur.ID)[parent.ID] {
+					return Bad("err.goal_parent_cycle")
+				}
+			}
+			changes = append(changes, fieldChange{Field: "parent_id", From: nilIfEmpty(cur.ParentID), To: nilIfEmpty(*in.ParentID),
+				FromTitle: titles[cur.ParentID], ToTitle: titles[*in.ParentID]})
+			cur.ParentID = *in.ParentID
+		}
+		money := map[string]any{"currency": org.Currency}
+		switch {
+		case contains(in.Clear, "budget"):
+			if cur.Budget != nil {
+				changes = append(changes, fieldChange{Field: "budget", From: floatVal(cur.Budget), To: nil, Extra: money})
+				cur.Budget = nil
+			}
+		case in.Budget != nil && !sameFloat(in.Budget, cur.Budget):
+			changes = append(changes, fieldChange{Field: "budget", From: floatVal(cur.Budget), To: *in.Budget, Extra: money})
 			cur.Budget = in.Budget
 		}
-		if in.Deadline != nil {
-			cur.Deadline = in.Deadline
+		dates := []struct {
+			field string
+			cur   **time.Time
+			in    *time.Time
+		}{{"deadline", &cur.Deadline, in.Deadline}, {"planned_start", &cur.PlannedStart, in.PlannedStart}, {"planned_end", &cur.PlannedEnd, in.PlannedEnd}}
+		for _, d := range dates {
+			switch {
+			case contains(in.Clear, d.field):
+				if *d.cur != nil {
+					changes = append(changes, fieldChange{Field: d.field, From: dateVal(*d.cur), To: nil})
+					*d.cur = nil
+				}
+			case d.in != nil && !sameTime(d.in, *d.cur):
+				// 截止日在接口层会跟着计划结束一起送来；两者同值同变时只记计划结束这一条
+				if d.field == "deadline" && in.PlannedEnd != nil && in.PlannedEnd.Equal(*d.in) {
+					*d.cur = d.in
+					continue
+				}
+				changes = append(changes, fieldChange{Field: d.field, From: dateVal(*d.cur), To: dateVal(d.in)})
+				*d.cur = d.in
+			}
 		}
-		if in.PlannedStart != nil {
-			cur.PlannedStart = in.PlannedStart
-		}
-		if in.PlannedEnd != nil {
-			cur.PlannedEnd = in.PlannedEnd
-		}
-		if in.ProgressOverride != nil {
+		switch {
+		case contains(in.Clear, "progress_override"):
+			if cur.ProgressOverride != nil {
+				changes = append(changes, fieldChange{Field: "progress_override", From: *cur.ProgressOverride, To: nil})
+				cur.ProgressOverride = nil
+			}
+		case in.ProgressOverride != nil && (cur.ProgressOverride == nil || *cur.ProgressOverride != *in.ProgressOverride):
+			var from any
+			if cur.ProgressOverride != nil {
+				from = *cur.ProgressOverride
+			}
+			changes = append(changes, fieldChange{Field: "progress_override", From: from, To: *in.ProgressOverride})
 			cur.ProgressOverride = in.ProgressOverride
+		}
+		if len(changes) == 0 {
+			g = cur
+			return nil
 		}
 		if err := a.Store.UpdateGoal(ctx, tx, cur); err != nil {
 			return err
 		}
 		g = cur
-		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "GoalUpdated", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"goal_id": cur.ID}}})
+		base := map[string]any{"goal_id": cur.ID, "title": cur.Title}
+		events := make([]domain.Event, 0, len(changes))
+		for _, c := range changes {
+			events = append(events, c.event("GoalFieldChanged", sess, "", base))
+		}
+		return a.insertEvents(ctx, tx, sess, events)
 	})
 	return g, err
+}
+
+// goalDescendants 返回某个目标的全部子孙（不含自己）。
+func goalDescendants(goals []*domain.Goal, rootID string) map[string]bool {
+	children := map[string][]string{}
+	for _, g := range goals {
+		if g.ParentID != "" {
+			children[g.ParentID] = append(children[g.ParentID], g.ID)
+		}
+	}
+	out := map[string]bool{}
+	stack := []string{rootID}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, c := range children[id] {
+			if !out[c] {
+				out[c] = true
+				stack = append(stack, c)
+			}
+		}
+	}
+	return out
 }
 
 // DeleteGoal 删除一个目标。只有空目标（没有子目标、没有任务）才能删；有内容的目标应当「放弃」，

@@ -6,18 +6,19 @@ import { useSession } from "@/components/AppShell";
 import { ErrorBox, ListSkeleton, PageHeader, Panel } from "@/components/ui";
 import { BasicTab } from "./BasicTab";
 import { CapabilitiesTab } from "./CapabilitiesTab";
-import { InvitationsTab } from "./InvitationsTab";
-import { MembersTab } from "./MembersTab";
+import { DirectoryTab } from "./DirectoryTab";
+import { PeopleTab } from "./people/PeopleTab";
 import { PricingTab } from "./PricingTab";
 import { RolesTab } from "./RolesTab";
-import { TeamsTab } from "./TeamsTab";
 import { VisibilityTab } from "./VisibilityTab";
 import { WorkflowsTab } from "./WorkflowsTab";
 import { WorkspaceTab } from "./WorkspaceTab";
 
 // 「流程」原来是独立入口，按 DESIGN.md §10 并入组织设置（/task-types 跳到 ?tab=workflows）
-const TABS = ["basic", "visibility", "workspace", "members", "invitations", "roles", "teams", "capabilities", "pricing", "workflows"] as const;
+// 「成员」「团队」「邀请」三个页签按 DESIGN.md §16 合并为「成员与团队」（people）；旧地址仍能打开
+const TABS = ["basic", "visibility", "workspace", "people", "roles", "directory", "capabilities", "pricing", "workflows"] as const;
 type Tab = (typeof TABS)[number];
+const LEGACY: Record<string, Tab> = { members: "people", teams: "people", invitations: "people" };
 
 export default function SettingsPage() {
   const { session, canManageOrg } = useSession();
@@ -25,7 +26,8 @@ export default function SettingsPage() {
   const [tab, setTab] = useState<Tab | null>(null);
   // 「流程」对每个成员只读可见（改流程才要「管理流程」权限）；其余页签仍只给组织负责人 / 持有「组织设置」权限的人
   const visible: readonly Tab[] = canManageOrg ? TABS : ["workflows"];
-  const current: Tab = tab ?? (visible.includes(qTab as Tab) ? (qTab as Tab) : visible[0]);
+  const wanted = qTab ? (LEGACY[qTab] ?? qTab) : null;
+  const current: Tab = tab ?? (visible.includes(wanted as Tab) ? (wanted as Tab) : visible[0]);
 
   if (!session) return <Panel><ListSkeleton rows={4} /></Panel>;
   if (!visible.includes(current)) return <ErrorBox message={t("settings.forbidden")} />;
@@ -43,12 +45,11 @@ export default function SettingsPage() {
         </nav>
         <div className="min-w-0">
           {current === "basic" && <BasicTab />}
-          {current === "visibility" && <VisibilityTab onGoTeams={() => { setTab("teams"); window.history.replaceState(null, "", "?tab=teams"); }} />}
+          {current === "visibility" && <VisibilityTab onGoTeams={() => { setTab("people"); window.history.replaceState(null, "", "?tab=people"); }} />}
           {current === "workspace" && <WorkspaceTab />}
-          {current === "members" && <MembersTab />}
-          {current === "invitations" && <InvitationsTab />}
+          {current === "people" && <PeopleTab />}
           {current === "roles" && <RolesTab />}
-          {current === "teams" && <TeamsTab />}
+          {current === "directory" && <DirectoryTab />}
           {current === "capabilities" && <CapabilitiesTab />}
           {current === "pricing" && <PricingTab />}
           {current === "workflows" && <WorkflowsTab standalone={!canManageOrg} />}

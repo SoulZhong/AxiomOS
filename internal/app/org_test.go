@@ -52,7 +52,7 @@ func TestAdminOrgAndInvitationFlow(t *testing.T) {
 	}
 
 	// 邀请普通成员并接受，持有 analyst 角色后不能删该角色
-	inv, err := a.Invite(ctx, sess, slug+"-dev@t.local", "Dev", []string{"analyst"})
+	inv, err := a.Invite(ctx, sess, slug+"-dev@t.local", "Dev", []string{"analyst"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

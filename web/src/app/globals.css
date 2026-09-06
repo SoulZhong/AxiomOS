@@ -306,6 +306,8 @@
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-linear: linear;
+  /* 就地编辑的对勾闪现、控件悬停底色（DESIGN.md §15）：一档快时长 */
+  --motion-fast: 120ms;
 }
 
 html {
@@ -2074,5 +2076,627 @@ html[data-kbd] tr[data-motion] > td {
 @media (prefers-reduced-motion: reduce) {
   .sidebar {
     transition: none !important;
+  }
+}
+
+/* ---------- 工作台的自由布局（DESIGN.md §13，ADR 0015 补记三） ----------
+   12 栏网格、行高单位 120px、16px 间距，排布与拖动由 react-grid-layout 承担（v2），这里是它需要的最少规则
+   （对应 react-grid-layout/css/styles.css + react-resizable/css/styles.css 的精华），颜色、阴影、曲线全部换成本系统的 token。
+   - 吸附 / 让位 / 压实：transform、宽高 200ms --ease-in-out；拖动中与缩放中的那块不过渡；reduced-motion 即时到位。
+   - 拖动中的区块浮起（--fx-panel 之上再加一层投影 + 强调色描边）；占位符 = 12% 强调色 + 1px 虚线强调色边。
+   - 缩放把手：右边缘 / 下边缘 / 右下角，平时不可见，悬停区块时右 / 下边缘显现 2px 强调色线，右下角 8px 折角；
+     到 min_w 再往里拖时右边缘用危险色闪一下（200ms，一次）。
+   - 编辑态下区块本体不响应指针（按住任意位置就是拖动），链接 / 按钮 / 输入框除外（dragConfig.cancel）。 */
+.react-grid-layout {
+  position: relative;
+  transition: height 200ms var(--ease-in-out);
+}
+.react-grid-item {
+  transition: all 200ms var(--ease-in-out);
+  transition-property: left, top, width, height;
+}
+.react-grid-item.cssTransforms {
+  transition-property: transform, width, height;
+}
+.react-grid-item img {
+  pointer-events: none;
+  user-select: none;
+}
+.react-grid-item.resizing {
+  transition: none;
+  z-index: 1;
+  will-change: width, height;
+}
+.react-grid-item.react-draggable-dragging {
+  transition: none;
+  z-index: 3;
+  will-change: transform;
+  cursor: grabbing;
+}
+.react-grid-item.react-draggable-dragging > .hud,
+.react-grid-item.resizing > .hud {
+  border-color: var(--c-accent-border);
+  box-shadow:
+    var(--fx-panel),
+    0 0 0 1px var(--c-accent-border),
+    0 12px 32px color-mix(in srgb, var(--c-ink) 22%, transparent),
+    0 0 24px var(--c-accent-glow);
+}
+.react-grid-item.react-draggable-dragging > .hud {
+  opacity: 0.96;
+}
+.react-grid-item.react-grid-placeholder {
+  z-index: 2;
+  user-select: none;
+  border: 1px dashed var(--c-accent-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--c-accent) 12%, transparent);
+  transition-duration: 100ms;
+}
+.react-grid-item.react-grid-placeholder.placeholder-resizing {
+  transition: none;
+}
+.react-resizable-hide > .react-resizable-handle {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .react-grid-layout,
+  .react-grid-item,
+  .react-grid-item.react-grid-placeholder {
+    transition: none;
+  }
+}
+/* 格子：编辑态可聚焦（键盘移动 / 改大小），焦点环沿区块圆角 */
+.ws-cell {
+  min-width: 0;
+  border-radius: 8px;
+}
+.ws-cell[data-editing] {
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ws-cell:focus-visible {
+  outline: none;
+  box-shadow: var(--fx-focus);
+}
+.ws-cell:focus-visible > .hud {
+  border-color: var(--c-accent-border);
+}
+/* 编辑模式下区块本体不响应指针：按住任何位置都是拖动 */
+.ws-cell[data-editing] .ws-body {
+  pointer-events: none;
+}
+/* 缩放把手：把手本体是 12px 宽的透明命中区，跨在边缘上；::after 是那条 2px 线 */
+.ws-rz {
+  position: absolute;
+  z-index: 4;
+  touch-action: none;
+}
+.ws-rz::after {
+  content: "";
+  position: absolute;
+  border-radius: 2px;
+  background: var(--c-accent);
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+}
+.ws-rz-e {
+  top: 12px;
+  right: -6px;
+  bottom: 12px;
+  width: 12px;
+  cursor: ew-resize;
+}
+.ws-rz-e::after {
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+}
+.ws-rz-s {
+  right: 12px;
+  bottom: -6px;
+  left: 12px;
+  height: 12px;
+  cursor: ns-resize;
+}
+.ws-rz-s::after {
+  top: 5px;
+  right: 0;
+  left: 0;
+  height: 2px;
+}
+.ws-rz-se {
+  right: -6px;
+  bottom: -6px;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+}
+/* 右下角：8px 折角（两条 2px 线） */
+.ws-rz-se::after {
+  right: 5px;
+  bottom: 5px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--c-accent);
+  border-bottom: 2px solid var(--c-accent);
+  border-radius: 0 0 3px 0;
+  background: transparent;
+}
+.react-grid-item:hover > .ws-rz::after,
+.react-grid-item.resizing > .ws-rz::after,
+.ws-rz:hover::after {
+  opacity: 1;
+}
+.ws-rz:hover::after {
+  background: var(--c-accent-hover);
+}
+.ws-rz-se:hover::after {
+  border-color: var(--c-accent-hover);
+}
+/* 到 min_w 了还往里拖：右边缘用危险色闪一下 */
+@keyframes ws-min-flash {
+  0% {
+    opacity: 1;
+    background: var(--c-danger);
+    box-shadow: 0 0 8px var(--c-danger-border);
+  }
+  100% {
+    opacity: 1;
+    background: var(--c-accent);
+    box-shadow: none;
+  }
+}
+.ws-cell[data-flash] > .ws-rz-e::after {
+  animation: ws-min-flash 200ms var(--ease-out) both;
+}
+.ws-cell[data-flash] > .hud {
+  border-right-color: var(--c-danger-border);
+}
+/* 窄屏（< 1024px）：单栏纵向堆叠，16px 间距 */
+.ws-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+/* 加载骨架：还没拿到布局时用 CSS grid 摆三块占位 */
+.ws-grid-skeleton {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
+}
+.ws-skeleton {
+  grid-column: span 12;
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  .ws-skeleton {
+    grid-column: span var(--w, 12);
+  }
+}
+/* 「添加区块」瓦片：3 栏宽（= 3/12 减去间距），1 行高，虚线框；窄屏全宽 */
+.ws-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 120px;
+  border: 1px dashed var(--c-hairline-strong);
+  border-radius: 8px;
+  color: var(--c-ink-subtle);
+  background: transparent;
+  transition:
+    border-color 120ms var(--ease-out),
+    color 120ms var(--ease-out),
+    background-color 120ms var(--ease-out);
+}
+@media (min-width: 1024px) {
+  .ws-add {
+    width: calc((100% - 11 * 16px) / 12 * 3 + 2 * 16px);
+  }
+}
+.ws-add:hover {
+  border-color: var(--c-accent-border);
+  color: var(--c-ink);
+  background: var(--c-accent-bg);
+}
+.ws-add:focus-visible {
+  outline: none;
+  border-color: var(--c-accent-border);
+  box-shadow: var(--fx-focus);
+}
+/* 顶部固定条：编辑模式期间贴在内容区顶端 */
+.ws-editbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--c-canvas) 92%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* ---------- 就地编辑（DESIGN.md §15）：值本身就是控件 ----------
+ * 静止时看起来是普通文本（透明边、与只读文本同一行高），悬停出现淡底色与细线，聚焦是标准焦点环；
+ * 不能改的人看到的是同一行高的纯文本，所以文本 ↔ 控件之间没有布局跳动。
+ */
+.inl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  /* 不设 max-width：外层 shrink-to-fit 的宽度是按负外边距后的盒子算的，再用 100% 限回来会把字挤成省略号 */
+  margin: -4px -6px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--c-ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+.inl:hover {
+  background: var(--c-surface-2);
+  border-color: var(--c-hairline);
+}
+.inl[aria-expanded="true"] {
+  background: var(--c-surface-2);
+  border-color: var(--c-hairline-strong);
+}
+.inl:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.inl-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inl-caret {
+  flex-shrink: 0;
+  color: var(--c-ink-tertiary);
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease;
+}
+.inl:hover .inl-caret,
+.inl:focus-visible .inl-caret,
+.inl[aria-expanded="true"] .inl-caret {
+  opacity: 1;
+}
+/* 静止行的只读值：与控件同一行高，保证列对齐 */
+.inl-static {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  max-width: 100%;
+}
+/* 数字 / 文字输入：同一套外形，输入中显示边框 */
+.inl-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  margin: -4px -6px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--c-ink);
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+.inl-input:hover {
+  background: var(--c-surface-2);
+  border-color: var(--c-hairline);
+}
+.inl-input:focus-within {
+  background: var(--c-surface-1);
+  border-color: var(--c-accent-focus);
+  box-shadow: var(--fx-focus);
+}
+.inl-input > input {
+  min-width: 0;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+}
+.inl-input > input:focus-visible {
+  box-shadow: none;
+  border: 0;
+}
+.inl-input > input::-webkit-outer-spin-button,
+.inl-input > input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.inl-input > input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.inl-affix {
+  flex-shrink: 0;
+  color: var(--c-ink-subtle);
+}
+/* 状态位：固定 12px 宽，避免对勾出现时把控件挤动 */
+.inl-status {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  align-items: center;
+  justify-content: center;
+}
+.inl-check {
+  color: var(--c-success);
+  animation: inl-check var(--motion-fast) var(--ease-out) both;
+}
+.inl-check[data-out] {
+  animation: inl-check-out 200ms ease both;
+}
+@keyframes inl-check {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes inl-check-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.inl-spin {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1.5px solid var(--c-hairline-strong);
+  border-top-color: var(--c-accent);
+  animation: inl-spin 800ms linear infinite;
+}
+@keyframes inl-spin {
+  to { transform: rotate(360deg); }
+}
+/* 保存中的行：值 60% 透明（与状态徽标的乐观更新同一语言） */
+.inl-row[data-saving] .inl,
+.inl-row[data-saving] .inl-input,
+.inl-row[data-saving] .inl-static {
+  opacity: 0.6;
+}
+/* 标题：悬停淡底 + 铅笔（铅笔在文字右侧，不盖字） */
+.inl-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: -2px -8px;
+  padding: 1px 8px;
+  border-radius: 6px;
+  cursor: text;
+  transition: background-color var(--motion-fast) ease;
+}
+.inl-title:hover,
+.inl-title:focus-visible {
+  background: var(--c-surface-2);
+}
+.inl-title .inl-pencil {
+  flex-shrink: 0;
+  color: var(--c-ink-tertiary);
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease;
+}
+.inl-title:hover .inl-pencil,
+.inl-title:focus-visible .inl-pencil {
+  opacity: 1;
+}
+.inl-title-input {
+  display: block;
+  min-width: 0;
+  margin: -2px -8px;
+  padding: 0 7px;
+  border: 1px solid var(--c-accent-focus);
+  border-radius: 6px;
+  background: var(--c-surface-1);
+  color: var(--c-ink);
+  font: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  outline: none;
+  box-shadow: var(--fx-focus);
+}
+/* 描述：静止是段落，悬停淡底；编辑时是自动增高的文本域 */
+.inl-para {
+  display: block;
+  width: 100%;
+  margin: -6px -8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: left;
+  cursor: text;
+  transition: background-color var(--motion-fast) ease;
+}
+.inl-para:hover,
+.inl-para:focus-visible {
+  background: var(--c-surface-2);
+}
+.inl-para .inl-pencil {
+  float: right;
+  margin-left: 8px;
+  color: var(--c-ink-tertiary);
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease;
+}
+.inl-para:hover .inl-pencil,
+.inl-para:focus-visible .inl-pencil {
+  opacity: 1;
+}
+.inl-textarea {
+  display: block;
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  margin: -6px -8px;
+  padding: 5px 7px;
+  width: calc(100% + 16px);
+  border: 1px solid var(--c-accent-focus);
+  border-radius: 6px;
+  background: var(--c-surface-1);
+  color: var(--c-ink);
+  font: inherit;
+  line-height: 1.5;
+  outline: none;
+  box-shadow: var(--fx-focus);
+}
+/* 开关：22×12 的轨道 + 8px 圆点，选中为 accent（唯一强调色，不发光） */
+.inl-switch {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 24px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--c-hairline-tertiary);
+  transition: background-color var(--motion-fast) ease;
+}
+.inl-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--c-surface-1);
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+[aria-checked="true"] > .inl-switch {
+  background: var(--c-accent);
+}
+[aria-checked="true"] > .inl-switch::after {
+  transform: translateX(10px);
+}
+/* 下拉：surface-3 底 + 强细线，12px 圆角的面板家族里用 8px；最多 280px 高 */
+.inl-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: -6px;
+  min-width: min(260px, calc(100vw - 48px));
+  max-width: min(360px, calc(100vw - 48px));
+  border: 1px solid var(--c-hairline-strong);
+  border-radius: 8px;
+  background: var(--c-surface-3);
+  box-shadow: inset 0 1px 0 var(--c-edge-highlight);
+  overflow: hidden;
+  animation: inl-menu var(--motion-fast) var(--ease-out) both;
+}
+.inl-menu[data-align="right"] {
+  left: auto;
+  right: -6px;
+}
+@keyframes inl-menu {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+.inl-menu-search {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--c-hairline);
+  background: transparent;
+  color: var(--c-ink);
+  font: inherit;
+  outline: none;
+}
+.inl-menu-search:focus-visible {
+  box-shadow: none;
+}
+.inl-menu-list {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.inl-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--c-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.inl-opt[data-active] {
+  background: var(--c-surface-4);
+}
+.inl-opt[aria-selected="true"] {
+  color: var(--c-accent-hover);
+}
+.inl-opt[aria-disabled="true"] {
+  color: var(--c-ink-tertiary);
+  cursor: default;
+}
+.inl-opt-check {
+  flex-shrink: 0;
+  width: 12px;
+  color: var(--c-accent);
+}
+.inl-opt-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inl-opt-hint {
+  flex-shrink: 0;
+  color: var(--c-ink-subtle);
+  font-size: 12px;
+}
+/* 能力芯片：标签 + 悬停出现的 × */
+.inl-chip-x {
+  display: inline-flex;
+  margin-left: 2px;
+  margin-right: -2px;
+  color: var(--c-ink-subtle);
+  border-radius: 3px;
+}
+.inl-chip-x:hover {
+  color: var(--c-danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .inl-check,
+  .inl-menu {
+    animation: none;
+  }
+  .inl-spin {
+    animation-duration: 1.6s;
+  }
+}
+/* 移动端（<768）：控件占满一行，信息表退成单列 */
+@media (max-width: 767px) {
+  .inl-table {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 4px;
+  }
+  .inl-table > .inl-row > dt {
+    margin-top: 6px;
+  }
+  .inl-table > .inl-row:first-child > dt {
+    margin-top: 0;
+  }
+  .inl-row > dd .inl-wrap {
+    display: flex;
+    width: 100%;
+  }
+  .inl-row > dd .inl-wrap > .inl,
+  .inl-row > dd .inl-input {
+    flex: 1;
+    width: calc(100% + 12px);
+  }
+  .inl-row > dd .inl-wrap > .inl > .inl-caret {
+    margin-left: auto;
   }
 }

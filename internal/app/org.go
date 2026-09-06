@@ -174,10 +174,24 @@ func (a *App) UpdateOrgSettings(ctx context.Context, sess *Session, in OrgSettin
 // MemberDetail 是组织设置里的成员。
 type MemberDetail struct {
 	*domain.Member
-	Email   string      `json:"email"`
+	Email string `json:"email"`
+	// TeamID 是主团队（多团队时取树上最深的那个，与成本归口一致）；TeamIDs 是全部所属团队。
 	TeamID  string      `json:"team_id"`
+	TeamIDs []string    `json:"team_ids"`
 	IsOwner bool        `json:"is_owner"`
 	Locale  i18n.Locale `json:"locale"`
+	// Invitation 是待激活成员尚未接受的最近一条邀请（ADR 0017）；链接只在创建时返回一次。
+	Invitation *domain.Invitation `json:"invitation,omitempty"`
+	// PossibleDuplicateOf 是用同一套认法找到的疑似重复（ADR 0017 补记四）：手工成员与同步成员之间；列表调用时算一次。
+	PossibleDuplicateOf []DuplicateRef `json:"possible_duplicate_of,omitempty"`
+}
+
+// DuplicateRef 是「可能与 X 重复」提示里的 X。
+type DuplicateRef struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Reason     string `json:"reason"`
+	ReasonText string `json:"reason_text"`
 }
 
 // OrgMembers 列出成员（含停用）。
@@ -195,13 +209,63 @@ func (a *App) OrgMembers(ctx context.Context, sess *Session) ([]MemberDetail, er
 		if err != nil {
 			return err
 		}
-		teamOf, _ := a.Store.TeamOfMembers(ctx, tx)
+		teams, err := a.Store.ListTeams(ctx, tx)
+		if err != nil {
+			return err
+		}
+		memberships, err := a.Store.TeamMemberships(ctx, tx)
+		if err != nil {
+			return err
+		}
+		parents := teamParents(teams)
+		// 待激活成员：找出绑定在其邮箱上、尚未接受且未过期的最近一条邀请
+		pendingInv := map[string]*domain.Invitation{}
+		if invs, err := a.Store.ListInvitations(ctx, tx); err == nil {
+			for _, inv := range invs {
+				if inv.AcceptedAt != nil || time.Now().After(inv.ExpiresAt) {
+					continue
+				}
+				if _, ok := pendingInv[strings.ToLower(inv.Email)]; !ok {
+					pendingInv[strings.ToLower(inv.Email)] = inv
+				}
+			}
+		}
+		emails := map[string]string{}
 		for _, m := range ms {
-			d := MemberDetail{Member: m, TeamID: teamOf[m.ID], IsOwner: org.OwnerMemberID == m.ID, Locale: a.localeOfMember(ctx, tx, sess.OrgID, m.ID)}
+			ids := memberships[m.ID]
+			if ids == nil {
+				ids = []string{}
+			}
+			d := MemberDetail{Member: m, TeamID: primaryTeam(parents, ids), TeamIDs: ids, IsOwner: org.OwnerMemberID == m.ID, Locale: a.localeOfMember(ctx, tx, sess.OrgID, m.ID)}
 			if acc, err := a.Store.AccountByID(ctx, tx, m.AccountID); err == nil {
 				d.Email = acc.Email
+				emails[m.ID] = strings.ToLower(acc.Email)
+			}
+			if m.DerivedStatus() == domain.MemberPendingActivation {
+				d.Invitation = pendingInv[strings.ToLower(d.Email)]
 			}
 			out = append(out, d)
+		}
+		// 疑似重复（ADR 0017 补记四）：一次列表算一遍，两边都提示
+		dups := domain.FindDuplicates(domain.DirectoryState{Teams: teams, Members: ms, Emails: emails, Mobiles: map[string]string{}, MemberTeams: memberships})
+		if len(dups) > 0 {
+			idx := map[string]int{}
+			for i := range out {
+				idx[out[i].ID] = i
+			}
+			loc := sess.Loc()
+			for _, dp := range dups {
+				if dp.Kind != store.IdentityMember {
+					continue
+				}
+				text := reasonText(domain.MatchCandidate{Reason: dp.Reason, Via: dp.Via}, loc)
+				if i, ok := idx[dp.A]; ok {
+					out[i].PossibleDuplicateOf = append(out[i].PossibleDuplicateOf, DuplicateRef{ID: dp.B, Name: out[idx[dp.B]].Name, Reason: dp.Reason, ReasonText: text})
+				}
+				if i, ok := idx[dp.B]; ok {
+					out[i].PossibleDuplicateOf = append(out[i].PossibleDuplicateOf, DuplicateRef{ID: dp.A, Name: out[idx[dp.A]].Name, Reason: dp.Reason, ReasonText: text})
+				}
+			}
 		}
 		return nil
 	})
@@ -216,7 +280,8 @@ type MemberPatch struct {
 	TeamID *string  `json:"team_id"`
 }
 
-// UpdateMember 修改成员。停用成员时吊销其 Agent、任务回待领取。
+// UpdateMember 修改成员。停用成员时吊销其 Agent、任务回待领取。每处改动各记一条动态。
+// 来自IM 集成的成员姓名与所在的同步团队由同步决定，手工改会被拒（ADR 0017）。
 func (a *App) UpdateMember(ctx context.Context, sess *Session, id string, in MemberPatch) (*MemberDetail, error) {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return nil, err
@@ -226,45 +291,81 @@ func (a *App) UpdateMember(ctx context.Context, sess *Session, id string, in Mem
 		if err != nil {
 			return err
 		}
-		if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
+		org, err := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
+		if err != nil {
+			return err
+		}
+		var events []domain.Event
+		ev := func(kind string, data map[string]any) {
+			data["member_id"], data["name"] = m.ID, m.Name
+			events = append(events, domain.Event{Type: kind, ActorID: sess.Actor.ID, At: time.Now(), Data: data})
+		}
+		if in.Name != nil && strings.TrimSpace(*in.Name) != "" && strings.TrimSpace(*in.Name) != m.Name {
+			if m.Source != domain.SourceManual {
+				return Bad("err.member_synced_name", SourceText(m.Source))
+			}
+			old := m.Name
 			m.Name = strings.TrimSpace(*in.Name)
+			ev("MemberRenamed", map[string]any{"from": old})
 		}
 		if in.Roles != nil {
-			roles, err := a.Store.ListRoles(ctx, tx)
-			if err != nil {
+			if err := a.checkRoles(ctx, tx, in.Roles); err != nil {
 				return err
 			}
-			known := map[string]bool{}
-			for _, r := range roles {
-				known[r.Name] = true
+			if !sameStrings(m.Roles, in.Roles) {
+				m.Roles = in.Roles
+				ev("MemberRolesChanged", map[string]any{"roles": in.Roles})
 			}
-			for _, r := range in.Roles {
-				if !known[r] {
-					return Bad("err.role_unknown", r)
-				}
-			}
-			m.Roles = in.Roles
 		}
-		if in.Active != nil {
+		if in.Active != nil && *in.Active != m.Active {
+			if !*in.Active {
+				if err := checkDeactivate(sess, org, m); err != nil {
+					return err
+				}
+				ev("MemberDeactivated", map[string]any{})
+			} else {
+				ev("MemberReactivated", map[string]any{})
+			}
 			m.Active = *in.Active
 		}
 		if err := a.Store.UpdateMember(ctx, tx, m); err != nil {
 			return err
 		}
 		if in.TeamID != nil {
+			teams, err := a.Store.ListTeams(ctx, tx)
+			if err != nil {
+				return err
+			}
+			byID := teamsByID(teams)
+			current, err := a.Store.TeamsOfMember(ctx, tx, m.ID)
+			if err != nil {
+				return err
+			}
 			if *in.TeamID != "" {
-				if _, err := teamByID(ctx, tx, a, *in.TeamID); err != nil {
+				if _, ok := byID[*in.TeamID]; !ok {
 					return Bad("err.team_missing")
 				}
 			}
-			if err := a.Store.SetMemberTeam(ctx, tx, sess.OrgID, m.ID, *in.TeamID); err != nil {
+			if err := checkMemberTeamChange(m, byID, current, *in.TeamID, false); err != nil {
 				return err
+			}
+			if !(len(current) == 1 && current[0] == *in.TeamID) && !(len(current) == 0 && *in.TeamID == "") {
+				if err := a.Store.SetMemberTeam(ctx, tx, sess.OrgID, m.ID, *in.TeamID); err != nil {
+					return err
+				}
+				if *in.TeamID == "" {
+					ev("MemberTeamCleared", map[string]any{})
+				} else {
+					ev("MemberTeamChanged", map[string]any{"team_id": *in.TeamID, "team_name": byID[*in.TeamID].Name, "mode": "move"})
+				}
 			}
 		}
 		if in.Active != nil && !*in.Active {
-			return a.deactivateMemberEffects(ctx, tx, sess, m)
+			if err := a.deactivateMemberEffects(ctx, tx, sess, m); err != nil {
+				return err
+			}
 		}
-		return nil
+		return a.insertEvents(ctx, tx, sess, events)
 	})
 	if err != nil {
 		return nil, err
@@ -279,6 +380,122 @@ func (a *App) UpdateMember(ctx context.Context, sess *Session, id string, in Mem
 		}
 	}
 	return nil, NotFound("err.member_missing")
+}
+
+// checkRoles 确认每个角色都存在。
+func (a *App) checkRoles(ctx context.Context, tx pgx.Tx, roles []string) error {
+	known, err := a.Store.ListRoles(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, r := range roles {
+		found := false
+		for _, k := range known {
+			if k.Name == r {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return Bad("err.role_unknown", r)
+		}
+	}
+	return nil
+}
+
+// checkDeactivate 停用成员的两条硬规则：组织负责人不能被停用，自己不能停用自己。
+func checkDeactivate(sess *Session, org *domain.Organization, m *domain.Member) error {
+	if org.OwnerMemberID == m.ID {
+		return Bad("err.owner_deactivate")
+	}
+	if sess.MemberID == m.ID {
+		return Bad("err.self_deactivate")
+	}
+	return nil
+}
+
+// checkMemberTeamChange 判断能否手工改这个成员的团队归属（ADR 0017）：来自IM 集成的成员，
+// 他在同步团队里的归属由同步决定——不能手工把他挪出同步团队（move 时他正属于某个同步团队），
+// 也不能手工把他加进同步团队（目标团队是同步来的）。手工成员不受限。target 为空表示移出全部团队。
+func checkMemberTeamChange(m *domain.Member, byID map[string]*domain.Team, current []string, target string, add bool) error {
+	if m.Source == domain.SourceManual {
+		return nil
+	}
+	if target != "" {
+		if t := byID[target]; t != nil && t.Source != domain.SourceManual {
+			return Bad("err.member_synced_team", SourceText(m.Source))
+		}
+	}
+	if !add {
+		for _, id := range current {
+			if t := byID[id]; t != nil && t.Source != domain.SourceManual && id != target {
+				return Bad("err.member_synced_team", SourceText(m.Source))
+			}
+		}
+	}
+	return nil
+}
+
+// ---------- 团队树的小工具 ----------
+
+func teamsByID(teams []*domain.Team) map[string]*domain.Team {
+	out := make(map[string]*domain.Team, len(teams))
+	for _, t := range teams {
+		out[t.ID] = t
+	}
+	return out
+}
+
+func teamParents(teams []*domain.Team) map[string]string {
+	out := make(map[string]string, len(teams))
+	for _, t := range teams {
+		out[t.ID] = t.ParentID
+	}
+	return out
+}
+
+// teamDepth 团队在树上的深度（根为 0）；成环或断链时停在 64 层。
+func teamDepth(parents map[string]string, id string) int {
+	d := 0
+	for cur := parents[id]; cur != "" && d < 64; cur = parents[cur] {
+		d++
+	}
+	return d
+}
+
+// primaryTeam 多团队成员的主团队：树上最深的那个，深度相同取 team_id 最小（与 OrgIndex 的成本归口一致）。
+func primaryTeam(parents map[string]string, ids []string) string {
+	best, bestDepth := "", -1
+	for _, t := range ids {
+		if d := teamDepth(parents, t); d > bestDepth || (d == bestDepth && t < best) {
+			best, bestDepth = t, d
+		}
+	}
+	return best
+}
+
+// inSubtree 判断 id 是否在 root 的子树里（含 root 自己）。
+func inSubtree(parents map[string]string, id, root string) bool {
+	for cur, i := id, 0; cur != "" && i < 64; cur, i = parents[cur], i+1 {
+		if cur == root {
+			return true
+		}
+	}
+	return false
+}
+
+// teamPath 是团队的完整路径，如「产品事业部 / 研发组」。
+func teamPath(byID map[string]*domain.Team, id string) string {
+	var parts []string
+	for cur, i := id, 0; cur != "" && i < 64; i++ {
+		t := byID[cur]
+		if t == nil {
+			break
+		}
+		parts = append([]string{t.Name}, parts...)
+		cur = t.ParentID
+	}
+	return strings.Join(parts, " / ")
 }
 
 // deactivateMemberEffects 停用成员的连带效果：吊销 Agent、任务回待领取。
@@ -351,13 +568,29 @@ var emailRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 type InvitationView struct {
 	*domain.Invitation
 	URL string `json:"url"`
+	// Member 是这次邀请预建的待激活成员（邮箱已有可登录账号、或成员早已存在时为 nil）；只给调用方记动态用。
+	Member *domain.Member `json:"-"`
 }
 
-// Invite 创建邀请并返回链接（一期不发邮件）。
-func (a *App) Invite(ctx context.Context, sess *Session, email, name string, roles []string) (*InvitationView, error) {
+// Invite 创建邀请并返回链接（一期不发邮件）。新邮箱同时预建一个待激活成员（带角色与团队），与导入、同步一致。
+func (a *App) Invite(ctx context.Context, sess *Session, email, name string, roles []string, teamID *string) (*InvitationView, error) {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return nil, err
 	}
+	var view *InvitationView
+	err := a.tx(ctx, sess, func(tx pgx.Tx) (err error) {
+		view, err = a.inviteTx(ctx, tx, sess, email, name, roles, teamID)
+		return
+	})
+	return view, err
+}
+
+// inviteTx 在事务里创建邀请并记动态（ADR 0017）。手工邀请与 CSV 导入共用：
+//   - 邮箱已是正常成员：拒绝（err.already_member）；
+//   - 邮箱是待激活成员：重发邀请链接，姓名 / 角色缺省沿用成员的，团队不改；
+//   - 邮箱已有可登录账号（别的组织的人）：只发邀请、不预建成员，接受时用自己的密码验证；
+//   - 其余（新邮箱，或只有无密码占位账号）：建一个待激活的手工成员（带角色与团队）并发邀请。
+func (a *App) inviteTx(ctx context.Context, tx pgx.Tx, sess *Session, email, name string, roles []string, teamID *string) (*InvitationView, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !emailRe.MatchString(email) {
 		return nil, Bad("err.email_required")
@@ -365,22 +598,90 @@ func (a *App) Invite(ctx context.Context, sess *Session, email, name string, rol
 	if roles == nil {
 		roles = []string{}
 	}
-	var view *InvitationView
-	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
-		if acc, _, err := a.Store.AccountByEmail(ctx, tx, email); err == nil {
-			if _, err := a.Store.MemberByAccount(ctx, tx, sess.OrgID, acc.ID); err == nil {
-				return Bad("err.already_member")
+	name = strings.TrimSpace(name)
+	var team *domain.Team
+	if teamID != nil && *teamID != "" {
+		teams, err := a.Store.ListTeams(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		team = teamsByID(teams)[*teamID]
+		if team == nil {
+			return nil, Bad("err.team_missing")
+		}
+		if team.Inactive {
+			return nil, Bad("err.team_inactive", team.Name)
+		}
+	}
+	inv := &domain.Invitation{OrgID: sess.OrgID, Email: email, Name: name, Roles: roles, InvitedBy: sess.MemberID, ExpiresAt: time.Now().Add(14 * 24 * time.Hour)}
+	if team != nil {
+		inv.TeamID = team.ID
+	}
+	var created *domain.Member
+	acc, hash, err := a.Store.AccountByEmail(ctx, tx, email)
+	switch {
+	case err == nil:
+		if m, err := a.Store.MemberByAccount(ctx, tx, sess.OrgID, acc.ID); err == nil {
+			if m.DerivedStatus() != domain.MemberPendingActivation {
+				return nil, Bad("err.already_member")
+			}
+			if inv.Name == "" {
+				inv.Name = m.Name
+			}
+			if len(inv.Roles) == 0 {
+				inv.Roles = m.Roles
+			}
+			inv.MemberID = m.ID
+		} else if strings.HasPrefix(hash, "!") {
+			// 无密码的占位账号（以前的邀请被作废过）：照新邮箱处理
+			created, err = a.createPendingMember(ctx, tx, sess, acc, inv, team)
+			if err != nil {
+				return nil, err
 			}
 		}
-		inv := &domain.Invitation{OrgID: sess.OrgID, Email: email, Name: name, Roles: roles, InvitedBy: sess.MemberID, ExpiresAt: time.Now().Add(14 * 24 * time.Hour)}
-		token, err := a.Store.CreateInvitation(ctx, tx, inv)
+		// 别的组织的可登录账号：只发邀请
+	case err == store.ErrNotFound:
+		// 没有可用密码的账号：要通过邀请链接设密码才能登录（同 IM 集成同步，ADR 0017）
+		acc, err = a.Store.CreateAccount(ctx, tx, email, "!"+store.NewID("nopw"), name)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		view = &InvitationView{Invitation: inv, URL: a.PublicURL + "/invite/" + token + "/"}
-		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "MemberInvited", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"email": email}}})
-	})
-	return view, err
+		created, err = a.createPendingMember(ctx, tx, sess, acc, inv, team)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, err
+	}
+	token, err := a.Store.CreateInvitation(ctx, tx, inv)
+	if err != nil {
+		return nil, err
+	}
+	view := &InvitationView{Invitation: inv, URL: a.PublicURL + "/invite/" + token + "/", Member: created}
+	data := map[string]any{"email": email}
+	if inv.MemberID != "" {
+		data["member_id"] = inv.MemberID
+	}
+	return view, a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "MemberInvited", ActorID: sess.Actor.ID, At: time.Now(), Data: data}})
+}
+
+// createPendingMember 给邀请预建一个待激活的手工成员（带角色与团队），并把邀请指向它。
+func (a *App) createPendingMember(ctx context.Context, tx pgx.Tx, sess *Session, acc *domain.Account, inv *domain.Invitation, team *domain.Team) (*domain.Member, error) {
+	name := inv.Name
+	if name == "" {
+		name = strings.Split(inv.Email, "@")[0]
+	}
+	m := &domain.Member{OrgID: sess.OrgID, AccountID: acc.ID, Name: name, Roles: inv.Roles, Active: true, Source: domain.SourceManual, Status: domain.MemberPendingActivation}
+	if err := a.Store.CreateMemberFull(ctx, tx, m); err != nil {
+		return nil, err
+	}
+	if team != nil {
+		if err := a.Store.AddTeamMember(ctx, tx, sess.OrgID, team.ID, m.ID); err != nil {
+			return nil, err
+		}
+	}
+	inv.MemberID = m.ID
+	return m, nil
 }
 
 // ListInvitations 列出邀请（链接只在创建时返回）。
@@ -402,12 +703,40 @@ func (a *App) ListInvitations(ctx context.Context, sess *Session) ([]InvitationV
 	return out, err
 }
 
-// DeleteInvitation 作废邀请。
+// DeleteInvitation 作废邀请。邀请预建的手工待激活成员若从未激活、也没有别的有效邀请了，一并删掉（同步来的成员不动，由同步管）。
 func (a *App) DeleteInvitation(ctx context.Context, sess *Session, id string) error {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return err
 	}
-	return a.tx(ctx, sess, func(tx pgx.Tx) error { return a.Store.DeleteInvitation(ctx, tx, id) })
+	return a.tx(ctx, sess, func(tx pgx.Tx) error {
+		inv, err := a.Store.InvitationByID(ctx, tx, id)
+		if err == store.ErrNotFound {
+			return NotFound("err.invite_missing")
+		}
+		if err != nil {
+			return err
+		}
+		if err := a.Store.DeleteInvitation(ctx, tx, id); err != nil {
+			return err
+		}
+		data := map[string]any{"email": inv.Email}
+		if inv.MemberID != "" && inv.AcceptedAt == nil {
+			m, err := a.Store.MemberByID(ctx, tx, inv.MemberID)
+			if err == nil && m.DerivedStatus() == domain.MemberPendingActivation && m.Source == domain.SourceManual {
+				n, err := a.Store.CountOpenInvitationsForMember(ctx, tx, m.ID)
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					if err := a.Store.DeletePendingMember(ctx, tx, m.ID); err != nil {
+						return err
+					}
+					data["member_id"], data["name"] = m.ID, m.Name
+				}
+			}
+		}
+		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "InvitationRevoked", ActorID: sess.Actor.ID, At: time.Now(), Data: data}})
+	})
 }
 
 // InvitationInfo 是公开的邀请信息。
@@ -456,6 +785,22 @@ func (a *App) AcceptInvitation(ctx context.Context, token, name, password string
 		name = strings.Split(inv.Email, "@")[0]
 	}
 	acc, hash, err := a.Store.AccountByEmail(ctx, a.Store.Pool, inv.Email)
+	// 从外部目录同步进来的待激活成员（ADR 0017）：账号已存在但没有可用密码，接受邀请就是设密码并激活
+	if err == nil {
+		var pending *domain.Member
+		if e := a.Store.WithOrg(ctx, inv.OrgID, func(tx pgx.Tx) error {
+			m, err := a.Store.MemberByAccount(ctx, tx, inv.OrgID, acc.ID)
+			if err == nil && m.DerivedStatus() == domain.MemberPendingActivation {
+				pending = m
+			}
+			return nil
+		}); e != nil {
+			return "", nil, e
+		}
+		if pending != nil {
+			return a.activatePendingMember(ctx, inv, acc, pending, name, password, locale)
+		}
+	}
 	switch {
 	case err == store.ErrNotFound:
 		if len(password) < 8 {
@@ -498,6 +843,51 @@ func (a *App) AcceptInvitation(ctx context.Context, token, name, password string
 			}
 		}
 		return a.Store.InsertEvents(ctx, tx, inv.OrgID, []domain.Event{{Type: "MemberJoined", ActorID: m.ID, At: time.Now(), Data: map[string]any{"member_id": m.ID}}})
+	})
+	if err != nil {
+		return "", nil, wrapErr(err)
+	}
+	tok := store.NewID("ses") + store.NewID("")[1:]
+	if err := a.Store.CreateSession(ctx, a.Store.Pool, tok, acc.ID, inv.OrgID, sessionTTL); err != nil {
+		return "", nil, err
+	}
+	sess, err := a.SessionFromToken(ctx, tok)
+	return tok, sess, err
+}
+
+// activatePendingMember 给待激活成员设密码、激活并登录。
+func (a *App) activatePendingMember(ctx context.Context, inv *domain.Invitation, acc *domain.Account, m *domain.Member, name, password string, locale i18n.Locale) (string, *Session, error) {
+	if len(password) < 8 {
+		return "", nil, Bad("err.password_short")
+	}
+	h, err := HashPassword(password)
+	if err != nil {
+		return "", nil, err
+	}
+	var nm *string
+	if n := strings.TrimSpace(name); n != "" && n != inv.Email {
+		nm = &n
+	}
+	var ls *string
+	if locale != "" {
+		s := string(locale)
+		ls = &s
+	}
+	if err := a.Store.UpdateAccount(ctx, a.Store.Pool, acc.ID, nm, ls, &h); err != nil {
+		return "", nil, err
+	}
+	err = a.Store.WithOrg(ctx, inv.OrgID, func(tx pgx.Tx) error {
+		m.Status, m.Active = domain.MemberActive, true
+		if nm != nil {
+			m.Name = *nm
+		}
+		if err := a.Store.UpdateMember(ctx, tx, m); err != nil {
+			return err
+		}
+		if err := a.Store.MarkInvitationAccepted(ctx, tx, inv.ID); err != nil {
+			return err
+		}
+		return a.Store.InsertEvents(ctx, tx, inv.OrgID, []domain.Event{{Type: "MemberActivated", ActorID: m.ID, At: time.Now(), Data: map[string]any{"member_id": m.ID, "name": m.Name}}})
 	})
 	if err != nil {
 		return "", nil, wrapErr(err)
@@ -605,6 +995,9 @@ func (a *App) DeleteRole(ctx context.Context, sess *Session, name string) error 
 type TeamView struct {
 	*domain.Team
 	MemberIDs []string `json:"member_ids"`
+	// MemberCount 是直属的正常成员数；SubtreeMemberCount 是它和全部下级团队里不重复的正常成员数（停用的不算）。
+	MemberCount        int `json:"member_count"`
+	SubtreeMemberCount int `json:"subtree_member_count"`
 }
 
 func teamByID(ctx context.Context, tx pgx.Tx, a *App, id string) (*domain.Team, error) {
@@ -632,12 +1025,35 @@ func (a *App) ListTeams(ctx context.Context, sess *Session) ([]TeamView, error) 
 		if err != nil {
 			return err
 		}
+		ms, err := a.Store.ListMembers(ctx, tx)
+		if err != nil {
+			return err
+		}
+		active := map[string]bool{}
+		for _, m := range ms {
+			active[m.ID] = m.Active
+		}
 		for _, t := range teams {
 			ids := members[t.ID]
 			if ids == nil {
 				ids = []string{}
 			}
-			out = append(out, TeamView{Team: t, MemberIDs: ids})
+			v := TeamView{Team: t, MemberIDs: ids}
+			for _, id := range ids {
+				if active[id] {
+					v.MemberCount++
+				}
+			}
+			seen := map[string]bool{}
+			for _, sub := range domain.Subtree(teams, t.ID) {
+				for _, id := range members[sub] {
+					if active[id] && !seen[id] {
+						seen[id] = true
+						v.SubtreeMemberCount++
+					}
+				}
+			}
+			out = append(out, v)
 		}
 		return nil
 	})
@@ -652,22 +1068,37 @@ type TeamPatch struct {
 	MemberIDs []string `json:"member_ids"`
 	// IsBoundary 把团队标记为共享边界（ADR 0013）。改它会立刻改变一批人的可见范围。
 	IsBoundary *bool `json:"is_boundary"`
+	// Active 传 false 停用团队（只停用不删除，ADR 0017），传 true 恢复。
+	Active *bool `json:"active"`
 }
 
-// SaveTeam 新建（id 空）或修改团队。
+// SaveTeam 新建（id 空）或修改团队。修改时：挪动上级要过成环检查；来自IM 集成的团队不能改名；
+// 停用要先清空成员与下级团队。每处改动各记一条动态。
 func (a *App) SaveTeam(ctx context.Context, sess *Session, id string, in TeamPatch) (*TeamView, error) {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return nil, err
 	}
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+		teams, err := a.Store.ListTeams(ctx, tx)
+		if err != nil {
+			return err
+		}
+		byID, parents := teamsByID(teams), teamParents(teams)
 		var t *domain.Team
 		var events []domain.Event
+		ev := func(kind string, data map[string]any) {
+			data["team_id"], data["name"] = t.ID, t.Name
+			events = append(events, domain.Event{Type: kind, ActorID: sess.Actor.ID, At: time.Now(), Data: data})
+		}
 		if id == "" {
 			if in.Name == nil || strings.TrimSpace(*in.Name) == "" {
 				return Bad("err.title_required")
 			}
 			t = &domain.Team{OrgID: sess.OrgID, Name: strings.TrimSpace(*in.Name)}
-			if in.ParentID != nil {
+			if in.ParentID != nil && *in.ParentID != "" {
+				if _, ok := byID[*in.ParentID]; !ok {
+					return Bad("err.team_missing")
+				}
 				t.ParentID = *in.ParentID
 			}
 			if in.LeadID != nil {
@@ -680,38 +1111,72 @@ func (a *App) SaveTeam(ctx context.Context, sess *Session, id string, in TeamPat
 				return err
 			}
 			id = t.ID
-			events = append(events, domain.Event{Type: "TeamCreated", ActorID: sess.Actor.ID, At: time.Now(),
-				Data: map[string]any{"team_id": t.ID, "name": t.Name, "is_boundary": t.IsBoundary}})
+			ev("TeamCreated", map[string]any{"is_boundary": t.IsBoundary})
 			if t.IsBoundary {
-				events = append(events, domain.Event{Type: "TeamBoundaryChanged", ActorID: sess.Actor.ID, At: time.Now(),
-					Data: map[string]any{"team_id": t.ID, "name": t.Name, "is_boundary": true}})
+				ev("TeamBoundaryChanged", map[string]any{"is_boundary": true})
 			}
 		} else {
-			cur, err := teamByID(ctx, tx, a, id)
-			if err != nil {
+			cur, ok := byID[id]
+			if !ok {
 				return Bad("err.team_missing")
 			}
 			t = cur
-			if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
+			if in.Name != nil && strings.TrimSpace(*in.Name) != "" && strings.TrimSpace(*in.Name) != t.Name {
+				if t.Source != domain.SourceManual {
+					return Bad("err.team_synced_name", SourceText(t.Source))
+				}
 				t.Name = strings.TrimSpace(*in.Name)
+				ev("TeamUpdated", map[string]any{})
 			}
-			if in.ParentID != nil && *in.ParentID != id {
-				t.ParentID = *in.ParentID
+			if in.ParentID != nil && *in.ParentID != t.ParentID {
+				np := *in.ParentID
+				if np != "" {
+					if _, ok := byID[np]; !ok {
+						return Bad("err.team_missing")
+					}
+					if inSubtree(parents, np, id) {
+						return Bad("err.team_cycle")
+					}
+				}
+				t.ParentID = np
+				parents[id] = np
+				data := map[string]any{"parent_id": np}
+				if np != "" {
+					data["parent_name"] = byID[np].Name
+				}
+				ev("TeamMoved", data)
 			}
-			if in.LeadID != nil {
+			if in.LeadID != nil && *in.LeadID != t.LeadMemberID {
 				t.LeadMemberID = *in.LeadID
+				ev("TeamUpdated", map[string]any{})
 			}
 			// 共享边界改动会立刻改变一批人的可见范围，单独记一条动态说清楚（ADR 0013）
 			if in.IsBoundary != nil && *in.IsBoundary != t.IsBoundary {
 				t.IsBoundary = *in.IsBoundary
-				events = append(events, domain.Event{Type: "TeamBoundaryChanged", ActorID: sess.Actor.ID, At: time.Now(),
-					Data: map[string]any{"team_id": t.ID, "name": t.Name, "is_boundary": t.IsBoundary}})
+				ev("TeamBoundaryChanged", map[string]any{"is_boundary": t.IsBoundary})
+			}
+			if in.Active != nil && *in.Active == t.Inactive {
+				if !*in.Active {
+					blocked, err := a.teamHasActiveContent(ctx, tx, teams, id)
+					if err != nil {
+						return err
+					}
+					if blocked {
+						return Bad("err.team_deactivate_blocked")
+					}
+					t.Inactive = true
+					ev("TeamDeactivated", map[string]any{"manual": true})
+				} else {
+					t.Inactive = false
+					ev("TeamReactivated", map[string]any{})
+				}
 			}
 			if err := a.Store.UpdateTeam(ctx, tx, t); err != nil {
 				return err
 			}
-			events = append(events, domain.Event{Type: "TeamUpdated", ActorID: sess.Actor.ID, At: time.Now(),
-				Data: map[string]any{"team_id": t.ID, "name": t.Name, "is_boundary": t.IsBoundary}})
+			if len(events) == 0 && in.MemberIDs == nil {
+				ev("TeamUpdated", map[string]any{})
+			}
 		}
 		if in.MemberIDs != nil {
 			for _, mid := range in.MemberIDs {
@@ -727,6 +1192,7 @@ func (a *App) SaveTeam(ctx context.Context, sess *Session, id string, in TeamPat
 					}
 				}
 			}
+			ev("TeamUpdated", map[string]any{"member_ids": in.MemberIDs})
 		}
 		return a.insertEvents(ctx, tx, sess, events)
 	})
@@ -745,16 +1211,65 @@ func (a *App) SaveTeam(ctx context.Context, sess *Session, id string, in TeamPat
 	return nil, NotFound("err.team_missing")
 }
 
-// DeleteTeam 删除团队。
+// teamHasActiveContent 判断团队里是否还有正常成员或未停用的下级团队。
+func (a *App) teamHasActiveContent(ctx context.Context, tx pgx.Tx, teams []*domain.Team, id string) (bool, error) {
+	for _, t := range teams {
+		if t.ParentID == id && !t.Inactive {
+			return true, nil
+		}
+	}
+	members, err := a.Store.TeamMembers(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	if len(members[id]) == 0 {
+		return false, nil
+	}
+	ms, err := a.Store.ListMembers(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range ms {
+		if m.Active && contains(members[id], m.ID) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// DeleteTeam 删除团队：只有没有成员、没有下级团队的手工团队才能删；来自IM 集成的团队只能停用（ADR 0017）。
 func (a *App) DeleteTeam(ctx context.Context, sess *Session, id string) error {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return err
 	}
 	return a.tx(ctx, sess, func(tx pgx.Tx) error {
+		teams, err := a.Store.ListTeams(ctx, tx)
+		if err != nil {
+			return err
+		}
+		t := teamsByID(teams)[id]
+		if t == nil {
+			return Bad("err.team_missing")
+		}
+		if t.Source != domain.SourceManual {
+			return Bad("err.team_delete_synced", SourceText(t.Source))
+		}
+		for _, x := range teams {
+			if x.ParentID == id {
+				return Bad("err.team_delete_not_empty")
+			}
+		}
+		members, err := a.Store.TeamMembers(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if len(members[id]) > 0 {
+			return Bad("err.team_delete_not_empty")
+		}
 		if err := a.Store.DeleteTeam(ctx, tx, id); err != nil {
 			return err
 		}
-		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "TeamDeleted", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"team_id": id}}})
+		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "TeamDeleted", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"team_id": id, "name": t.Name}}})
 	})
 }
 

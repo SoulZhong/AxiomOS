@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/teemo/axiomos/internal/directory"
 	"github.com/teemo/axiomos/internal/domain"
 	"github.com/teemo/axiomos/internal/i18n"
 	"github.com/teemo/axiomos/internal/store"
@@ -21,10 +23,15 @@ type App struct {
 	Store            *store.Store
 	HeartbeatTimeout time.Duration
 	PublicURL        string // 生成邀请链接用，如 http://localhost:8080
+
+	// SecretKey 是加密组织凭据（外部目录的保密字段等）的服务端密钥，32 字节（ADR 0014、0017）。
+	SecretKey []byte
+
+	syncing sync.Map // org id → 正在同步
 }
 
 func New(s *store.Store) *App {
-	return &App{Store: s, HeartbeatTimeout: 10 * time.Minute, PublicURL: "http://localhost:8080"}
+	return &App{Store: s, HeartbeatTimeout: 10 * time.Minute, PublicURL: "http://localhost:8080", SecretKey: directory.DevKey()}
 }
 
 // Session 是一次请求的身份：组织 + 执行者（成员或 Agent）+ 语言 + 权限。

@@ -1,7 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
+
+	"github.com/teemo/axiomos/internal/app"
 )
 
 // ---------- 工作台（ADR 0015） ----------
@@ -21,15 +24,33 @@ func (s *Server) workspace(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, ws, err)
 }
 
+// decodeBlocks 把请求里的 blocks 读成 []any：接受 ["my_tasks", ...]、[{key, w, h}, ...]（ADR 0015 补记二）
+// 与 [{key, x, y, w, h}, ...]（补记三），形状交给 domain.ParseLayout 判断。没给或 null 时返回 nil。
+func decodeBlocks(raw json.RawMessage) ([]any, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var out []any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, app.Bad("err.block_shape")
+	}
+	return out, nil
+}
+
 func (s *Server) workspaceSetMine(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Blocks []string `json:"blocks"`
+		Blocks json.RawMessage `json:"blocks"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, r, err)
 		return
 	}
-	ws, err := s.App.SetMyWorkspace(r.Context(), sessionOf(r), in.Blocks)
+	blocks, err := decodeBlocks(in.Blocks)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	ws, err := s.App.SetMyWorkspace(r.Context(), sessionOf(r), blocks)
 	respond(w, r, ws, err)
 }
 
@@ -49,14 +70,19 @@ func (s *Server) orgWorkspace(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) orgWorkspacePut(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Blocks []string `json:"blocks"`
-		Preset string   `json:"preset"`
+		Blocks json.RawMessage `json:"blocks"`
+		Preset string          `json:"preset"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, r, err)
 		return
 	}
-	out, err := s.App.SetRoleWorkspace(r.Context(), sessionOf(r), r.PathValue("role"), in.Blocks, in.Preset)
+	blocks, err := decodeBlocks(in.Blocks)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out, err := s.App.SetRoleWorkspace(r.Context(), sessionOf(r), r.PathValue("role"), blocks, in.Preset)
 	respond(w, r, out, err)
 }
 

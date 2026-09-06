@@ -103,6 +103,10 @@ export default function AgentsPage() {
   const [highlight, mark] = useHighlight();
   const { busy, run } = useAction();
   const online = agents.data?.filter((a) => a.online).length ?? 0;
+  // 可见范围（DESIGN.md §14）：组织负责人 / 持「组织设置」权限的人看到全部并每行显示所有者；
+  // 其他人只看到自己的加公共 Agent。列表里出现 can_manage = false 的行就一定不是"全部"。
+  const isAdmin = !!session?.is_owner || !!session?.permissions?.includes("org_settings");
+  const seesAll = (agents.data ?? []).some((a) => !a.can_manage) ? false : isAdmin;
 
   const remove = async (a: Agent) => {
     if (await run(a.id, () => api.agents.remove(a.id), t("toast.removed", { name: a.name }))) {
@@ -113,7 +117,7 @@ export default function AgentsPage() {
 
   return (
     <div>
-      <PageHeader title={t("agents.title")} description={t("agents.description")} actions={<Button variant="primary" icon={<IconPlus />} onClick={() => setRegistering(true)}>{t("agents.register")}</Button>} />
+      <PageHeader title={t("agents.title")} description={seesAll ? t("agents.descriptionAll") : t("agents.descriptionMine")} actions={<Button variant="primary" icon={<IconPlus />} onClick={() => setRegistering(true)}>{t("agents.register")}</Button>} />
       <StatChips
         className="mb-4"
         value={null}
@@ -127,7 +131,7 @@ export default function AgentsPage() {
           <Table>
             <thead>
               <tr>
-                <th className="w-full">Agent</th><th className="w-[140px]">{t("agents.status")}</th><th className="w-[110px]">{t("agents.owner")}</th><th className="w-[200px]">{t("agents.capabilities")}</th><th className="w-[100px]">{t("agents.grants")}</th><th className="num w-[88px]">{t("agents.maxAtOnce")}</th><th className="actions w-[236px]" aria-label={t("common.actions")} />
+                <th className="w-full">Agent</th><th className="w-[140px]">{t("agents.status")}</th>{seesAll && <th className="w-[110px]">{t("agents.owner")}</th>}<th className="w-[200px]">{t("agents.capabilities")}</th><th className="w-[100px]">{t("agents.grants")}</th><th className="num w-[88px]">{t("agents.maxAtOnce")}</th><th className="actions w-[236px]" aria-label={t("common.actions")} />
               </tr>
             </thead>
             <tbody>
@@ -143,7 +147,7 @@ export default function AgentsPage() {
                         <span className="flex min-w-0 flex-col">
                           <span className="flex min-w-0 items-center gap-2">
                             <span className="min-w-0 truncate font-medium" title={a.name}>{a.name}</span>
-                            {a.shared && <Tag tone="accent">{t("agents.shared")}</Tag>}
+                            {a.shared && <Tip tip={t("agents.sharedManaged")}><Tag tone="accent">{t("agents.sharedTag")}</Tag></Tip>}
                           </span>
                           <AgentTelemetry agent={a} stat={statOf(a.id)} todayRuns={todayRuns(a.id)} currency={currency} />
                         </span>
@@ -157,7 +161,7 @@ export default function AgentsPage() {
                         {!a.online && <span className="text-caption text-ink-subtle">· {a.last_seen_at ? <RelativeTime iso={a.last_seen_at} /> : t("agents.never")}</span>}
                       </span>
                     </td>
-                    <td className="max-w-[140px] whitespace-nowrap"><span className="flex items-center gap-1.5"><Avatar name={a.owner.name} size={20} /><span className="truncate">{a.owner.name}</span></span></td>
+                    {seesAll && <td className="max-w-[140px] whitespace-nowrap"><span className="flex items-center gap-1.5"><Avatar name={a.owner.name} size={20} /><span className="truncate">{a.owner.name}</span></span></td>}
                     <td className="whitespace-nowrap"><TagList items={a.capabilities.map((c) => capabilityTitle(c, caps))} empty={t("agents.noCaps")} /></td>
                     <td className="whitespace-nowrap">
                       {a.grants.length === 0 ? <span className="text-ink-subtle">—</span> : (
@@ -176,11 +180,12 @@ export default function AgentsPage() {
                     </td>
                     <td className="num whitespace-nowrap">{t("agents.countUnit", { n: a.max_concurrency })}</td>
                     <td className="actions">
-                      <span className="row-actions">
+                      {/* 别人的公共 Agent 只读：没有编辑 / 移除 / 令牌（ADR 0017 同期的可见范围规则） */}
+                      {a.can_manage && <span className="row-actions">
                         <Tip tip={t("agents.noTokenStored")}><Button size="sm" variant="ghost" icon={<IconKey />} disabled>{t("agents.viewToken")}</Button></Tip>
                         <Tip tip={t("agents.editUnavailable")}><Button size="sm" variant="ghost" icon={<IconEdit />} disabled>{t("common.edit")}</Button></Tip>
                         <Button size="sm" variant="ghost" className="text-danger hover:!text-danger" icon={<IconTrash />} disabled={busy === a.id} onClick={() => setRemoving(a)}>{t("agents.remove")}</Button>
-                      </span>
+                      </span>}
                     </td>
                   </tr>
                 );

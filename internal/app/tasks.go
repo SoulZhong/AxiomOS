@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -168,25 +169,38 @@ func (a *App) CreateTask(ctx context.Context, sess *Session, in CreateTaskInput)
 	return task, err
 }
 
-// UpdateTaskInput 是可编辑字段。
+// UpdateTaskInput 是可编辑字段。指针为 nil 表示不改；要清空预估工时或计划起止时把字段名写进 Clear。
+// ParentID / SprintID 指向空字符串分别表示提为顶级任务 / 移出迭代。
 type UpdateTaskInput struct {
-	Title         *string           `json:"title"`
-	Description   *string           `json:"description"`
-	ReviewerID    *string           `json:"reviewer_id"`
-	Priority      *int              `json:"priority"`
-	EstimateHours *float64          `json:"estimate_hours"`
-	PlannedStart  *time.Time        `json:"planned_start"`
-	PlannedEnd    *time.Time        `json:"planned_end"`
-	HumanOnly     *bool             `json:"human_only"`
-	GoalID        *string           `json:"goal_id"`
-	Participants  map[string]string `json:"participants"`
-	Fields        map[string]any    `json:"fields"`
-	Points        *int              `json:"points"`    // 与 ClearPoints 配合：SetPoints 为真时生效
-	SetPoints     bool              `json:"-"`         // 请求里带了 points（可能是 null）
-	SprintID      *string           `json:"sprint_id"` // 空字符串表示移出迭代
+	Title                *string           `json:"title"`
+	Description          *string           `json:"description"`
+	ReviewerID           *string           `json:"reviewer_id"`
+	Priority             *int              `json:"priority"`
+	EstimateHours        *float64          `json:"estimate_hours"`
+	PlannedStart         *time.Time        `json:"planned_start"`
+	PlannedEnd           *time.Time        `json:"planned_end"`
+	HumanOnly            *bool             `json:"human_only"`
+	GoalID               *string           `json:"goal_id"`
+	ParentID             *string           `json:"parent_id"`
+	RequiredCapabilities *[]string         `json:"required_capabilities"`
+	Participants         map[string]string `json:"participants"`
+	Fields               map[string]any    `json:"fields"`
+	Points               *int              `json:"points"`          // 与 SetPoints 配合：SetPoints 为真时生效
+	SetPoints            bool              `json:"set_points"`      // 请求里带了 points（可能是 null）
+	SprintID             *string           `json:"sprint_id"`       // 空字符串表示移出迭代
+	Clear                []string          `json:"clear,omitempty"` // estimate_hours | planned_start | planned_end
 }
 
-// UpdateTask 修改任务的描述性字段。时间变更记录动态。
+// agentForbidden 判断 Agent 是否碰了只能由人决定的字段（ADR 0003）。
+func (in UpdateTaskInput) agentForbidden() bool {
+	return in.ReviewerID != nil || in.Priority != nil || in.GoalID != nil || in.ParentID != nil || in.SprintID != nil ||
+		in.Participants != nil || in.HumanOnly != nil || in.RequiredCapabilities != nil
+}
+
+// UpdateTask 就地修改任务。每个真正变了的字段各记一条 TaskFieldChanged 动态（带旧值与新值）；
+// 工作量与迭代沿用各自的动态（PointsChanged / TaskAddedToSprint / TaskRemovedFromSprint），不重复记。
+// 已结束的任务只能改描述与自定义字段。人改任务要与任务有关（负责人、创建者、验收人、参与人、所属目标的负责人）或是组织负责人；
+// Agent 受「所有者权限 ∩ 授权」约束，验收人、优先级、归属目标、上级、迭代、参与角色、所需能力、仅限人工一律不能改。
 func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in UpdateTaskInput) (*domain.Task, error) {
 	var task *domain.Task
 	var prop *ProposalView
@@ -195,10 +209,12 @@ func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in Updat
 		if err != nil {
 			return err
 		}
-		// Agent 改任务字段同样受「所有者权限 ∩ 授权」约束（ADR 0003）：只能改自己负责或自己创建的任务，
-		// 需要「执行任务」授权；验收人、优先级、归属目标、迭代、参与角色、仅限人工是人的决定，Agent 一律不能改。
+		ix, err := a.OrgIndex(ctx, tx)
+		if err != nil {
+			return err
+		}
 		if sess.IsAgent() {
-			if in.ReviewerID != nil || in.Priority != nil || in.GoalID != nil || in.SprintID != nil || in.Participants != nil || in.HumanOnly != nil {
+			if in.agentForbidden() {
 				return Forbidden("err.agent_task_field")
 			}
 			if t.AssigneeID != sess.Actor.ID && t.CreatorID != sess.Actor.ID {
@@ -217,37 +233,198 @@ func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in Updat
 				prop = v
 				return nil
 			}
+		} else if !a.canEditTask(ctx, tx, sess, ix, t) {
+			return Forbidden("err.task_edit_forbidden")
 		}
-		changes := map[string]any{}
-		if in.Title != nil {
+		tt, err := a.Store.TaskType(ctx, tx, t.TypeName, t.TypeVersion)
+		if err != nil {
+			return err
+		}
+		closed := false
+		if st := tt.Workflow.State(t.State); st != nil {
+			closed = st.Label.IsTerminal()
+		}
+		var names map[string]string // 执行者名字，按需装载
+		nameOf := func(id string) string {
+			if id == "" {
+				return ""
+			}
+			if names == nil {
+				names, _ = a.Store.ExecutorNames(ctx, tx)
+			}
+			if n := names[id]; n != "" {
+				return n
+			}
+			return id
+		}
+
+		var changes []fieldChange // 除描述与自定义字段之外的改动（已结束的任务不允许）
+		var soft []fieldChange    // 描述与自定义字段
+		if in.Title != nil && *in.Title != t.Title {
+			if *in.Title == "" {
+				return Bad("err.title_required")
+			}
+			changes = append(changes, fieldChange{Field: "title", From: t.Title, To: *in.Title})
 			t.Title = *in.Title
 		}
-		if in.Description != nil {
+		if in.Description != nil && *in.Description != t.Description {
+			soft = append(soft, fieldChange{Field: "description", From: t.Description, To: *in.Description})
 			t.Description = *in.Description
 		}
-		if in.ReviewerID != nil {
+		if in.ReviewerID != nil && *in.ReviewerID != t.ReviewerID {
+			if *in.ReviewerID == "" || nameOf(*in.ReviewerID) == *in.ReviewerID {
+				return Bad("err.member_missing")
+			}
+			changes = append(changes, fieldChange{Field: "reviewer_id", From: t.ReviewerID, To: *in.ReviewerID, FromTitle: nameOf(t.ReviewerID), ToTitle: nameOf(*in.ReviewerID)})
 			t.ReviewerID = *in.ReviewerID
 		}
-		if in.Priority != nil {
+		if in.Priority != nil && *in.Priority != t.Priority {
+			changes = append(changes, fieldChange{Field: "priority", From: t.Priority, To: *in.Priority})
 			t.Priority = *in.Priority
 		}
-		if in.EstimateHours != nil {
+		switch {
+		case contains(in.Clear, "estimate_hours"):
+			if t.EstimateHours != nil {
+				changes = append(changes, fieldChange{Field: "estimate_hours", From: floatVal(t.EstimateHours), To: nil})
+				t.EstimateHours = nil
+			}
+		case in.EstimateHours != nil && !sameFloat(in.EstimateHours, t.EstimateHours):
+			changes = append(changes, fieldChange{Field: "estimate_hours", From: floatVal(t.EstimateHours), To: *in.EstimateHours})
 			t.EstimateHours = in.EstimateHours
-			changes["estimate_hours"] = *in.EstimateHours
 		}
-		if in.PlannedStart != nil {
-			t.PlannedStart = in.PlannedStart
-			changes["planned_start"] = in.PlannedStart.Format("2006-01-02")
+		dates := []struct {
+			field string
+			cur   **time.Time
+			in    *time.Time
+		}{{"planned_start", &t.PlannedStart, in.PlannedStart}, {"planned_end", &t.PlannedEnd, in.PlannedEnd}}
+		for _, d := range dates {
+			switch {
+			case contains(in.Clear, d.field):
+				if *d.cur != nil {
+					changes = append(changes, fieldChange{Field: d.field, From: dateVal(*d.cur), To: nil})
+					*d.cur = nil
+				}
+			case d.in != nil && !sameTime(d.in, *d.cur):
+				changes = append(changes, fieldChange{Field: d.field, From: dateVal(*d.cur), To: dateVal(d.in)})
+				*d.cur = d.in
+			}
 		}
-		if in.PlannedEnd != nil {
-			t.PlannedEnd = in.PlannedEnd
-			changes["planned_end"] = in.PlannedEnd.Format("2006-01-02")
-		}
-		if in.HumanOnly != nil {
+		if in.HumanOnly != nil && *in.HumanOnly != t.HumanOnly {
+			changes = append(changes, fieldChange{Field: "human_only", From: t.HumanOnly, To: *in.HumanOnly})
 			t.HumanOnly = *in.HumanOnly
 		}
-		if in.GoalID != nil {
+		goalTitle := func(id string) string {
+			for _, g := range ix.Goals {
+				if g.ID == id {
+					return g.Title
+				}
+			}
+			return ""
+		}
+		if in.GoalID != nil && *in.GoalID != t.GoalID {
+			if *in.GoalID != "" && goalTitle(*in.GoalID) == "" {
+				if _, err := a.Store.GoalByID(ctx, tx, *in.GoalID); err != nil {
+					return Bad("err.goal_missing")
+				}
+			}
+			changes = append(changes, fieldChange{Field: "goal_id", From: nilIfEmpty(t.GoalID), To: nilIfEmpty(*in.GoalID), FromTitle: goalTitle(t.GoalID), ToTitle: goalTitle(*in.GoalID)})
 			t.GoalID = *in.GoalID
+		}
+		if in.ParentID != nil && *in.ParentID != t.ParentID {
+			all, err := a.Store.AllTasks(ctx, tx)
+			if err != nil {
+				return err
+			}
+			titles := map[string]string{}
+			for _, x := range all {
+				titles[x.ID] = x.Title
+			}
+			if *in.ParentID != "" {
+				var parent *domain.Task
+				for _, x := range all {
+					if x.ID == *in.ParentID {
+						parent = x
+					}
+				}
+				if parent == nil {
+					return Bad("err.parent_missing")
+				}
+				if team := ix.TeamOfTask(parent); team != "" && !sess.CanSeeCollabTeam(team) {
+					return Forbidden("err.parent_task_hidden")
+				}
+				if parent.ID == t.ID || taskDescendants(all, t.ID)[parent.ID] {
+					return Bad("err.task_parent_cycle")
+				}
+				ptt, err := a.Store.TaskType(ctx, tx, parent.TypeName, parent.TypeVersion)
+				if err != nil {
+					return err
+				}
+				if st := ptt.Workflow.State(parent.State); st != nil && st.Label.IsTerminal() {
+					return Bad("err.task_parent_closed")
+				}
+			}
+			changes = append(changes, fieldChange{Field: "parent_id", From: nilIfEmpty(t.ParentID), To: nilIfEmpty(*in.ParentID), FromTitle: titles[t.ParentID], ToTitle: titles[*in.ParentID]})
+			t.ParentID = *in.ParentID
+		}
+		if in.RequiredCapabilities != nil {
+			want := *in.RequiredCapabilities
+			if want == nil {
+				want = []string{}
+			}
+			if !sameStrings(want, t.RequiredCapabilities) {
+				caps, err := a.Store.ListCapabilities(ctx, tx)
+				if err != nil {
+					return err
+				}
+				titlesOf := func(list []string) []i18n.Text {
+					out := make([]i18n.Text, 0, len(list))
+					for _, c := range list {
+						if tt, ok := caps[c]; ok && !tt.IsZero() {
+							out = append(out, tt)
+						} else {
+							out = append(out, i18n.Text{i18n.Default: c})
+						}
+					}
+					return out
+				}
+				for _, c := range want {
+					if _, ok := caps[c]; !ok {
+						return Bad("err.cap_unknown", c)
+					}
+				}
+				changes = append(changes, fieldChange{Field: "required_capabilities", From: t.RequiredCapabilities, To: want, FromTitle: titlesOf(t.RequiredCapabilities), ToTitle: titlesOf(want)})
+				t.RequiredCapabilities = want
+			}
+		}
+		for k, v := range in.Participants {
+			p := tt.Participant(k)
+			if p == nil {
+				return Bad("err.no_participant", tt.Title, k)
+			}
+			old := t.Participants[k]
+			if old == v {
+				continue
+			}
+			if v == "" {
+				delete(t.Participants, k)
+			} else {
+				if nameOf(v) == v {
+					return Bad("err.member_missing")
+				}
+				t.Participants[k] = v
+			}
+			changes = append(changes, fieldChange{Field: "participants", From: nilIfEmpty(old), To: nilIfEmpty(v), FromTitle: nameOf(old), ToTitle: nameOf(v), Label: p.Title, Extra: map[string]any{"slot": k}})
+		}
+		for k, v := range in.Fields {
+			if t.Fields == nil {
+				t.Fields = map[string]any{}
+			}
+			old, had := t.Fields[k]
+			if had && reflect.DeepEqual(old, v) {
+				continue
+			}
+			soft = append(soft, fieldChange{Field: "fields", From: old, To: v, Extra: map[string]any{"key": k}})
+			t.Fields[k] = v
 		}
 		var extra []domain.Event
 		if in.SetPoints {
@@ -256,12 +433,20 @@ func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in Updat
 			}
 			old, nw := t.Points, in.Points
 			if (old == nil) != (nw == nil) || (old != nil && nw != nil && *old != *nw) {
+				if closed {
+					return Bad("err.task_closed_edit")
+				}
 				t.Points = nw
-				ev := domain.Event{Type: "PointsChanged", TaskID: t.ID, ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"points": nw, "old": old}}
-				extra = append(extra, ev)
+				extra = append(extra, domain.Event{Type: "PointsChanged", TaskID: t.ID, ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"points": nw, "old": old}})
 			}
 		}
+		if closed && len(changes) > 0 {
+			return Bad("err.task_closed_edit")
+		}
 		if in.SprintID != nil && *in.SprintID != t.SprintID {
+			if closed {
+				return Bad("err.task_closed_edit")
+			}
 			var sp *domain.Sprint
 			if *in.SprintID != "" {
 				sp, err = a.Store.SprintByID(ctx, tx, *in.SprintID)
@@ -272,40 +457,33 @@ func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in Updat
 					return Bad("err.sprint_closed_add")
 				}
 			}
-			tt, err := a.Store.TaskType(ctx, tx, t.TypeName, t.TypeVersion)
+			sprintNames, err := a.Store.SprintNames(ctx, tx)
 			if err != nil {
 				return err
 			}
-			names, err := a.Store.SprintNames(ctx, tx)
-			if err != nil {
-				return err
-			}
-			evs, err := a.moveTaskToSprint(ctx, tx, sess, t, tt, sp, names)
+			evs, err := a.moveTaskToSprint(ctx, tx, sess, t, tt, sp, sprintNames)
 			if err != nil {
 				return err
 			}
 			extra = append(extra, evs...)
 		}
-		for k, v := range in.Participants {
-			if v == "" {
-				delete(t.Participants, k)
-			} else {
-				t.Participants[k] = v
-			}
-		}
-		for k, v := range in.Fields {
-			if t.Fields == nil {
-				t.Fields = map[string]any{}
-			}
-			t.Fields[k] = v
+		if len(changes) == 0 && len(soft) == 0 && len(extra) == 0 {
+			task = t
+			return nil
 		}
 		if err := a.Store.UpdateTask(ctx, tx, t); err != nil {
 			return err
 		}
-		if len(changes) > 0 {
-			extra = append(extra, domain.Event{Type: "TaskUpdated", TaskID: t.ID, ActorID: sess.Actor.ID, At: time.Now(), Data: changes})
+		base := map[string]any{"title": t.Title}
+		if t.GoalID != "" {
+			base["goal_id"] = t.GoalID
 		}
-		if err := a.insertEvents(ctx, tx, sess, extra); err != nil {
+		events := make([]domain.Event, 0, len(changes)+len(soft)+len(extra))
+		for _, c := range append(changes, soft...) {
+			events = append(events, c.event("TaskFieldChanged", sess, t.ID, base))
+		}
+		events = append(events, extra...)
+		if err := a.insertEvents(ctx, tx, sess, events); err != nil {
 			return err
 		}
 		task = t
@@ -318,6 +496,60 @@ func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in Updat
 		return nil, pending(sess, prop)
 	}
 	return task, nil
+}
+
+// canEditTask 判断一个人能不能就地修改任务：任务的负责人、创建者、验收人、参与人（含他们名下 Agent 的所有者）、
+// 所属目标的负责人链（同 canEditGoal），以及组织负责人。这不是新权限，只是把「与任务有关的人」说清楚。
+func (a *App) canEditTask(ctx context.Context, tx pgx.Tx, sess *Session, ix *OrgIndex, t *domain.Task) bool {
+	if sess.IsOwner {
+		return true
+	}
+	mine := func(id string) bool {
+		if id == "" {
+			return false
+		}
+		return id == sess.MemberID || ix.ownerOfAgent[id] == sess.MemberID
+	}
+	if mine(t.AssigneeID) || mine(t.CreatorID) || mine(t.ReviewerID) {
+		return true
+	}
+	for _, id := range t.Participants {
+		if mine(id) {
+			return true
+		}
+	}
+	if t.GoalID != "" {
+		for _, g := range ix.Goals {
+			if g.ID == t.GoalID {
+				return a.canEditGoal(ctx, tx, sess, g)
+			}
+		}
+	}
+	org, _ := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
+	return org != nil && org.OwnerMemberID == sess.MemberID
+}
+
+// taskDescendants 返回某个任务的全部子孙（不含自己）。
+func taskDescendants(tasks []*domain.Task, rootID string) map[string]bool {
+	children := map[string][]string{}
+	for _, t := range tasks {
+		if t.ParentID != "" {
+			children[t.ParentID] = append(children[t.ParentID], t.ID)
+		}
+	}
+	out := map[string]bool{}
+	stack := []string{rootID}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, c := range children[id] {
+			if !out[c] {
+				out[c] = true
+				stack = append(stack, c)
+			}
+		}
+	}
+	return out
 }
 
 // GetTask 读取任务。

@@ -4,17 +4,18 @@ import { useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { EventList } from "@/components/EventList";
 import { IconLog } from "@/components/icons";
-import { ListSkeleton } from "@/components/ui";
-import { BlockPanel, type BlockProps } from "./BlockPanel";
+import { ListSkeleton, RelativeTime } from "@/components/ui";
+import { BlockPanel, CompactList, type BlockProps } from "./BlockPanel";
 
 /** 最近动态：当前范围的动态流，EventList 自己每 30s 轮询。 */
-export function EventsBlock({ index, title, noLink }: BlockProps) {
+export function EventsBlock({ index, title, noLink, compact, dense }: BlockProps) {
   const events = useLoad(() => api.events.list({ limit: 20 }), []);
   const rows = events.data ?? [];
   return (
     <BlockPanel
       index={index}
       noLink={noLink}
+      compact={compact}
       icon={<IconLog />}
       title={title ?? t("block.events")}
       telemetry={events.data ? t("panel.rows", { n: rows.length }) : undefined}
@@ -25,7 +26,11 @@ export function EventsBlock({ index, title, noLink }: BlockProps) {
       emptyText={t("block.events.empty")}
       skeleton={<ListSkeleton rows={5} />}
     >
-      <EventList events={rows} />
+      {compact || dense ? (
+        <CompactList dense={dense} count={rows.length} label={t("block.events.compact")} rows={rows.map((e) => ({ key: e.id, title: <span className="text-ink">{e.summary}</span>, meta: <RelativeTime iso={e.created_at} /> }))} />
+      ) : (
+        <EventList events={rows} />
+      )}
     </BlockPanel>
   );
 }

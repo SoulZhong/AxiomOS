@@ -83,6 +83,13 @@ export interface Team {
   is_boundary?: boolean;
 }
 
+/** 成员从哪来："manual" 是手工建的，其余值是外部目录提供方的代码名（ADR 0017 补记：提供方是数据，不是分支） */
+export type MemberSource = string;
+/** 是否由外部目录同步而来（名字由同步决定，界面上只读） */
+export const isSynced = (x: { source?: MemberSource | null } | null | undefined): boolean => !!x?.source && x.source !== "manual";
+/** 成员状态：正常 / 待激活（同步进来还没登录过）/ 已停用 */
+export type MemberStatus = "active" | "pending_activation" | "inactive";
+
 export interface Member {
   id: ID;
   name: string;
@@ -92,6 +99,10 @@ export interface Member {
   /** 成员的界面语言 */
   locale: Locale;
   created_at: ISODateTime;
+  source?: MemberSource;
+  /** 来源的界面名（「手工」或提供方名称），后端按语言给 */
+  source_title?: string;
+  status?: MemberStatus;
 }
 
 /** 当前登录会话 */
@@ -180,6 +191,54 @@ export interface OrgInfo {
 export interface OrgMember extends Member {
   active: boolean;
   is_owner: boolean;
+  /** 状态的界面名（后端按语言给） */
+  status_title?: string;
+  /** 待激活成员的邀请（id 用于「撤回邀请」；链接只在创建时给一次） */
+  invitation?: { id?: ID; url?: string | null; expires_at: ISODateTime } | null;
+  /** 同上，扁平字段（成员与团队页的接口约定）；读取用 inviteUrlOf() */
+  invitation_url?: string | null;
+  /** 所在的全部团队（直属团队 team_id 之外还能被加进别的团队） */
+  team_ids?: ID[];
+  /** 「可能与 X 重复」（ADR 0017 补记四）：用同步同一套认法在手工成员与同步成员之间找到的疑似重复，两边都带 */
+  possible_duplicate_of?: DirectoryDuplicateHint[];
+}
+export interface DirectoryDuplicateHint { id: ID; name: string; reason: DirectoryMatchReason; reason_text: string }
+/** 待激活成员的邀请链接：两种字段形态都认 */
+export const inviteUrlOf = (m: OrgMember | null | undefined): string | null => m?.invitation?.url || m?.invitation_url || null;
+/** 成员所在的全部团队 id（没有 team_ids 时退回直属团队） */
+export const teamIdsOf = (m: OrgMember): ID[] => (m.team_ids && m.team_ids.length ? m.team_ids : m.team_id ? [m.team_id] : []);
+
+/** 成员与团队页的批量操作（POST /org/members/bulk） */
+export type BulkMemberAction = "move_team" | "add_team" | "set_roles" | "deactivate" | "reactivate";
+export interface BulkMembersResult {
+  updated: number;
+  skipped: Array<{ id: ID; reason: string }>;
+}
+/** CSV 导入预览：每行一个动作 */
+export interface MemberImportRow {
+  line: number;
+  name: string;
+  email: string;
+  team_path: string;
+  team_id: ID | null;
+  roles: string[];
+  /** confirm = 新邮箱、但姓名与某个手工成员相同且团队同名，要人决定（ADR 0017 补记四）；skip = 按决定跳过 */
+  action: "create" | "update" | "confirm" | "skip" | "invalid";
+  reason?: string;
+  /** action 为 confirm 时的疑似对象 */
+  candidates?: DirectoryCandidate[];
+}
+export interface MemberImportPreview {
+  rows: MemberImportRow[];
+  summary: { create: number; update: number; invalid: number; confirm?: number; skip?: number };
+}
+/** 导入时对 confirm 行的决定：merge 要给 local_id（必须在候选里） */
+export interface MemberImportDecision { line: number; decision: DirectoryDecision; local_id?: ID }
+export interface MemberImportResult {
+  created: number;
+  updated: number;
+  skipped: Array<{ line?: number; email?: string; reason: string }>;
+  invitations: Array<{ email: string; name?: string; url: string }>;
 }
 
 export interface Invitation {
@@ -191,6 +250,9 @@ export interface Invitation {
   expires_at: ISODateTime;
   accepted_at: ISODateTime | null;
   created_at: ISODateTime;
+  /** 邀请时选的团队，以及后端据此立刻建出的待激活成员（成员表里直接看得到，不用前端拼） */
+  team_id?: ID | null;
+  member_id?: ID | null;
 }
 
 export interface OrgRole {
@@ -213,6 +275,210 @@ export interface OrgTeam {
   member_ids: ID[];
   /** 共享边界（ADR 0013）：打开后这个团队和它下面的所有团队构成一个共享域 */
   is_boundary?: boolean;
+  /** 来自外部目录的团队名称不可改（ADR 0017） */
+  source?: MemberSource;
+  /** 来源的界面名（「手工」或提供方名称） */
+  source_title?: string;
+  external_name?: string | null;
+  /** 外部目录里消失的部门只停用不删除 */
+  active?: boolean;
+  /** 直属人数 / 含下级的总人数（成员与团队页；没有时前端按 member_ids 算） */
+  member_count?: number;
+  subtree_member_count?: number;
+}
+
+// ---------- 外部目录同步（ADR 0017） ----------
+
+/** 提供方代码名：来自 GET /org/directory/providers，前端不枚举 */
+export type DirectoryProvider = string;
+export type DirectorySchedule = "manual" | "hourly" | "daily";
+export type DirectoryRunStatus = "ok" | "partial" | "failed" | "running";
+
+export interface DirectoryRun {
+  id?: ID;
+  provider?: string;
+  started_at: ISODateTime;
+  finished_at: ISODateTime | null;
+  status: DirectoryRunStatus;
+  status_title: string;
+  added_teams: number;
+  updated_teams: number;
+  deactivated_teams: number;
+  added_members: number;
+  updated_members: number;
+  deactivated_members: number;
+  errors: string[];
+  /** 只在「立即同步」的响应里出现：本次新建成员的邀请链接 */
+  invitations?: Array<{ member_id: ID; name: string; url: string }>;
+}
+
+/** 提供方声明的一个凭据字段：表单按它渲染，校验按它做 */
+export interface DirectoryField {
+  key: string;
+  title: string;
+  /** 保密字段：只上传不回传，界面只知道有没有设过 */
+  secret: boolean;
+  placeholder: string;
+  hint: string;
+  /** 只在 GET /org/directory 的 providers[] 里、且是当前提供方时有意义 */
+  set?: boolean;
+  value?: string;
+}
+
+/** 一个可接入的提供方：怎么叫、要填什么、接入前要准备什么 */
+export interface DirectoryProviderInfo {
+  key: DirectoryProvider;
+  title: string;
+  /** 提供方的根部门编号（留空同步根部门时后端用它） */
+  root_department_id: string;
+  fields: DirectoryField[];
+  prerequisites: string[];
+  /** 到哪儿去找这些凭据：一句提示，带 url 时界面上附「打开{name}控制台」外链 */
+  tip?: DirectoryTip;
+  /** 过渡期字段：旧版后端给的是分步指引，界面只取第一步当提示 */
+}
+export interface DirectoryTip { text: string; url?: string }
+
+export interface DirectoryConfig {
+  provider: DirectoryProvider | null;
+  provider_title: string;
+  configured: boolean;
+  /** 非保密凭据的值（按字段键） */
+  credentials: Record<string, string>;
+  /** 保密凭据是否已设置（按字段键）；值从不回传 */
+  secrets_set: Record<string, boolean>;
+  providers: DirectoryProviderInfo[];
+  root_department_id: string;
+  /** 多个同步根（见 DirectoryInput.root_department_ids）；旧后端不给 */
+  root_department_ids?: string[];
+  default_role: string;
+  schedule: DirectorySchedule;
+  schedule_title: string;
+  schedules: Array<{ value: DirectorySchedule; title: string }>;
+  proxy_url: string;
+  last_run: DirectoryRun | null;
+}
+
+export interface DirectoryInput {
+  provider: DirectoryProvider;
+  /** 按提供方声明的字段键；省略（或空串）某个保密字段表示不改 */
+  credentials?: Record<string, string>;
+  root_department_id?: string;
+  /** 多个同步根（应用只被授权了部分部门时从里面勾选）；每个根成为一个顶层团队。空数组 = 只看 root_department_id */
+  root_department_ids?: string[];
+  default_role?: string;
+  schedule?: DirectorySchedule;
+  proxy_url?: string;
+}
+
+// ---------- 接入检查清单（ADR 0017 补记二）：提供方自己声明检查项，应用层汇总成向导状态 ----------
+export type DirectoryCheckStatus = "ok" | "todo" | "blocked" | "skipped";
+export interface DirectoryCheck {
+  key: string;
+  title: string;
+  /** ok 通过；todo 待处理（不拦同步）；blocked 阻塞（同步前必须处理）；skipped 前面的项没过、这项没查 */
+  status: DirectoryCheckStatus;
+  /** 技术细节（可能出现权限代号、错误码）：只放在「详情」里 */
+  detail?: string;
+  /** 一句"去哪儿点什么" */
+  fix?: string;
+  /** 尽量是这个应用在控制台里的那一页 */
+  fix_url?: string;
+  blocking: boolean;
+  /** 只在"权限范围"那一项上、且应用只被授权了部分部门时：可以作为同步根的部门（与 DirectoryChecklist.suggested_roots 相同） */
+  roots?: Array<{ id: string; name: string }>;
+}
+export type DirectoryStep = "credentials" | "checks" | "scope" | "preview" | "sync" | "schedule";
+export interface DirectoryChecklist {
+  provider: DirectoryProvider;
+  provider_title: string;
+  /** 提供方控制台首页：检查项没给 fix_url 时的退路 */
+  console_url?: string;
+  checks: DirectoryCheck[];
+  /** 没有阻塞项 */
+  ready: boolean;
+  next: { step: DirectoryStep; text: string };
+  /** 应用只被授权了部分部门时：可以勾选作为同步根的部门 */
+  suggested_roots?: Array<{ id: string; name: string }>;
+  root_department_id: string;
+  root_department_ids?: string[];
+}
+
+export interface DirectoryTest {
+  ok: boolean;
+  tenant_name?: string;
+  department_name?: string;
+  /** 失败时是一句完整的话 */
+  error?: string;
+  /** 根部门被拒绝、应用只被授权部分部门时：可直接填成同步根部门的部门 */
+  suggested_roots?: Array<{ id: string; name: string }>;
+}
+
+export interface DirectoryTeamPlan {
+  external_id: string;
+  name: string;
+  parent_external_id?: string;
+  local_id?: string | null;
+  /** confirm = 有疑似相同的本地团队，等人决定（ADR 0017 补记四） */
+  action: "create" | "update" | "keep" | "confirm";
+  /** 这次同步会把外部身份绑到 local_id 上（合并决定） */
+  bind?: boolean;
+  merge_from?: ID | null;
+  candidates?: Array<{ local_id: ID; reason: DirectoryMatchReason; via?: string }>;
+}
+
+// ---------- 冲突与对应关系（ADR 0017 补记四） ----------
+export type DirectoryKind = "member" | "team";
+export type DirectoryDecision = "merge" | "create" | "skip";
+/** 认法：邮箱相同 / 手机号相同 / 姓名相同且所在部门与本地主团队同名 / 团队同名同层级 */
+export type DirectoryMatchReason = "email" | "mobile" | "name_team" | "name_unique" | "team_name_level";
+/** 系统里的疑似对象 */
+export interface DirectoryCandidate {
+  local_id: ID;
+  name: string;
+  team_path: string;
+  source: MemberSource;
+  source_title: string;
+  reason: DirectoryMatchReason;
+  /** 一句小字：「邮箱相同」「姓名相同且都在研发组下」「团队同名同层级」 */
+  reason_text: string;
+}
+/** IM 里的对象 */
+export interface DirectoryExternal { id: string; name: string; dept?: string; parent?: string; email_masked?: string; mobile_tail?: string }
+/** 预览里「需要你确认」的一条 */
+export interface DirectoryConfirmation { kind: DirectoryKind; external: DirectoryExternal; candidates: DirectoryCandidate[] }
+/** 已决定（合并 / 新建）的一条：同形状，多决定 */
+export interface DirectoryDecided extends DirectoryConfirmation {
+  decision: "merge" | "create";
+  decision_title: string;
+  decided_local_id?: ID | null;
+  decided_local_name?: string | null;
+}
+export interface DirectorySkipped { kind: DirectoryKind; external_id: string; external_name: string; decided_at: ISODateTime }
+export interface DirectoryDecisionInput { kind: DirectoryKind; external_id: string; external_name?: string; decision: DirectoryDecision; local_id?: ID }
+export interface DirectoryDecisionRecord { kind: DirectoryKind; external_id: string; external_name: string; decision: DirectoryDecision; decision_title: string; local_id?: ID | null; local_name?: string | null; decided_at: ISODateTime }
+/** 「对应关系」面板：已绑定 / 可能重复 / 已跳过 */
+export interface DirectoryBinding { kind: DirectoryKind; external_id: string; external_name?: string; local_id: ID; local_name: string; local_active: boolean; since: ISODateTime }
+export interface DirectoryDuplicateSide { id: ID; name: string; source: MemberSource; source_title: string; team_path: string }
+/** 同步之后在手工对象（a）与同步对象（b）之间找到的疑似重复 */
+export interface DirectoryDuplicate { kind: DirectoryKind; a: DirectoryDuplicateSide; b: DirectoryDuplicateSide; reason: DirectoryMatchReason; reason_text: string }
+export interface DirectoryMappings { provider?: string | null; provider_title?: string; bound: DirectoryBinding[]; duplicates: DirectoryDuplicate[]; skipped: DirectorySkipped[] }
+
+export interface DirectoryPreview {
+  teams: DirectoryTeamPlan[];
+  teams_to_deactivate: Array<{ id: ID; name: string }>;
+  members_total: number;
+  members_new: number;
+  members_existing: number;
+  members_to_deactivate: Array<{ id: ID; name: string }>;
+  /** 无法自动处理的项（如没有邮箱的人），每条是一句话 */
+  notes: string[];
+  /** 需要人决定的候选（ADR 0017 补记四）；旧后端不给 */
+  confirmations?: DirectoryConfirmation[];
+  decided?: DirectoryDecided[];
+  skipped?: DirectorySkipped[];
+  /** = confirmations.length；大于 0 时同步被挡住 */
+  blocked_by_confirmations?: number;
 }
 
 export interface Capability {
@@ -329,7 +595,10 @@ export interface Agent {
   online: boolean;
   last_seen_at: ISODateTime | null;
   max_concurrency: number;
+  runtime?: string;
   created_at: ISODateTime;
+  /** 当前登录者能不能改它：自己的 Agent 可以；别人的公共 Agent 只读（非管理员看不到其他人的私有 Agent） */
+  can_manage: boolean;
 }
 
 export interface AgentInput {
@@ -484,7 +753,9 @@ export interface GoalInput {
   title: string;
   description?: string;
   owner_id?: ID;
+  /** 换上级：空字符串 / null 表示提为顶级 */
   parent_id?: ID | null;
+  team_id?: ID | null;
   budget?: number | null;
   planned_start?: ISODate | null;
   planned_end?: ISODate | null;
@@ -586,6 +857,8 @@ export interface Task {
   required_role: string | null; // 进入待领取任务时要求的角色
   pending_participant: string | null; // 待回填的参与角色位置
   required_capabilities: string[];
+  /** 仅限人工：Agent 不能领取 / 执行（老后端没有这个字段） */
+  human_only?: boolean;
   relations: Relation[];
   artifacts: Artifact[];
   comments: Comment[];
@@ -618,6 +891,7 @@ export interface TaskInput {
   participants?: Record<string, ID>; // 位置 -> 执行者
   reviewer_id?: ID;
   required_capabilities?: string[];
+  human_only?: boolean;
   planned_start?: ISODate | null;
   planned_end?: ISODate | null;
   estimate?: number | null;
@@ -887,6 +1161,8 @@ export type EventKind =
   | "CommentAdded"
   | "NoteAdded"
   | "TaskUpdated"
+  | "TaskFieldChanged"
+  | "GoalFieldChanged"
   | "AgentUpdated"
   | "TaskTypeSaved"
   | "TasksLinked"
@@ -900,6 +1176,12 @@ export type EventKind =
   | "MilestoneUnreached"
   | "MilestoneDeleted"
   | "AgentRegistered"
+  | "DirectoryConfigured"
+  | "DirectorySyncRan"
+  | "DirectoryDecided"
+  | "DirectoryUnbound"
+  | "MemberMerged"
+  | "TeamMerged"
   | "AgentRemoved"
   | "SprintCreated"
   | "SprintStarted"
@@ -1098,14 +1380,58 @@ export interface LoadRow {
 // ---------- 工作台（ADR 0015，docs/api.md「工作台」） ----------
 
 /** 区块键：系统定义的有限集合，客户不能自造。 */
-export type BlockKey = "overview_summary" | "exceptions" | "my_tasks" | "my_review" | "team_load" | "cost_budget" | "events" | "sprint" | "backlog" | "trend";
-/** `proposals` 区块已从目录移除（DESIGN.md §12：被「待我处理」覆盖）；老布局里出现它时前端直接忽略。 */
-export const BLOCK_KEYS: BlockKey[] = ["overview_summary", "exceptions", "my_tasks", "my_review", "team_load", "cost_budget", "events", "sprint", "backlog", "trend"];
+export type BlockKey = "inbox" | "readouts" | "overview_summary" | "exceptions" | "my_tasks" | "my_review" | "team_load" | "cost_budget" | "events" | "sprint" | "backlog" | "trend";
+/**
+ * `inbox`（待我处理）与 `readouts`（组织概况）自 ADR 0015 补记四起也是区块，默认在最上面，可拖动 / 改大小 / 移除。
+ * `proposals` 区块已从目录移除（DESIGN.md §12：被「待我处理」覆盖）；老布局里出现它时前端直接忽略。
+ */
+export const BLOCK_KEYS: BlockKey[] = ["inbox", "readouts", "overview_summary", "exceptions", "my_tasks", "my_review", "team_load", "cost_budget", "events", "sprint", "backlog", "trend"];
 export const isBlockKey = (k: string): k is BlockKey => (BLOCK_KEYS as string[]).includes(k);
 
-/** 已解析的工作台里的一块：title 由后端按语言给。 */
-export interface WorkspaceBlock {
+/** 网格常量（DESIGN.md §13）：12 栏、行高单位 120px、间距 16px、最高 6 行。 */
+export const GRID_COLS = 12;
+export const GRID_ROW_PX = 120;
+export const GRID_GAP_PX = 16;
+export const GRID_MAX_H = 6;
+/** 区块宽度：占几栏，`min_w`…12 的任意整数（ADR 0015 补记三，不再限定档位）。 */
+export type BlockWidth = number;
+/** 区块高度：占几行，1…6 的任意整数。 */
+export type BlockHeight = number;
+export const isBlockWidth = (w: unknown): w is BlockWidth => typeof w === "number" && Number.isInteger(w) && w >= 1 && w <= GRID_COLS;
+export const isBlockHeight = (h: unknown): h is BlockHeight => typeof h === "number" && Number.isInteger(h) && h >= 1 && h <= GRID_MAX_H;
+
+/**
+ * 每个区块的默认宽高与最小宽度（ADR 0015 补记二）。目录接口（GET /workspace/blocks）给的才是权威值；
+ * 这里是老后端只给字符串数组、或还没带 default_w 时的兜底，与后端 GET /workspace/blocks 现在给的值一致（待我处理、组织概况、任务表、概览摘要、趋势最窄 6 栏，其余 3 栏）。
+ */
+export const BLOCK_SIZE_DEFAULTS: Record<BlockKey, { w: BlockWidth; h: BlockHeight; minW: BlockWidth }> = {
+  inbox: { w: 12, h: 2, minW: 6 },
+  readouts: { w: 12, h: 1, minW: 6 },
+  overview_summary: { w: 12, h: 1, minW: 3 },
+  exceptions: { w: 6, h: 2, minW: 3 },
+  my_tasks: { w: 12, h: 2, minW: 6 },
+  my_review: { w: 12, h: 2, minW: 6 },
+  team_load: { w: 6, h: 2, minW: 3 },
+  cost_budget: { w: 6, h: 2, minW: 3 },
+  events: { w: 6, h: 3, minW: 3 },
+  sprint: { w: 6, h: 2, minW: 3 },
+  backlog: { w: 6, h: 2, minW: 3 },
+  trend: { w: 12, h: 2, minW: 6 },
+};
+
+/** 布局里的一块：键 + 12 栏网格里的坐标与宽高（ADR 0015 补记三）。PUT 的输入与角色布局、预设都用这个形状。 */
+export interface LayoutBlock {
   key: BlockKey;
+  /** 左上角所在的栏（0 起），x + w ≤ 12 */
+  x: number;
+  /** 左上角所在的行（0 起） */
+  y: number;
+  w: BlockWidth;
+  h: BlockHeight;
+}
+
+/** 已解析的工作台里的一块：title 由后端按语言给；坐标 / 宽高缺省时前端按目录默认与顺序补齐。 */
+export interface WorkspaceBlock extends LayoutBlock {
   title: string;
 }
 
@@ -1125,14 +1451,18 @@ export interface BlockDef {
   key: BlockKey;
   title: string;
   description: string;
+  default_w: BlockWidth;
+  default_h: BlockHeight;
+  /** 编辑器不允许拖到比这更窄 */
+  min_w: BlockWidth;
 }
 
-/** 预设：系统发的一套区块组合，按"这类人关心什么"命名，不写死角色名。 */
+/** 预设：系统发的一套区块组合（带坐标与宽高），按"这类人关心什么"命名，不写死角色名。 */
 export interface Preset {
   key: string;
   title: string;
   description: string;
-  blocks: BlockKey[];
+  blocks: LayoutBlock[];
 }
 
 /** GET /workspace/blocks：全部区块与预设。 */
@@ -1145,12 +1475,102 @@ export interface WorkspaceCatalog {
 export interface RoleWorkspace {
   role: string;
   role_title: string;
-  blocks: BlockKey[];
+  blocks: LayoutBlock[];
   preset: string | null;
   member_count: number;
 }
 
-export type RoleWorkspaceInput = { blocks: BlockKey[] } | { preset: string };
+export type RoleWorkspaceInput = { blocks: LayoutBlock[] } | { preset: string };
+
+/** 接口里一块区块的原始形状：老后端给字符串或只有宽高，新后端给带坐标的对象。 */
+export type RawBlock = BlockKey | { key: BlockKey; title?: string; x?: number; y?: number; w?: number; h?: number };
+type RawBlockDef = Omit<BlockDef, "default_w" | "default_h" | "min_w"> & Partial<Pick<BlockDef, "default_w" | "default_h" | "min_w">>;
+type RawPreset = Omit<Preset, "blocks"> & { blocks: RawBlock[] };
+type RawRoleWorkspace = Omit<RoleWorkspace, "blocks"> & { blocks: RawBlock[] };
+type RawWorkspace = Omit<Workspace, "blocks"> & { blocks: Array<{ key: BlockKey; title?: string; x?: number; y?: number; w?: number; h?: number }> };
+
+type SizeDefs = Pick<BlockDef, "key" | "default_w" | "default_h">[];
+const isCoord = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
+
+/** 两块是否重叠（都是 12 栏网格里的矩形）。 */
+export const blocksOverlap = (a: LayoutBlock, b: LayoutBlock) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+/**
+ * 缺坐标时的致密排布（docs/api.md「工作台」：缺 x/y 的旧布局按顺序致密排布）：
+ * 按数组顺序，从上到下逐行、从左到右逐栏找第一个能放下 w×h 的空位；已经有坐标的块先占位。结果确定，不依赖渲染。
+ */
+export function placeMissing(blocks: Array<Omit<LayoutBlock, "x" | "y"> & { x?: number; y?: number }>): LayoutBlock[] {
+  const placed: LayoutBlock[] = [];
+  const out: LayoutBlock[] = [];
+  for (const b of blocks) {
+    const w = Math.min(Math.max(1, b.w), GRID_COLS);
+    if (isCoord(b.x) && isCoord(b.y)) {
+      const fixed = { key: b.key, x: Math.min(b.x, GRID_COLS - w), y: b.y, w, h: b.h };
+      placed.push(fixed);
+      out.push(fixed);
+    } else out.push({ key: b.key, x: -1, y: -1, w, h: b.h });
+  }
+  for (const b of out) {
+    if (b.x >= 0) continue;
+    search: for (let y = 0; ; y++) {
+      for (let x = 0; x + b.w <= GRID_COLS; x++) {
+        const cand = { ...b, x, y };
+        if (!placed.some((p) => blocksOverlap(p, cand))) {
+          b.x = x;
+          b.y = y;
+          placed.push(b);
+          break search;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 向上压实（与 react-grid-layout 的 vertical compact 同一规则）：按 y、x 排序，每块尽量往上移到不碰别人为止。
+ * 保存前与 mock 校验后都用它，保证不留空洞。
+ */
+export function compactLayout(blocks: LayoutBlock[]): LayoutBlock[] {
+  const sorted = [...blocks].sort((a, b) => a.y - b.y || a.x - b.x);
+  const done: LayoutBlock[] = [];
+  for (const b of sorted) {
+    const cur = { ...b };
+    while (cur.y > 0 && !done.some((d) => blocksOverlap(d, { ...cur, y: cur.y - 1 }))) cur.y--;
+    done.push(cur);
+  }
+  return blocks.map((b) => done.find((d) => d.key === b.key)!);
+}
+
+/**
+ * 把接口给的一块补成完整的 {key, x, y, w, h}：宽高缺省或不合法时取目录默认（优先用调用方传进来的目录，其次 BLOCK_SIZE_DEFAULTS）；
+ * 坐标缺省时留给 normalizeLayout 按顺序排布（这里只补尺寸，坐标原样带出）。目录里没有的键（如已移除的 proposals）原样保留，由页面按 registry 跳过。
+ */
+export function normalizeLayoutBlock(raw: RawBlock, defs?: SizeDefs): Omit<LayoutBlock, "x" | "y"> & { x?: number; y?: number } {
+  const key = typeof raw === "string" ? raw : raw.key;
+  const def = defs?.find((d) => d.key === key);
+  const fallback = BLOCK_SIZE_DEFAULTS[key] ?? { w: 12, h: 2 };
+  const r: { x?: number; y?: number; w?: number; h?: number } = typeof raw === "string" ? {} : raw;
+  const w = isBlockWidth(r.w) ? r.w : (def?.default_w ?? fallback.w);
+  const h = isBlockHeight(r.h) ? r.h : (def?.default_h ?? fallback.h);
+  return { key, w, h, x: isCoord(r.x) ? r.x : undefined, y: isCoord(r.y) ? r.y : undefined };
+}
+/** 一整份布局：逐块补尺寸，再给缺坐标的块按顺序找空位。 */
+export function normalizeLayout(raws: RawBlock[] | undefined, defs?: SizeDefs): LayoutBlock[] {
+  return placeMissing((raws ?? []).map((b) => normalizeLayoutBlock(b, defs)));
+}
+function normalizeBlockDef(d: RawBlockDef): BlockDef {
+  const fb = BLOCK_SIZE_DEFAULTS[d.key] ?? { w: 12, h: 2, minW: 3 };
+  return { ...d, default_w: isBlockWidth(d.default_w) ? d.default_w : fb.w, default_h: isBlockHeight(d.default_h) ? d.default_h : fb.h, min_w: isBlockWidth(d.min_w) ? d.min_w : fb.minW };
+}
+function normalizeWorkspace(ws: RawWorkspace): Workspace {
+  const blocks = normalizeLayout(ws.blocks ?? []);
+  return { ...ws, blocks: blocks.map((b, i) => ({ ...b, title: ws.blocks?.[i]?.title ?? "" })) };
+}
+/** PUT 的请求体：只发 {key, x, y, w, h}。 */
+const layoutBody = (blocks: LayoutBlock[]) => ({ blocks: blocks.map(({ key, x, y, w, h }) => ({ key, x, y, w, h })) });
+/** 两份布局是否完全一样（键、坐标、宽高都相同，顺序无关）。 */
+export const sameLayout = (a: LayoutBlock[], b: LayoutBlock[]) => a.length === b.length && a.every((x) => b.some((y) => y.key === x.key && y.x === x.x && y.y === x.y && y.w === x.w && y.h === x.h));
 
 // ---------- 待我处理（DESIGN.md §12，docs/api.md「待我处理」） ----------
 
@@ -1233,11 +1653,13 @@ function withScope(method: string, path: string, query?: Query): Query | undefin
   return { ...(query ?? {}), scope };
 }
 
-async function request<T>(method: string, path: string, body?: unknown, rawQuery?: Query): Promise<T> {
+/** 非 JSON 的请求体 / 响应（CSV 导入导出）：text 给请求体的原文与类型；accept "text" 时把响应原文当结果 */
+interface RawOptions { text?: { body: string; type: string }; accept?: "text" }
+async function request<T>(method: string, path: string, body?: unknown, rawQuery?: Query, raw?: RawOptions): Promise<T> {
   const query = withScope(method, path, rawQuery);
   if (MOCK) {
     const { mockRequest } = await import("./mock");
-    return mockRequest(method, path, body, query) as Promise<T>;
+    return mockRequest(method, path, raw?.text ? raw.text.body : body, query) as Promise<T>;
   }
   const url = new URL(`${API_BASE}/api/v1${path}`);
   if (query) {
@@ -1246,15 +1668,17 @@ async function request<T>(method: string, path: string, body?: unknown, rawQuery
     }
   }
   const headers: Record<string, string> = { "Accept-Language": getLocale() };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (raw?.text) headers["Content-Type"] = raw.text.type;
+  else if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(url.toString(), {
     method,
     credentials: "include",
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: raw?.text ? raw.text.body : body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (res.status === 204) return undefined as T;
   const text = await res.text();
+  if (raw?.accept === "text" && res.ok) return text as T;
   let data: unknown = null;
   if (text) {
     try {
@@ -1269,6 +1693,10 @@ async function request<T>(method: string, path: string, body?: unknown, rawQuery
   }
   return data as T;
 }
+
+/** CSV 导入的请求体：没有决定时整个请求体就是 CSV 文本；带决定时用 JSON `{csv, decisions}`（两种形式后端都认） */
+const importBody = (csv: string, decisions?: MemberImportDecision[]): [unknown, Query | undefined, RawOptions | undefined] =>
+  decisions && decisions.length ? [{ csv, decisions }, undefined, undefined] : [undefined, undefined, { text: { body: csv, type: "text/csv" } }];
 
 export const api = {
   auth: {
@@ -1380,22 +1808,26 @@ export const api = {
   },
   /** 工作台（ADR 0015）：首页由区块组成，布局按角色配，个人可微调。 */
   workspace: {
-    /** 我的工作台（已解析：个人微调 → 角色并集 → 默认） */
-    get: () => request<Workspace>("GET", "/workspace"),
-    /** 个人微调：只能用系统区块键 */
-    saveMine: (blocks: BlockKey[]) => request<Workspace>("PUT", "/workspace/me", { blocks }),
+    /** 我的工作台（已解析：个人微调 → 角色并集 → 默认）；宽高缺省时按目录默认补齐 */
+    get: async (): Promise<Workspace> => normalizeWorkspace(await request<RawWorkspace>("GET", "/workspace")),
+    /** 个人微调：区块键 + 宽高（ADR 0015 补记二） */
+    saveMine: async (blocks: LayoutBlock[]): Promise<Workspace> => normalizeWorkspace(await request<RawWorkspace>("PUT", "/workspace/me", layoutBody(blocks))),
     /** 清除个人微调，回到角色默认 */
     resetMine: () => request<void>("DELETE", "/workspace/me"),
-    /** 全部区块与预设（标题按语言）。后端若只返回区块数组，这里补成 { blocks, presets: [] }。 */
+    /** 全部区块与预设（标题按语言）。后端若只返回区块数组，这里补成 { blocks, presets: [] }；没带尺寸字段时按默认补齐。 */
     catalog: async (): Promise<WorkspaceCatalog> => {
-      const r = await request<WorkspaceCatalog | BlockDef[]>("GET", "/workspace/blocks");
-      if (Array.isArray(r)) return { blocks: r, presets: [] };
-      return { blocks: r.blocks ?? [], presets: r.presets ?? [] };
+      const r = await request<{ blocks?: RawBlockDef[]; presets?: RawPreset[] } | RawBlockDef[]>("GET", "/workspace/blocks");
+      const blocks = (Array.isArray(r) ? r : (r.blocks ?? [])).map(normalizeBlockDef);
+      const presets = (Array.isArray(r) ? [] : (r.presets ?? [])).map((p) => ({ ...p, blocks: normalizeLayout(p.blocks, blocks) }));
+      return { blocks, presets };
     },
     /** 各角色的布局（需要 org_settings） */
-    org: () => request<RoleWorkspace[]>("GET", "/org/workspace"),
-    /** 给角色配布局：整套预设，或逐块给 */
-    saveRole: (role: string, input: RoleWorkspaceInput) => request<RoleWorkspace>("PUT", `/org/workspace/${encodeURIComponent(role)}`, input),
+    org: async (): Promise<RoleWorkspace[]> => (await request<RawRoleWorkspace[]>("GET", "/org/workspace")).map((r) => ({ ...r, blocks: normalizeLayout(r.blocks) })),
+    /** 给角色配布局：整套预设，或逐块给（带宽高） */
+    saveRole: async (role: string, input: RoleWorkspaceInput): Promise<RoleWorkspace> => {
+      const r = await request<RawRoleWorkspace>("PUT", `/org/workspace/${encodeURIComponent(role)}`, "blocks" in input ? layoutBody(input.blocks) : input);
+      return { ...r, blocks: normalizeLayout(r.blocks) };
+    },
     /** 清除该角色布局，回到默认 */
     resetRole: (role: string) => request<void>("DELETE", `/org/workspace/${encodeURIComponent(role)}`),
   },
@@ -1422,16 +1854,27 @@ export const api = {
       request<OrgMember>("PATCH", `/org/members/${encodeURIComponent(id)}`, patch),
     makeOwner: (id: ID) => request<OrgMember>("POST", `/org/members/${encodeURIComponent(id)}/make-owner`, {}),
     invitations: () => request<Invitation[]>("GET", "/org/invitations"),
-    createInvitation: (input: { email: string; name?: string; roles: string[] }) => request<Invitation>("POST", "/org/invitations", input),
+    createInvitation: (input: { email: string; name?: string; roles: string[]; team_id?: ID | null }) => request<Invitation>("POST", "/org/invitations", input),
+    /** 成员与团队页：批量变更团队 / 改角色 / 停用 / 恢复 */
+    bulkMembers: (input: { member_ids: ID[]; action: BulkMemberAction; team_id?: ID | null; roles?: string[] }) => request<BulkMembersResult>("POST", "/org/members/bulk", input),
+    /** CSV 导出（姓名、邮箱、团队、角色），返回原文 */
+    exportMembersCsv: () => request<string>("GET", "/org/members/export.csv", undefined, undefined, { accept: "text" }),
+    /** CSV 导入：先预览（不落库），再确认 */
+    importMembersPreview: (csv: string, decisions?: MemberImportDecision[]) => request<MemberImportPreview>("POST", "/org/members/import/preview", ...importBody(csv, decisions)),
+    importMembers: (csv: string, decisions?: MemberImportDecision[]) => request<MemberImportResult>("POST", "/org/members/import", ...importBody(csv, decisions)),
+    /** 把成员 id 并入 into（ADR 0017 补记四）：目标保留一切，旧成员的归属改到目标并停用 */
+    mergeMember: (id: ID, into: ID) => request<OrgMember>("POST", `/org/members/${encodeURIComponent(id)}/merge`, { into }),
     deleteInvitation: (id: ID) => request<void>("DELETE", `/org/invitations/${encodeURIComponent(id)}`),
     roles: () => request<OrgRole[]>("GET", "/org/roles"),
     saveRole: (name: string, input: { title: LocalizedTitle; permissions: string[] }) => request<OrgRole>("PUT", `/org/roles/${encodeURIComponent(name)}`, input),
     deleteRole: (name: string) => request<void>("DELETE", `/org/roles/${encodeURIComponent(name)}`),
     teams: () => request<OrgTeam[]>("GET", "/org/teams"),
     createTeam: (input: { name: string; parent_id?: ID | null; lead_id?: ID | null; member_ids?: ID[]; is_boundary?: boolean }) => request<OrgTeam>("POST", "/org/teams", input),
-    updateTeam: (id: ID, patch: { name?: string; parent_id?: ID | null; lead_id?: ID | null; member_ids?: ID[]; is_boundary?: boolean }) =>
+    updateTeam: (id: ID, patch: { name?: string; parent_id?: ID | null; lead_id?: ID | null; member_ids?: ID[]; is_boundary?: boolean; active?: boolean }) =>
       request<OrgTeam>("PATCH", `/org/teams/${encodeURIComponent(id)}`, patch),
     deleteTeam: (id: ID) => request<void>("DELETE", `/org/teams/${encodeURIComponent(id)}`),
+    /** 把团队 id 并入 into：旧团队的成员、目标、任务、迭代整体并入，旧团队停用不删除 */
+    mergeTeam: (id: ID, into: ID) => request<OrgTeam>("POST", `/org/teams/${encodeURIComponent(id)}/merge`, { into }),
     capabilities: () => request<Capability[]>("GET", "/org/capabilities"),
     saveCapability: (name: string, input: { title: LocalizedTitle }) => request<Capability>("PUT", `/org/capabilities/${encodeURIComponent(name)}`, input),
     deleteCapability: (name: string) => request<void>("DELETE", `/org/capabilities/${encodeURIComponent(name)}`),
@@ -1439,6 +1882,22 @@ export const api = {
     savePrice: (modelId: string, input: PriceInput) => request<OrgPriceModel>("PUT", `/org/pricing/models/${encodeURIComponent(modelId)}`, input),
     deletePrice: (modelId: string) => request<void>("DELETE", `/org/pricing/models/${encodeURIComponent(modelId)}`),
     saveRate: (input: ExchangeRate) => request<ExchangeRate>("PUT", "/org/pricing/rates", input),
+    /** 外部目录同步（ADR 0017）：配置、测试连接、预览、立即同步、历次记录 */
+    directory: {
+      get: () => request<DirectoryConfig>("GET", "/org/directory"),
+      providers: () => request<DirectoryProviderInfo[]>("GET", "/org/directory/providers"),
+      save: (input: DirectoryInput) => request<DirectoryConfig>("PUT", "/org/directory", input),
+      test: () => request<DirectoryTest>("POST", "/org/directory/test", {}),
+      checklist: () => request<DirectoryChecklist>("GET", "/org/directory/checklist"),
+      preview: () => request<DirectoryPreview>("GET", "/org/directory/preview"),
+      sync: () => request<DirectoryRun>("POST", "/org/directory/sync", {}),
+      runs: (limit = 20) => request<DirectoryRun[]>("GET", "/org/directory/runs", undefined, { limit }),
+      /** 冲突与对应关系（ADR 0017 补记四）：写决定、撤回决定、对应关系面板、解绑 */
+      decide: (items: DirectoryDecisionInput[]) => request<DirectoryDecisionRecord[]>("PUT", "/org/directory/decisions", { items }),
+      reconsider: (kind: DirectoryKind, externalId: string) => request<void>("DELETE", `/org/directory/decisions/${kind}/${encodeURIComponent(externalId)}`),
+      mappings: () => request<DirectoryMappings>("GET", "/org/directory/mappings"),
+      unbind: (kind: DirectoryKind, externalId: string) => request<void>("DELETE", `/org/directory/bindings/${kind}/${encodeURIComponent(externalId)}`),
+    },
   },
   /** 邀请接受（公开，不需要登录）。 */
   invitations: {

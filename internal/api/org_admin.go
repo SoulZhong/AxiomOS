@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -20,7 +22,12 @@ func (s *Server) orgRoutes(mux *http.ServeMux, auth func(string, http.HandlerFun
 	auth("PATCH /api/v1/org", s.orgPatch)
 	auth("GET /api/v1/org/members", s.orgMembers)
 	auth("PATCH /api/v1/org/members/{id}", s.orgMemberPatch)
+	auth("POST /api/v1/org/members/bulk", s.orgMembersBulk)
+	auth("GET /api/v1/org/members/export.csv", s.orgMembersExport)
+	auth("POST /api/v1/org/members/import/preview", s.orgMembersImportPreview)
+	auth("POST /api/v1/org/members/import", s.orgMembersImport)
 	auth("POST /api/v1/org/members/{id}/make-owner", s.orgMakeOwner)
+	auth("POST /api/v1/org/members/{id}/merge", s.orgMemberMerge)
 	auth("GET /api/v1/org/invitations", s.orgInvitations)
 	auth("POST /api/v1/org/invitations", s.orgInvite)
 	auth("DELETE /api/v1/org/invitations/{id}", s.orgInvitationDelete)
@@ -34,6 +41,7 @@ func (s *Server) orgRoutes(mux *http.ServeMux, auth func(string, http.HandlerFun
 	auth("POST /api/v1/org/teams", s.orgTeamCreate)
 	auth("PATCH /api/v1/org/teams/{id}", s.orgTeamPatch)
 	auth("DELETE /api/v1/org/teams/{id}", s.orgTeamDelete)
+	auth("POST /api/v1/org/teams/{id}/merge", s.orgTeamMerge)
 	auth("GET /api/v1/org/capabilities", s.orgCapabilities)
 	auth("PUT /api/v1/org/capabilities/{name}", s.orgCapabilityPut)
 	auth("DELETE /api/v1/org/capabilities/{name}", s.orgCapabilityDelete)
@@ -41,6 +49,7 @@ func (s *Server) orgRoutes(mux *http.ServeMux, auth func(string, http.HandlerFun
 	auth("PUT /api/v1/org/pricing/models/{model}", s.orgPricePut)
 	auth("DELETE /api/v1/org/pricing/models/{model}", s.orgPriceDelete)
 	auth("PUT /api/v1/org/pricing/rates", s.orgRatePut)
+	s.directoryRoutes(auth)
 
 	pub("GET /api/v1/invitations/{token}", s.invitationLookup)
 	pub("POST /api/v1/invitations/{token}/accept", s.invitationAccept)
@@ -89,18 +98,34 @@ type orgMemberV struct {
 	Email     string    `json:"email"`
 	Roles     []string  `json:"roles"`
 	TeamID    *string   `json:"team_id"`
+	TeamIDs   []string  `json:"team_ids"`
 	Active    bool      `json:"active"`
 	IsOwner   bool      `json:"is_owner"`
 	Locale    string    `json:"locale"`
 	CreatedAt time.Time `json:"created_at"`
+	// 来源与激活状态（ADR 0017）；待激活成员带上尚未接受的邀请（链接只在创建时返回一次）
+	Source      string       `json:"source"`
+	SourceTitle string       `json:"source_title"`
+	Status      string       `json:"status"`
+	StatusTitle string       `json:"status_title"`
+	Invitation  *invitationV `json:"invitation,omitempty"`
+	// PossibleDuplicateOf 是「可能与 X 重复」提示（ADR 0017 补记四），列表调用时算一次
+	PossibleDuplicateOf []app.DuplicateRef `json:"possible_duplicate_of,omitempty"`
 }
 
-func orgMemberView(m app.MemberDetail) orgMemberV {
+func orgMemberView(m app.MemberDetail, loc i18n.Locale) orgMemberV {
 	roles := m.Roles
 	if roles == nil {
 		roles = []string{}
 	}
-	return orgMemberV{ID: m.ID, Name: m.Name, Email: m.Email, Roles: roles, TeamID: nullable(m.TeamID), Active: m.Active, IsOwner: m.IsOwner, Locale: string(m.Locale), CreatedAt: m.CreatedAt}
+	status := m.DerivedStatus()
+	v := orgMemberV{ID: m.ID, Name: m.Name, Email: m.Email, Roles: roles, TeamID: nullable(m.TeamID), TeamIDs: orEmpty(m.TeamIDs), Active: m.Active, IsOwner: m.IsOwner, Locale: string(m.Locale), CreatedAt: m.CreatedAt,
+		Source: m.Source, SourceTitle: app.SourceTitle(m.Source, loc), Status: status, StatusTitle: i18n.Tr(loc, "member.status."+status), PossibleDuplicateOf: m.PossibleDuplicateOf}
+	if m.Invitation != nil {
+		iv := invitationView(app.InvitationView{Invitation: m.Invitation})
+		v.Invitation = &iv
+	}
+	return v
 }
 
 func (s *Server) orgMembers(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +136,7 @@ func (s *Server) orgMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []orgMemberV{}
 	for _, m := range ms {
-		out = append(out, orgMemberView(m))
+		out = append(out, orgMemberView(m, sessionOf(r).Loc()))
 	}
 	writeJSON(w, 200, out)
 }
@@ -127,7 +152,119 @@ func (s *Server) orgMemberPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, 200, orgMemberView(*m))
+	writeJSON(w, 200, orgMemberView(*m, sessionOf(r).Loc()))
+}
+
+func (s *Server) orgMembersBulk(w http.ResponseWriter, r *http.Request) {
+	var in app.BulkMembersInput
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out, err := s.App.BulkMembers(r.Context(), sessionOf(r), in)
+	respond(w, r, out, err)
+}
+
+func (s *Server) orgMembersExport(w http.ResponseWriter, r *http.Request) {
+	data, err := s.App.ExportMembersCSV(r.Context(), sessionOf(r))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="members.csv"`)
+	w.WriteHeader(200)
+	_, _ = w.Write(data)
+}
+
+const csvMaxBytes = 8 << 20
+
+// readCSVBody 取导入的 CSV：multipart 里的文件（任意字段名）或文本字段 csv，JSON 里的 {csv}，否则整个请求体就是 CSV。
+// readCSVBody 读 CSV 正文与对候选行的决定：JSON 形式 `{csv, decisions[]}`；multipart 形式里 `decisions` 字段是同样的 JSON 数组。
+func readCSVBody(w http.ResponseWriter, r *http.Request) ([]byte, []app.ImportDecision, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, csvMaxBytes)
+	ct := r.Header.Get("Content-Type")
+	switch {
+	case strings.HasPrefix(ct, "multipart/form-data"):
+		if err := r.ParseMultipartForm(csvMaxBytes); err != nil {
+			return nil, nil, app.Bad("err.csv_body")
+		}
+		var decisions []app.ImportDecision
+		if v := r.FormValue("decisions"); v != "" {
+			if err := json.Unmarshal([]byte(v), &decisions); err != nil {
+				return nil, nil, app.Bad("err.bad_json", err.Error())
+			}
+		}
+		for _, fhs := range r.MultipartForm.File {
+			for _, fh := range fhs {
+				f, err := fh.Open()
+				if err != nil {
+					return nil, nil, err
+				}
+				defer f.Close()
+				data, err := io.ReadAll(f)
+				return data, decisions, err
+			}
+		}
+		if v := r.FormValue("csv"); v != "" {
+			return []byte(v), decisions, nil
+		}
+		return nil, nil, app.Bad("err.csv_body")
+	case strings.HasPrefix(ct, "application/json"):
+		var in struct {
+			CSV       string               `json:"csv"`
+			Decisions []app.ImportDecision `json:"decisions"`
+		}
+		if err := decode(r, &in); err != nil {
+			return nil, nil, err
+		}
+		if in.CSV == "" {
+			return nil, nil, app.Bad("err.csv_body")
+		}
+		return []byte(in.CSV), in.Decisions, nil
+	}
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, nil, app.Bad("err.csv_body")
+	}
+	return data, nil, nil
+}
+
+func (s *Server) orgMembersImportPreview(w http.ResponseWriter, r *http.Request) {
+	data, decisions, err := readCSVBody(w, r)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out, err := s.App.PreviewMembersImport(r.Context(), sessionOf(r), data, decisions)
+	respond(w, r, out, err)
+}
+
+func (s *Server) orgMembersImport(w http.ResponseWriter, r *http.Request) {
+	data, decisions, err := readCSVBody(w, r)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out, err := s.App.ImportMembers(r.Context(), sessionOf(r), data, decisions)
+	respond(w, r, out, err)
+}
+
+// orgMemberMerge 把成员 {id} 并入 into（ADR 0017 补记四）。
+func (s *Server) orgMemberMerge(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Into string `json:"into"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	m, err := s.App.MergeMembers(r.Context(), sessionOf(r), r.PathValue("id"), in.Into)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, 200, orgMemberView(*m, sessionOf(r).Loc()))
 }
 
 func (s *Server) orgMakeOwner(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +279,7 @@ func (s *Server) orgMakeOwner(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, m := range ms {
 		if m.ID == r.PathValue("id") {
-			writeJSON(w, 200, orgMemberView(m))
+			writeJSON(w, 200, orgMemberView(m, sessionOf(r).Loc()))
 			return
 		}
 	}
@@ -155,13 +292,15 @@ type invitationV struct {
 	Name       string     `json:"name"`
 	Roles      []string   `json:"roles"`
 	URL        string     `json:"url,omitempty"`
+	TeamID     *string    `json:"team_id"`
+	MemberID   *string    `json:"member_id"`
 	ExpiresAt  time.Time  `json:"expires_at"`
 	AcceptedAt *time.Time `json:"accepted_at"`
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
 func invitationView(v app.InvitationView) invitationV {
-	return invitationV{ID: v.ID, Email: v.Email, Name: v.Name, Roles: v.Roles, URL: v.URL, ExpiresAt: v.ExpiresAt, AcceptedAt: v.AcceptedAt, CreatedAt: v.CreatedAt}
+	return invitationV{ID: v.ID, Email: v.Email, Name: v.Name, Roles: v.Roles, URL: v.URL, TeamID: nullable(v.TeamID), MemberID: nullable(v.MemberID), ExpiresAt: v.ExpiresAt, AcceptedAt: v.AcceptedAt, CreatedAt: v.CreatedAt}
 }
 
 func (s *Server) orgInvitations(w http.ResponseWriter, r *http.Request) {
@@ -179,15 +318,16 @@ func (s *Server) orgInvitations(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) orgInvite(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Email string   `json:"email"`
-		Name  string   `json:"name"`
-		Roles []string `json:"roles"`
+		Email  string   `json:"email"`
+		Name   string   `json:"name"`
+		Roles  []string `json:"roles"`
+		TeamID *string  `json:"team_id"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, r, err)
 		return
 	}
-	v, err := s.App.Invite(r.Context(), sessionOf(r), in.Email, in.Name, in.Roles)
+	v, err := s.App.Invite(r.Context(), sessionOf(r), in.Email, in.Name, in.Roles, in.TeamID)
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -276,10 +416,20 @@ type teamV struct {
 	LeadID     *string  `json:"lead_id"`
 	MemberIDs  []string `json:"member_ids"`
 	IsBoundary bool     `json:"is_boundary"`
+	// 来源（ADR 0017）：manual 或提供方代码名（feishu、wecom…）；external_name 是外部目录里的原名；active 为假表示外部目录里已不存在
+	Source       string  `json:"source"`
+	SourceTitle  string  `json:"source_title"`
+	ExternalName *string `json:"external_name"`
+	Active       bool    `json:"active"`
+	// 人数：直属的正常成员数，以及含全部下级团队的不重复正常成员数
+	MemberCount        int `json:"member_count"`
+	SubtreeMemberCount int `json:"subtree_member_count"`
 }
 
-func teamView(t app.TeamView) teamV {
-	return teamV{ID: t.ID, Name: t.Name, ParentID: nullable(t.ParentID), LeadID: nullable(t.LeadMemberID), MemberIDs: orEmpty(t.MemberIDs), IsBoundary: t.IsBoundary}
+func teamView(t app.TeamView, loc i18n.Locale) teamV {
+	return teamV{ID: t.ID, Name: t.Name, ParentID: nullable(t.ParentID), LeadID: nullable(t.LeadMemberID), MemberIDs: orEmpty(t.MemberIDs), IsBoundary: t.IsBoundary,
+		Source: t.Source, SourceTitle: app.SourceTitle(t.Source, loc), ExternalName: nullable(t.ExternalName), Active: !t.Inactive,
+		MemberCount: t.MemberCount, SubtreeMemberCount: t.SubtreeMemberCount}
 }
 
 // 组织的可见性策略与「某某能看到什么」预览（ADR 0013）。
@@ -316,7 +466,7 @@ func (s *Server) orgTeams(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []teamV{}
 	for _, t := range ts {
-		out = append(out, teamView(t))
+		out = append(out, teamView(t, sessionOf(r).Loc()))
 	}
 	writeJSON(w, 200, out)
 }
@@ -332,7 +482,7 @@ func (s *Server) orgTeamCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, 200, teamView(*t))
+	writeJSON(w, 200, teamView(*t, sessionOf(r).Loc()))
 }
 
 func (s *Server) orgTeamPatch(w http.ResponseWriter, r *http.Request) {
@@ -346,7 +496,24 @@ func (s *Server) orgTeamPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, 200, teamView(*t))
+	writeJSON(w, 200, teamView(*t, sessionOf(r).Loc()))
+}
+
+// orgTeamMerge 把团队 {id} 并入 into（ADR 0017 补记四）。
+func (s *Server) orgTeamMerge(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Into string `json:"into"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	t, err := s.App.MergeTeams(r.Context(), sessionOf(r), r.PathValue("id"), in.Into)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, 200, teamView(*t, sessionOf(r).Loc()))
 }
 
 func (s *Server) orgTeamDelete(w http.ResponseWriter, r *http.Request) {

@@ -13,7 +13,7 @@ import { BlockPanel, type BlockProps } from "./BlockPanel";
  * 当前迭代：当前范围里进行中的迭代（取第一个），给名称、迭代目标、起止与剩余天数、工作量完成进度和燃尽图。
  * 没有进行中的迭代时是一句安静的空状态，不放装饰。
  */
-export function SprintBlock({ index, title, noLink }: BlockProps) {
+export function SprintBlock({ index, title, noLink, compact, dense }: BlockProps) {
   const list = useLoad(() => api.sprints.list({ status: "active" }), []);
   const current = list.data?.[0] ?? null;
   const detail = useLoad(() => (current ? api.sprints.get(current.id) : Promise.resolve(null)), [current?.id ?? null]);
@@ -24,6 +24,8 @@ export function SprintBlock({ index, title, noLink }: BlockProps) {
     <BlockPanel
       index={index}
       noLink={noLink}
+      compact={compact}
+      dense={dense}
       icon={<IconSprint />}
       title={title ?? t("block.sprint")}
       telemetry={days ? <span className={cx(days.over && "text-danger")}>{days.text}</span> : undefined}
@@ -61,12 +63,16 @@ export function SprintBlock({ index, title, noLink }: BlockProps) {
               {sp.team ? ` · ${sp.team.title}` : ""}
             </span>
           </div>
-          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+          <div className={cx("grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3", dense ? "mt-2" : "mt-3")}>
             <ProgressBar value={pct} tone={pct >= 100 ? "success" : "accent"} className="w-full" />
             <span className="text-caption tabular-nums text-ink-muted">
               <Readout value={`${sp.points_done} / ${sp.points_total}`} /> · {pct}% · {t("block.sprint.tasks", { n: sp.task_count })}
             </span>
           </div>
+          {/* 窄区块 / 1 行高：不画燃尽图，只留名称与进度（1 行高时剩余天数只在头部读数里） */}
+          {compact || dense ? (
+            !dense && days && <p className={cx("mt-2 text-caption", days.over ? "text-danger" : "text-ink-subtle")}>{days.text}</p>
+          ) : (
           <div className="mt-3">
             {detail.loading && !detail.data ? (
               <Skeleton className="h-[160px] w-full" />
@@ -76,6 +82,7 @@ export function SprintBlock({ index, title, noLink }: BlockProps) {
               <p className="py-4 text-center text-caption text-ink-subtle">{t("sprint.burndown.empty")}</p>
             )}
           </div>
+          )}
         </div>
       )}
     </BlockPanel>

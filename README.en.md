@@ -30,7 +30,7 @@ Connecting an agent: see [docs/agent-integration.md](docs/agent-integration.md).
 ## Documentation
 
 - `CONTEXT.md` — the glossary; every user-facing name is defined here (Chinese is canonical, English is a translation of it)
-- `docs/adr/` — fifteen architecture decisions: multi-tenant isolation, the event log as backbone, agent permissions, cross-role workflows, state types, execution records, plain-language terms, tech stack, the design system, boards and sprints, visibility scope, the configurable-SaaS boundary, role workspaces
+- `docs/adr/` — seventeen architecture decisions: multi-tenant isolation, the event log as backbone, agent permissions, cross-role workflows, state types, execution records, plain-language terms, tech stack, the design system, boards and sprints, visibility scope, the configurable-SaaS boundary, role workspaces, milestones, the external directory
 - `docs/spec/workflow-definition.md` — task types and workflow definitions
 - `docs/api.md` — HTTP API and MCP tool contract
 - `web/DESIGN.md` — UI design spec v2 (Linear as the base, plus the Axiom starship theme; sources in `docs/design/sources/`)

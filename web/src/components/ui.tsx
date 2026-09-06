@@ -1,11 +1,12 @@
 "use client";
 import Link from "next/link";
-import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type SyntheticEvent, type TextareaHTMLAttributes } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type SyntheticEvent, type TextareaHTMLAttributes } from "react";
+import { createPortal } from "react-dom";
 import type { ExecutorRef } from "@/lib/api";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import { keyboardIntent, markKeyboardIntent } from "@/lib/motion";
-import { IconAgent, IconCheck, IconClose, IconCopy, RadarIllustration } from "./icons";
+import { IconAgent, IconCheck, IconClose, IconCopy, IconMore, RadarIllustration } from "./icons";
 
 /*
  * 组件小套件，对应 web/DESIGN.md v2 的 components 节与「Axiom 科幻层（舰桥系统）」。
@@ -155,12 +156,13 @@ export const panelIndex = (n: number | string) => (typeof n === "number" ? Strin
  * 面板：surface-1 + 细线 + 顶边高光 + 四角 HUD 角标。
  * index = 标题前的等宽序号眉标（页面内顺序）；telemetry = 标题右侧的遥测位（条数、更新时间之类的等宽读数）。
  */
-export function Panel({ title, actions, children, className, padded = true, id, index, telemetry, icon }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; padded?: boolean; id?: string; index?: number | string; telemetry?: ReactNode; icon?: ReactNode }) {
+export function Panel({ title, actions, children, className, bodyClassName, padded = true, id, index, telemetry, icon, between }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; /** 内容区的额外类（工作台区块：min-h-0 flex-1 overflow-auto 让内容在区块里滚） */ bodyClassName?: string; padded?: boolean; id?: string; index?: number | string; telemetry?: ReactNode; icon?: ReactNode; /** 头部与内容之间的一条（工作台编辑模式的工具条） */ between?: ReactNode }) {
   return (
     <section id={id} className={cx("hud rounded-lg border border-hairline bg-surface-1 shadow-panel", className)}>
       <HudCorners />
       {(title || actions || index !== undefined) && <PanelHeader title={title} actions={actions} index={index} telemetry={telemetry} icon={icon} />}
-      <div className={cx(padded && "p-4", "[&>.tbl-wrap]:rounded-b-lg")}>{children}</div>
+      {between}
+      <div className={cx(padded && "p-4", "[&>.tbl-wrap]:rounded-b-lg", bodyClassName)}>{children}</div>
     </section>
   );
 }
@@ -171,7 +173,7 @@ export function PanelHeader({ title, actions, index, telemetry, icon }: { title?
       <h2 className="flex min-w-0 items-center gap-2.5 text-title text-ink">
         {index !== undefined && <span className="eyebrow shrink-0 text-telemetry" aria-hidden="true">{panelIndex(index)}</span>}
         {icon && <span className="inline-flex shrink-0 text-ink-subtle" aria-hidden="true">{icon}</span>}
-        <span className="min-w-0">{title}</span>
+        <span className="min-w-0 truncate">{title}</span>
       </h2>
       {(actions || telemetry) && (
         <div className="flex shrink-0 items-center gap-3">
@@ -670,6 +672,106 @@ export function Segmented<T extends string>({ value, options, onChange, size = "
         ))}
       </span>
     </span>
+  );
+}
+
+// ---------- 动作菜单（⋮ / ⋯）：树节点与表格行的「更多操作」 ----------
+export interface MenuItem {
+  key: string;
+  label: string;
+  onSelect: () => void;
+  /** 禁用时的原因（气泡里解释，DESIGN.md「禁用必有原因」） */
+  disabled?: string | false | null;
+  danger?: boolean;
+  icon?: ReactNode;
+}
+/**
+ * 点触发按钮弹出的一列动作。菜单挂在 body 上、按触发点定位（fixed），不被表格的横向滚动裁掉；
+ * 下方空间不够时向上展开。键盘：↑↓ 移动、Enter 选中、Esc 关闭并回到触发按钮。
+ * trigger 不给时用 ⋮ 图标按钮；label 是触发按钮的可读名。
+ */
+export function Menu({ items, label, trigger, align = "right", size = "sm", className, open: controlledOpen, onOpenChange }: { items: MenuItem[]; label: string; trigger?: ReactNode; align?: "left" | "right"; size?: "sm" | "md"; className?: string; open?: boolean; onOpenChange?: (open: boolean) => void }) {
+  const [innerOpen, setInnerOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const open = controlledOpen ?? innerOpen;
+  const setOpen = (v: boolean) => {
+    if (v) setActive(items.findIndex((x) => !x.disabled));
+    setInnerOpen(v);
+    onOpenChange?.(v);
+  };
+  const [box, setBox] = useState<{ left?: number; right?: number; top?: number; bottom?: number } | null>(null);
+  const btn = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const id = useId();
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = btn.current?.getBoundingClientRect();
+      if (!r) return;
+      const est = 8 + items.length * 32;
+      const below = window.innerHeight - r.bottom;
+      const vertical = below < est + 12 && r.top > est ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 };
+      const horizontal = align === "right" ? { right: Math.max(8, window.innerWidth - r.right) } : { left: Math.max(8, r.left) };
+      setBox({ ...vertical, ...horizontal });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); };
+  }, [open, align, items.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => { const el = e.target as Node; if (!menu.current?.contains(el) && !btn.current?.contains(el)) setOpen(false); };
+    document.addEventListener("pointerdown", onDown);
+    menu.current?.focus();
+    return () => document.removeEventListener("pointerdown", onDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const close = (refocus: boolean) => { setOpen(false); if (refocus) btn.current?.focus(); };
+  const pick = (it: MenuItem) => { if (it.disabled) return; close(true); it.onSelect(); };
+  const move = (dir: 1 | -1) => {
+    if (!items.length) return;
+    let i = active;
+    for (let n = 0; n < items.length; n++) { i = (i + dir + items.length) % items.length; if (!items[i].disabled) break; }
+    setActive(i);
+  };
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); markKeyboardIntent(); close(true); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (items[active]) pick(items[active]); }
+    else if (e.key === "Tab") close(false);
+  };
+
+  return (
+    <>
+      <button ref={btn} type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? `${id}-menu` : undefined} aria-label={trigger ? undefined : label} title={trigger ? undefined : label} onClick={(e) => { e.stopPropagation(); setOpen(!open); }} onKeyDown={(e) => { if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); setOpen(true); } }} className={cx(
+        trigger
+          ? cx("pressable inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-hairline-strong bg-surface-2 text-[14px] leading-none font-medium whitespace-nowrap text-ink hover:border-hairline-tertiary hover:bg-surface-3", size === "sm" ? "h-7 px-2.5" : "h-8 px-3.5", open && "bg-surface-3")
+          : cx("pressable inline-flex items-center justify-center rounded-md border border-transparent text-ink-subtle hover:bg-surface-2 hover:text-ink", size === "sm" ? "h-7 w-7" : "h-8 w-8", open && "bg-surface-2 text-ink"),
+        className,
+      )} data-open={open || undefined}>
+        {trigger ?? <IconMore />}
+      </button>
+      {open && box && typeof document !== "undefined" && createPortal(
+        <div ref={menu} id={`${id}-menu`} role="menu" aria-label={label} tabIndex={-1} className="inl-menu !fixed min-w-[180px] !overflow-visible p-1 outline-none" style={{ left: box.left ?? "auto", right: box.right ?? "auto", top: box.top ?? "auto", bottom: box.bottom ?? "auto" }} onKeyDown={onKey} onClick={(e) => e.stopPropagation()}>
+          {items.map((it, i) => {
+            const reason = it.disabled || null;
+            const row = (
+              <button key={it.key} type="button" role="menuitem" aria-disabled={!!reason || undefined} data-active={i === active ? "" : undefined} tabIndex={-1} className={cx("inl-opt text-body", reason ? "cursor-default text-ink-tertiary" : it.danger ? "text-danger" : undefined)} onMouseMove={() => !reason && setActive(i)} onClick={() => pick(it)}>
+                {it.icon && <span className="inline-flex shrink-0 text-current opacity-80">{it.icon}</span>}
+                <span className="inl-opt-label">{it.label}</span>
+              </button>
+            );
+            return reason ? <Tip key={it.key} tip={reason} placement="right" className="flex w-full">{row}</Tip> : row;
+          })}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 

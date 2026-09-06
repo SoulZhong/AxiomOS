@@ -2,9 +2,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type Event } from "@/lib/api";
 import { fmtDate, fmtDateTime, parseDate } from "@/lib/format";
+import { eventSummary } from "@/lib/fieldChange";
 import { eventTitle } from "@/lib/terms";
 import { t } from "@/lib/i18n";
-import { IconAgent, IconApprove, IconBacklog, IconBlocks, IconComment, IconExternal, IconGoal, IconMilestone, IconRun, IconTask, IconTaskActive, IconUsage } from "./icons";
+import { IconAgent, IconApprove, IconBacklog, IconBlocks, IconComment, IconEdit, IconExternal, IconGoal, IconMilestone, IconRun, IconTask, IconTaskActive, IconUsage } from "./icons";
 import { Avatar, Button, Empty, TaskLink, cx } from "./ui";
 
 /*
@@ -82,6 +83,10 @@ function kindIcon(kind: Event["kind"]): ReactNode {
       return <IconApprove {...p} />;
     case "ArtifactAttached":
       return <IconExternal size={12} />;
+    // 就地编辑（DESIGN.md §15）：每个字段一条，铅笔；句子由服务端给（eventSummary 优先用 summary）
+    case "TaskFieldChanged":
+    case "GoalFieldChanged":
+      return <IconEdit {...p} />;
     default:
       return null;
   }
@@ -145,6 +150,15 @@ export interface EventPoll {
  * events：父组件已经加载的一批（首屏不等轮询）。poll：轮询范围，默认与 currentTaskId 同范围；传 false 关闭轮询。
  * onNew：轮询拉到挂载之后产生的新事件时回调（过滤之前的原始行；任务详情页据此在「自动解除前置」时重新加载任务，播断链）。
  */
+
+/** 动态行左边已经有执行者芯片，句子开头再重复一遍名字就多余了：去掉与芯片相同的开头。 */
+function withoutActor(text: string, actor?: string): string {
+  if (!actor || !text.startsWith(actor)) return text;
+  const rest = text.slice(actor.length);
+  if (rest === "" || /^[\s，,：:]/.test(rest)) return rest.replace(/^[\s，,：:]+/, "");
+  return text;
+}
+
 export function EventList({ events, showTask = true, currentTaskId, poll, onNew }: { events: Event[]; showTask?: boolean; currentTaskId?: string | null; poll?: EventPoll | false; onNew?: (added: Event[]) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [live, setLive] = useState<Event[]>(events);
@@ -286,7 +300,7 @@ export function EventList({ events, showTask = true, currentTaskId, poll, onNew 
               </span>
             )}
             {g.events.length > 1 && <span className="mr-1.5 text-caption text-ink-subtle">{eventTitle(e.kind)}</span>}
-            {e.summary}
+            {withoutActor(eventSummary(e), g.actor?.name)}
             {suffix && (
               <span className="ml-2 text-ink-muted">
                 · <TaskLink id={e.task_id!} title={e.task_title!} inline className="text-ink-muted" />

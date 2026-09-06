@@ -25,6 +25,27 @@ import type {
   Burndown,
   Capability,
   Comment,
+  DirectoryConfig,
+  DirectoryInput,
+  DirectoryProviderInfo,
+  DirectoryPreview,
+  DirectoryBinding,
+  DirectoryCandidate,
+  DirectoryConfirmation,
+  DirectoryDecided,
+  DirectoryDecision,
+  DirectoryDecisionInput,
+  DirectoryDecisionRecord,
+  DirectoryDuplicate,
+  DirectoryDuplicateSide,
+  DirectoryKind,
+  DirectoryMappings,
+  DirectoryMatchReason,
+  DirectorySkipped,
+  MemberImportDecision,
+  DirectoryRun,
+  DirectoryTeamPlan,
+  DirectoryTest, DirectoryChecklist, DirectoryCheck,
   CostGroup,
   CostStat,
   CycleStat,
@@ -45,6 +66,9 @@ import type {
   InvitationInfo,
   LocalizedTitle,
   Member,
+  MemberImportPreview,
+  MemberImportResult,
+  MemberImportRow,
   Milestone,
   MilestoneInput,
   MilestoneMark,
@@ -57,9 +81,12 @@ import type {
   OrgTeam,
   VisibilityPreview,
   Organization,
+  LayoutBlock,
+  RawBlock,
   Preset,
   RoleWorkspace,
   Workspace,
+  WorkspaceBlock,
   WorkspaceCatalog,
   OverviewData,
   OverviewPeriod,
@@ -109,9 +136,10 @@ import type {
   InboxTask,
   Notification,
 } from "./api";
-import { ApiError, BLOCK_KEYS, INBOX_KINDS, isBlockKey } from "./api";
+import { fieldChangeSentence } from "./fieldChange";
+import { ApiError, BLOCK_KEYS, GRID_COLS, GRID_MAX_H, INBOX_KINDS, blocksOverlap, compactLayout, isBlockHeight, isBlockKey, isBlockWidth, normalizeLayout, sameLayout } from "./api";
 import { addDays, diffDays, parseDate, startOfWeek, toISODate, today } from "./format";
-import { getLocale, normalizeLocale, t, type Locale } from "./i18n";
+import { getLocale, normalizeLocale, t, type Key, type Locale } from "./i18n";
 
 // ---------- 时间助手 ----------
 const T0 = today();
@@ -147,6 +175,9 @@ const EN: Record<string, string> = {
   "先复现，再定位根因；修复要附带回归测试并提交 PR。": "Reproduce first, then find the root cause; the fix must include a regression test and a PR.",
   "确认所有前置需求已上线，整理发布记录后再执行发布。": "Confirm every predecessor requirement is live, write the release note, then release.",
   // 工作台：区块与预设（ADR 0015）
+  "待我处理": "For me", "组织概况": "Organization readouts",
+  "等我确认、验收、答复的事和我负责但逾期的任务，只看本人、不受范围影响。": "Things waiting for me to confirm, accept or answer, plus my own overdue tasks; personal only, unaffected by scope.",
+  "进行中、待验收、逾期与今日成本四个实时读数，带 24 小时趋势线。": "Four live readouts — in progress, awaiting acceptance, overdue and cost today — each with a 24-hour trend line.",
   "组织概览摘要": "Organization overview summary", "要我关注的异常": "Exceptions for me", "我的任务": "My tasks", "等我验收": "Awaiting my review", "人员与 Agent 负荷": "People and agent load", "成本与预算": "Cost and budget", "待确认操作": "Pending confirmations", "最近动态": "Recent activity", "当前迭代": "Current sprint", "待领取任务": "Unclaimed tasks", "趋势与环比": "Trend and comparison",
   "当前范围这一个月的目标进度、任务、逾期、吞吐与成本合计。": "This month's goal progress, tasks, overdue, throughput and cost for the current scope.",
   "逾期与停滞的任务、逾期或超预算的目标、等我确认的操作。": "Overdue and stalled tasks, overdue or over-budget goals, actions waiting for my confirmation.",
@@ -444,23 +475,38 @@ const viewCapability = (c: Capability): Capability => ({ ...c, titles: titlesOf(
 const roleOf = (name: string) => ROLES.find((r) => r.name === name);
 // 团队树（示例数据）：两个事业部各带两个组；产品事业部被标成共享边界，
 // 于是「按共享边界」这条策略在界面上能直接看出差别（ADR 0013）。
+// 产品事业部这一支来自IM 集成（source 存提供方代码名，ADR 0017），服务事业部是手工建的；「旧项目组」在IM 集成里已经没有了，下次同步会被停用
 const TEAMS: OrgTeam[] = [
-  { id: "team-rd", name: "产品事业部", lead_id: "wang", parent_id: null, member_ids: ["wang"], is_boundary: true },
-  { id: "team-fe", name: "前端组", lead_id: "li", parent_id: "team-rd", member_ids: ["li", "zhao"] },
-  { id: "team-qa", name: "测试组", lead_id: "zhang", parent_id: "team-rd", member_ids: ["zhang"] },
-  { id: "team-svc", name: "服务事业部", lead_id: "zhou", parent_id: null, member_ids: ["zhou"] },
-  { id: "team-ops", name: "运营组", lead_id: "sun", parent_id: "team-svc", member_ids: ["sun"] },
-  { id: "team-cs", name: "客户支持组", lead_id: "chen", parent_id: "team-svc", member_ids: ["chen"] },
+  { id: "team-rd", name: "产品事业部", lead_id: "wang", parent_id: null, member_ids: ["wang"], is_boundary: true, source: "feishu", external_name: "产品事业部", active: true },
+  { id: "team-fe", name: "前端组", lead_id: "li", parent_id: "team-rd", member_ids: ["li", "zhao", "wu", "wu-manual"], source: "feishu", external_name: "前端组", active: true },
+  { id: "team-qa", name: "测试组", lead_id: "zhang", parent_id: "team-rd", member_ids: ["zhang", "zheng"], source: "feishu", external_name: "测试组", active: true },
+  { id: "team-old", name: "旧项目组", lead_id: null, parent_id: "team-rd", member_ids: [], source: "feishu", external_name: "旧项目组", active: true },
+  { id: "team-svc", name: "服务事业部", lead_id: "zhou", parent_id: null, member_ids: ["zhou"], source: "manual", external_name: null, active: true },
+  { id: "team-ops", name: "运营组", lead_id: "sun", parent_id: "team-svc", member_ids: ["sun"], source: "manual", external_name: null, active: true },
+  { id: "team-cs", name: "客户支持组", lead_id: "chen", parent_id: "team-svc", member_ids: ["chen"], source: "manual", external_name: null, active: true },
+  // 手工在产品事业部下建的组；IM 集成里后来也建了同名部门 → 预览时要人确认是不是同一个（ADR 0017 补记四）
+  { id: "team-data", name: "数据平台组", lead_id: "feng", parent_id: "team-rd", member_ids: ["feng", "han", "han-old"], source: "manual", external_name: null, active: true },
 ];
-interface MemberRow extends Member { active: boolean; password?: string }
+interface MemberRow extends Member { active: boolean; password?: string; invite_token?: string }
 const MEMBERS: Record<ID, MemberRow> = {
-  wang: { id: "wang", name: "小王", email: "wang@example.com", roles: ["pm", "designer", "admin"], team_id: "team-rd", locale: "zh-CN", active: true, created_at: at(-120) },
-  li: { id: "li", name: "小李", email: "li@example.com", roles: ["developer"], team_id: "team-fe", locale: "zh-CN", active: true, created_at: at(-110) },
-  zhang: { id: "zhang", name: "小张", email: "zhang@example.com", roles: ["tester"], team_id: "team-qa", locale: "en-US", active: true, created_at: at(-100) },
-  zhao: { id: "zhao", name: "小赵", email: "zhao@example.com", roles: ["releaser", "developer"], team_id: "team-fe", locale: "zh-CN", active: true, created_at: at(-90) },
-  zhou: { id: "zhou", name: "小周", email: "zhou@example.com", roles: ["pm"], team_id: "team-svc", locale: "zh-CN", active: true, created_at: at(-80) },
-  sun: { id: "sun", name: "小孙", email: "sun@example.com", roles: ["pm", "ops"], team_id: "team-ops", locale: "zh-CN", active: true, created_at: at(-70) },
-  chen: { id: "chen", name: "小陈", email: "chen@example.com", roles: ["tester"], team_id: "team-cs", locale: "zh-CN", active: true, created_at: at(-65) },
+  wang: { id: "wang", name: "小王", email: "wang@example.com", roles: ["pm", "designer", "admin"], team_id: "team-rd", locale: "zh-CN", active: true, created_at: at(-120), source: "manual", status: "active" },
+  li: { id: "li", name: "小李", email: "li@example.com", roles: ["developer"], team_id: "team-fe", locale: "zh-CN", active: true, created_at: at(-110), source: "feishu", status: "active" },
+  zhang: { id: "zhang", name: "小张", email: "zhang@example.com", roles: ["tester"], team_id: "team-qa", locale: "en-US", active: true, created_at: at(-100), source: "feishu", status: "active" },
+  zhao: { id: "zhao", name: "小赵", email: "zhao@example.com", roles: ["releaser", "developer"], team_id: "team-fe", locale: "zh-CN", active: true, created_at: at(-90), source: "feishu", status: "active" },
+  zhou: { id: "zhou", name: "小周", email: "zhou@example.com", roles: ["pm"], team_id: "team-svc", locale: "zh-CN", active: true, created_at: at(-80), source: "manual", status: "active" },
+  sun: { id: "sun", name: "小孙", email: "sun@example.com", roles: ["pm", "ops"], team_id: "team-ops", locale: "zh-CN", active: true, created_at: at(-70), source: "manual", status: "active" },
+  chen: { id: "chen", name: "小陈", email: "chen@example.com", roles: ["tester"], team_id: "team-cs", locale: "zh-CN", active: true, created_at: at(-65), source: "manual", status: "active" },
+  // 上次同步进来、还没登录过的两位（待激活）
+  wu: { id: "wu", name: "吴小雨", email: "wu@example.com", roles: ["developer"], team_id: "team-fe", locale: "zh-CN", active: true, created_at: at(-3, 3), source: "feishu", status: "pending_activation", invite_token: "dir_wu" },
+  zheng: { id: "zheng", name: "郑一", email: "zheng@example.com", roles: ["developer"], team_id: "team-qa", locale: "zh-CN", active: true, created_at: at(-3, 3), source: "feishu", status: "pending_activation", invite_token: "dir_zheng" },
+  // 手工建的数据平台组的人：冯小北的邮箱与 IM 里的同一个人相同（第二级认法）；韩小南在 IM 里没邮箱，靠"姓名相同且部门同名"认出两个候选（其中一个是停用的旧账号）
+  feng: { id: "feng", name: "冯小北", email: "feng@example.com", roles: ["developer"], team_id: "team-data", locale: "zh-CN", active: true, created_at: at(-40), source: "manual", status: "active" },
+  han: { id: "han", name: "韩小南", email: "han@example.com", roles: ["developer"], team_id: "team-data", locale: "zh-CN", active: true, created_at: at(-30), source: "manual", status: "active" },
+  "han-old": { id: "han-old", name: "韩小南", email: "han.old@example.com", roles: ["developer"], team_id: "team-data", locale: "zh-CN", active: false, created_at: at(-200), source: "manual", status: "inactive" },
+  // 手工建的吴小雨与同步进来的吴小雨同名同组：同步之后仍算"可能重复"，成员页会提示、对应关系面板里能合并
+  "wu-manual": { id: "wu-manual", name: "吴小雨", email: "wu.xiaoyu@example.com", roles: ["developer"], team_id: "team-fe", locale: "zh-CN", active: true, created_at: at(-50), source: "manual", status: "active" },
+  // 被邀请、还没接受的人（POST /org/invitations 会立刻建出这条待激活成员）
+  qian: { id: "qian", name: "小钱", email: "qian@example.com", roles: ["developer"], team_id: null, locale: "zh-CN", active: true, created_at: at(-1, 11), source: "manual", status: "pending_activation", invite_token: "demo" },
 };
 const ARTIFACT_TYPES: Record<string, string> = { prd: "需求文档", pr: "代码 PR", test_report: "测试报告", release_note: "发布记录", result: "结果摘要", doc: "文档", report: "报表" };
 const CAPABILITIES: Capability[] = [
@@ -476,27 +522,27 @@ const AGENTS: Record<ID, Agent> = {
   "li-agent": {
     id: "li-agent", name: "小李的编码 Agent", owner: ref("li"), shared: false, capabilities: ["coding"],
     grants: [g("execute"), g("claim_backlog"), g("comment"), g("link"), g("review", "with_approval")],
-    online: true, last_seen_at: nowISO(), max_concurrency: 2, created_at: at(-60),
+    online: true, last_seen_at: nowISO(), max_concurrency: 2, created_at: at(-60), can_manage: true,
   },
   "zhang-agent": {
     id: "zhang-agent", name: "小张的测试 Agent", owner: ref("zhang"), shared: false, capabilities: ["testing", "coding"],
     grants: [g("execute"), g("claim_backlog"), g("review"), g("comment")],
-    online: true, last_seen_at: at(0, 8, 40), max_concurrency: 1, created_at: at(-45),
+    online: true, last_seen_at: at(0, 8, 40), max_concurrency: 1, created_at: at(-45), can_manage: true,
   },
   "wang-agent": {
     id: "wang-agent", name: "小王的写作助手", owner: ref("wang"), shared: false, capabilities: ["writing", "data_analysis"],
     grants: [g("execute"), g("comment"), g("create_task", "with_approval")],
-    online: false, last_seen_at: at(-1, 18), max_concurrency: 1, created_at: at(-30),
+    online: false, last_seen_at: at(-1, 18), max_concurrency: 1, created_at: at(-30), can_manage: true,
   },
   "zhou-agent": {
     id: "zhou-agent", name: "小周的客服助手", owner: ref("zhou"), shared: false, capabilities: ["writing", "data_analysis"],
     grants: [g("execute"), g("comment")],
-    online: true, last_seen_at: nowISO(), max_concurrency: 2, created_at: at(-25),
+    online: true, last_seen_at: nowISO(), max_concurrency: 2, created_at: at(-25), can_manage: true,
   },
   "shared-doc": {
     id: "shared-doc", name: "公共文档助手", owner: ref("wang"), shared: true, capabilities: ["writing"],
     grants: [g("execute"), g("comment"), g("claim_backlog", "with_approval")],
-    online: true, last_seen_at: nowISO(), max_concurrency: 3, created_at: at(-20),
+    online: true, last_seen_at: nowISO(), max_concurrency: 3, created_at: at(-20), can_manage: true,
   },
 };
 
@@ -526,6 +572,7 @@ interface TaskRow {
   participants: Record<string, ID | null>; required_role: string | null; pending_participant: string | null; required_capabilities: string[];
   artifacts: Artifact[]; comments: Comment[]; planned_start: string | null; planned_end: string | null; actual_start: string | null; actual_end: string | null;
   estimate: number | null; points: number | null; sprint_id: ID | null; priority: Task["priority"]; fields: Record<string, unknown>; created_at: string; updated_at: string;
+  human_only?: boolean;
 }
 interface SprintRow {
   id: ID; team_id: ID | null; name: string; goal: string; starts_on: string; ends_on: string; status: SprintStatus;
@@ -819,7 +866,7 @@ function viewTask(tk: TaskRow): Task {
     type: tk.type, type_title: def.title, type_version: tk.type_version, title: tk.title, description: tk.description,
     state: stateOf(tk), previous_state: tk.previous_state, creator: ref(tk.creator_id), assignee: tk.assignee_id ? ref(tk.assignee_id) : null, reviewer: ref(tk.reviewer_id),
     participants: Object.fromEntries(Object.entries(def.participants).map(([slot, p]) => [slot, { title: p.title, role: p.role, executor: tk.participants[slot] ? ref(tk.participants[slot] as ID) : null }])),
-    required_role: tk.required_role, pending_participant: tk.pending_participant, required_capabilities: tk.required_capabilities,
+    required_role: tk.required_role, pending_participant: tk.pending_participant, required_capabilities: tk.required_capabilities, human_only: tk.human_only ?? false,
     relations: relations.filter((r) => r.from === tk.id || r.to === tk.id).map(viewRelation),
     artifacts: tk.artifacts, comments: tk.comments, runs: rs.map(viewRun),
     planned_start: tk.planned_start, planned_end: tk.planned_end, actual_start: tk.actual_start, actual_end: tk.actual_end,
@@ -872,8 +919,19 @@ function viewGoal(gr: GoalRow, withChildren: boolean): Goal {
   };
 }
 
-const viewMember = (m: MemberRow): Member => ({ id: m.id, name: m.name, email: m.email, roles: m.roles, team_id: m.team_id, locale: m.locale, created_at: m.created_at });
-const viewOrgMember = (m: MemberRow): OrgMember => ({ ...viewMember(m), active: m.active, is_owner: ORG.owner_id === m.id });
+const memberStatus = (m: MemberRow): NonNullable<Member["status"]> => (!m.active ? "inactive" : m.status === "pending_activation" ? "pending_activation" : "active");
+const memberStatusTitle = (st: NonNullable<Member["status"]>) => (st === "inactive" ? t("mock.member.status.inactive") : st === "pending_activation" ? t("mock.member.status.pending") : t("mock.member.status.active"));
+const viewMember = (m: MemberRow): Member => ({ id: m.id, name: m.name, email: m.email, roles: m.roles, team_id: m.team_id, locale: m.locale, created_at: m.created_at, source: m.source ?? "manual", source_title: sourceTitle(m.source), status: memberStatus(m) });
+const viewOrgMember = (m: MemberRow, dups?: DirectoryDuplicate[]): OrgMember => {
+  const st = memberStatus(m);
+  const invRow = st === "pending_activation" && m.invite_token ? INVITATIONS.find((i) => i.token === m.invite_token) : undefined;
+  const inv = st === "pending_activation" && m.invite_token ? { id: invRow?.id, url: inviteUrl(m.invite_token), expires_at: invRow?.expires_at ?? at(7) } : null;
+  // 所在的全部团队：直属团队排第一，其余是被「加入」的团队
+  const team_ids = [...(m.team_id ? [m.team_id] : []), ...TEAMS.filter((tm) => tm.member_ids.includes(m.id) && tm.id !== m.team_id).map((tm) => tm.id)];
+  // 「可能与 X 重复」：一次列表调用算一遍（ADR 0017 补记四）
+  const hints = (dups ?? []).filter((d) => d.kind === "member" && (d.a.id === m.id || d.b.id === m.id)).map((d) => { const o = d.a.id === m.id ? d.b : d.a; return { id: o.id, name: o.name, reason: d.reason, reason_text: d.reason_text }; });
+  return { ...viewMember(m), active: m.active, is_owner: ORG.owner_id === m.id, status_title: memberStatusTitle(st), invitation: inv, invitation_url: inv?.url ?? null, team_ids, ...(hints.length ? { possible_duplicate_of: hints } : {}) };
+};
 const viewTeam = (tm: OrgTeam): Team => ({ id: tm.id, name: tm.name, lead_id: tm.lead_id, parent_id: tm.parent_id, is_boundary: !!tm.is_boundary });
 
 function session(): Session {
@@ -1129,7 +1187,11 @@ const INVITATIONS: InvitationRow[] = [
   { id: "I1", token: "demo", email: "qian@example.com", name: "小钱", roles: ["developer"], url: "", expires_at: at(7), accepted_at: null, created_at: at(-1, 11) },
 ];
 const inviteUrl = (token: string) => `${typeof window !== "undefined" ? window.location.origin : ""}/invite/${token}/`;
-const viewInvitation = (i: InvitationRow): Invitation => ({ id: i.id, email: i.email, name: i.name, roles: i.roles, url: inviteUrl(i.token), expires_at: i.expires_at, accepted_at: i.accepted_at, created_at: i.created_at });
+/** 邀请行带上它建出的待激活成员（member_id）与团队（team_id），成员页据此把「撤回邀请」挂在成员上 */
+const viewInvitation = (i: InvitationRow): Invitation => {
+  const mem = Object.values(MEMBERS).find((m) => m.invite_token === i.token);
+  return { id: i.id, email: i.email, name: i.name, roles: i.roles, url: inviteUrl(i.token), expires_at: i.expires_at, accepted_at: i.accepted_at, created_at: i.created_at, team_id: mem?.team_id ?? null, member_id: mem?.id ?? null };
+};
 const canManageOrg = () => ORG.owner_id === ME || myRoles().some((r) => roleOf(r)?.permissions.includes("org_settings"));
 const requireOrgAdmin = () => { requireLogin(); if (!canManageOrg()) throw new ApiError(403, t("mock.forbidden")); };
 
@@ -1192,20 +1254,71 @@ on("POST", "/goals", (_m, body) => {
   return viewGoal(row, true);
 });
 on("GET", "/goals/:id", (m) => { requireLogin(); return viewGoal(getGoal(m.groups!.id), true); });
+// ---------- 就地编辑（DESIGN.md §15）：与后端同一套规则 ----------
+const isOrgOwner = () => ORG.owner_id === ME;
+/** 目标：负责人链（本目标或任一上级目标的负责人）或组织负责人 */
+function canEditGoal(gr: GoalRow): boolean {
+  if (isOrgOwner()) return true;
+  for (let cur: GoalRow | undefined = gr; cur; cur = cur.parent_id ? goals[cur.parent_id] : undefined) if (cur.owner_id === ME) return true;
+  return false;
+}
+/** 任务：负责人 / 创建者 / 验收人 / 参与人（含我的 Agent）、所属目标的负责人链、组织负责人 */
+function canEditTask(tk: TaskRow): boolean {
+  if (isOrgOwner()) return true;
+  const mine = (id: ID | null | undefined) => !!id && (id === ME || AGENTS[id]?.owner.id === ME);
+  if (mine(tk.assignee_id) || mine(tk.creator_id) || mine(tk.reviewer_id) || Object.values(tk.participants).some(mine)) return true;
+  if (tk.goal_id && goals[tk.goal_id]) return canEditGoal(goals[tk.goal_id]);
+  return false;
+}
+interface FieldChange { field: string; from: unknown; to: unknown; from_title?: unknown; to_title?: unknown; extra?: Record<string, unknown> }
+/** 每个字段一条动态，句子按后端同一套模板拼（src/lib/fieldChange.ts） */
+function emitFieldChange(kind: "GoalFieldChanged" | "TaskFieldChanged", target: { task?: ID; goal?: ID | null; title: string }, c: FieldChange) {
+  const data: Record<string, unknown> = { field: c.field, from: c.from ?? null, to: c.to ?? null, title: L(target.title), ...(target.goal ? { goal_id: target.goal } : {}), ...c.extra };
+  if (c.from_title !== undefined) data.from_title = c.from_title;
+  if (c.to_title !== undefined) data.to_title = c.to_title;
+  emit(kind, { task: target.task, goal: target.goal, actor: ME, summary: fieldChangeSentence({ kind, data, actor: ref(ME), task_title: L(target.title) }), data });
+}
+const nameOf = (id: ID | null | undefined) => (id ? L(ref(id).name) : null);
+const teamName = (id: ID | null | undefined) => (id ? L(TEAMS.find((x) => x.id === id)?.name ?? id) : null);
+const goalTitle = (id: ID | null | undefined) => (id && goals[id] ? L(goals[id].title) : null);
+const taskTitle = (id: ID | null | undefined) => (id && tasks[id] ? L(tasks[id].title) : null);
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
 on("PATCH", "/goals/:id", (m, body) => {
   requireLogin();
   const gr = getGoal(m.groups!.id);
+  if (!canEditGoal(gr)) throw new ApiError(403, t("mock.goal.editForbidden"));
   const b = body as Partial<GoalInput>;
-  if (b.title !== undefined) gr.title = b.title;
-  if (b.description !== undefined) gr.description = b.description;
-  if (b.owner_id !== undefined) gr.owner_id = b.owner_id;
-  if (b.budget !== undefined) gr.budget = b.budget;
-  if (b.planned_start !== undefined) gr.planned_start = b.planned_start;
-  if (b.planned_end !== undefined) gr.planned_end = b.planned_end;
-  if (b.deadline !== undefined) gr.deadline = b.deadline;
-  if (b.achieved !== undefined) { gr.achieved = b.achieved; gr.actual_end = b.achieved ? day(0) : null; gr.status = b.achieved ? "achieved" : "active"; }
-  if (b.status !== undefined) gr.status = b.status;
-  emit("GoalUpdated", { goal: gr.id, actor: ME, summary: t("mock.ev.goalUpdated", { title: L(gr.title) }) });
+  const target = { goal: gr.id, title: gr.title };
+  const fc = (c: FieldChange) => emitFieldChange("GoalFieldChanged", { ...target, title: gr.title }, c);
+  if (b.title !== undefined) {
+    const next = b.title.trim();
+    if (!next) throw new ApiError(400, t("mock.goal.emptyTitle"));
+    if (next !== gr.title) { const from = gr.title; gr.title = next; fc({ field: "title", from: L(from), to: L(next) }); }
+  }
+  if (b.description !== undefined && b.description !== gr.description) { const from = gr.description; gr.description = b.description; fc({ field: "description", from, to: b.description }); }
+  if (b.owner_id !== undefined && b.owner_id !== gr.owner_id) { const from = gr.owner_id; gr.owner_id = b.owner_id; fc({ field: "owner_member_id", from, to: b.owner_id, from_title: nameOf(from), to_title: nameOf(b.owner_id) }); }
+  if (b.team_id !== undefined && (b.team_id || null) !== (gr.team_id ?? null)) { const from = gr.team_id ?? null; gr.team_id = b.team_id || null; fc({ field: "team_id", from, to: gr.team_id, from_title: teamName(from), to_title: teamName(gr.team_id) }); }
+  if (b.parent_id !== undefined) {
+    const to = b.parent_id || null;
+    if (to && (to === gr.id || goalSubtreeIds(gr.id).includes(to))) throw new ApiError(400, t("mock.goal.parentCycle"));
+    if (to && !goals[to]) throw new ApiError(404, t("mock.goal.notFound"));
+    if (to !== gr.parent_id) { const from = gr.parent_id; gr.parent_id = to; fc({ field: "parent_id", from, to, from_title: goalTitle(from), to_title: goalTitle(to) }); }
+  }
+  if (b.budget !== undefined && b.budget !== gr.budget) { const from = gr.budget; gr.budget = b.budget; fc({ field: "budget", from, to: b.budget, extra: { currency: ORG.currency } }); }
+  if (b.planned_start !== undefined && (b.planned_start || null) !== gr.planned_start) { const from = gr.planned_start; gr.planned_start = b.planned_start || null; fc({ field: "planned_start", from, to: gr.planned_start }); }
+  if (b.planned_end !== undefined && (b.planned_end || null) !== gr.planned_end) {
+    const from = gr.planned_end; gr.planned_end = b.planned_end || null; fc({ field: "planned_end", from, to: gr.planned_end });
+    // 与后端一致：计划结束同时也是截止日（不另记一条动态），除非这次显式带了 deadline
+    if (b.deadline === undefined) gr.deadline = gr.planned_end;
+  }
+  if (b.deadline !== undefined && (b.deadline || null) !== (gr.deadline ?? null)) { const from = gr.deadline ?? null; gr.deadline = b.deadline || null; fc({ field: "deadline", from, to: gr.deadline }); }
+  if (b.achieved !== undefined && b.achieved !== gr.achieved) {
+    const from = gr.status ?? (gr.achieved ? "achieved" : "active");
+    gr.achieved = b.achieved; gr.actual_end = b.achieved ? day(0) : null; gr.status = b.achieved ? "achieved" : "active";
+    fc({ field: "status", from, to: gr.status });
+  }
+  if (b.status !== undefined && b.status !== (gr.status ?? "active")) { const from = gr.status ?? "active"; gr.status = b.status; if (b.status === "active") gr.achieved = false; fc({ field: "status", from, to: b.status }); }
   return viewGoal(gr, true);
 });
 
@@ -1313,18 +1426,73 @@ on("GET", "/tasks/:id", (m) => { requireLogin(); return viewTask(getTask(m.group
 on("PATCH", "/tasks/:id", (m, body) => {
   requireLogin();
   const tk = getTask(m.groups!.id);
-  const b = body as Partial<TaskInput>;
-  for (const k of ["title", "description", "planned_start", "planned_end", "estimate", "priority", "goal_id"] as const) {
-    if (b[k] !== undefined) (tk as unknown as Record<string, unknown>)[k] = b[k];
+  if (!canEditTask(tk)) throw new ApiError(403, t("mock.task.editForbidden"));
+  const b = body as Partial<TaskInput> & { estimate_hours?: number | null };
+  const def = defOf(tk);
+  const closed = stateOf(tk).label === "terminal_success" || stateOf(tk).label === "terminal_failure";
+  // 先算出每个真正变了的字段，再统一应用：已结束的任务只允许描述与自定义字段
+  const pending: Array<{ field: string; apply: () => void; change: FieldChange | null }> = [];
+  const push = (field: string, apply: () => void, change: FieldChange | null) => pending.push({ field, apply, change });
+  if (b.title !== undefined) {
+    const next = b.title.trim();
+    if (!next) throw new ApiError(400, t("mock.task.emptyTitle"));
+    if (next !== tk.title) push("title", () => { tk.title = next; }, { field: "title", from: L(tk.title), to: L(next) });
   }
-  if (b.fields) tk.fields = { ...tk.fields, ...b.fields };
+  if (b.description !== undefined && b.description !== tk.description) push("description", () => { tk.description = b.description!; }, { field: "description", from: tk.description, to: b.description });
+  if (b.reviewer_id !== undefined && b.reviewer_id && b.reviewer_id !== tk.reviewer_id) push("reviewer_id", () => { tk.reviewer_id = b.reviewer_id!; }, { field: "reviewer_id", from: tk.reviewer_id, to: b.reviewer_id, from_title: nameOf(tk.reviewer_id), to_title: nameOf(b.reviewer_id) });
+  if (b.priority !== undefined && b.priority !== tk.priority) push("priority", () => { tk.priority = b.priority!; }, { field: "priority", from: tk.priority, to: b.priority });
+  const est = b.estimate !== undefined ? b.estimate : b.estimate_hours;
+  if (est !== undefined && est !== tk.estimate) push("estimate_hours", () => { tk.estimate = est; }, { field: "estimate_hours", from: tk.estimate, to: est });
+  if (b.planned_start !== undefined && (b.planned_start || null) !== tk.planned_start) push("planned_start", () => { tk.planned_start = b.planned_start || null; }, { field: "planned_start", from: tk.planned_start, to: b.planned_start || null });
+  if (b.planned_end !== undefined && (b.planned_end || null) !== tk.planned_end) push("planned_end", () => { tk.planned_end = b.planned_end || null; }, { field: "planned_end", from: tk.planned_end, to: b.planned_end || null });
+  if (b.human_only !== undefined && b.human_only !== (tk.human_only ?? false)) push("human_only", () => { tk.human_only = b.human_only; }, { field: "human_only", from: tk.human_only ?? false, to: b.human_only });
+  if (b.goal_id !== undefined && (b.goal_id || null) !== tk.goal_id) {
+    const to = b.goal_id || null;
+    if (to && !goals[to]) throw new ApiError(404, t("mock.goal.notFound"));
+    push("goal_id", () => { tk.goal_id = to; }, { field: "goal_id", from: tk.goal_id, to, from_title: goalTitle(tk.goal_id), to_title: goalTitle(to) });
+  }
+  if (b.parent_id !== undefined && (b.parent_id || null) !== tk.parent_id) {
+    const to = b.parent_id || null;
+    const descendants = (id: ID): ID[] => Object.values(tasks).filter((x) => x.parent_id === id).flatMap((x) => [x.id, ...descendants(x.id)]);
+    if (to && (to === tk.id || descendants(tk.id).includes(to))) throw new ApiError(400, t("mock.task.parentCycle"));
+    if (to && !tasks[to]) throw new ApiError(404, t("mock.task.notFound"));
+    push("parent_id", () => { tk.parent_id = to; }, { field: "parent_id", from: tk.parent_id, to, from_title: taskTitle(tk.parent_id), to_title: taskTitle(to) });
+  }
+  if (b.required_capabilities !== undefined && !sameList(b.required_capabilities, tk.required_capabilities)) {
+    const next = b.required_capabilities;
+    const bad = next.find((c) => !CAPABILITIES.some((x) => x.name === c));
+    if (bad) throw new ApiError(400, t("mock.task.badCapability", { name: bad }));
+    const titles = (xs: string[]) => xs.map((c) => L(CAPABILITIES.find((x) => x.name === c)?.title ?? c));
+    push("required_capabilities", () => { tk.required_capabilities = next; }, { field: "required_capabilities", from: tk.required_capabilities, to: next, from_title: titles(tk.required_capabilities), to_title: titles(next) });
+  }
+  if (b.participants) {
+    for (const [slot, id] of Object.entries(b.participants)) {
+      if (!def.participants[slot]) continue;
+      const to = id || null;
+      if (to === (tk.participants[slot] ?? null)) continue;
+      const from = tk.participants[slot] ?? null;
+      push("participants", () => { tk.participants[slot] = to; }, { field: "participants", from, to, from_title: nameOf(from), to_title: nameOf(to), extra: { slot, label: L(def.participants[slot].title) } });
+    }
+  }
+  if (b.fields) {
+    for (const [key, v] of Object.entries(b.fields)) {
+      if (JSON.stringify(tk.fields[key] ?? null) === JSON.stringify(v ?? null)) continue;
+      push("fields", () => { if (v === null || v === undefined || v === "") delete tk.fields[key]; else tk.fields[key] = v; }, { field: "fields", from: tk.fields[key] ?? null, to: v ?? null, extra: { key } });
+    }
+  }
+  if (closed && pending.some((p) => p.field !== "description" && p.field !== "fields")) throw new ApiError(400, t("mock.task.closedEdit"));
+  if (closed && (b.points !== undefined || b.sprint_id !== undefined)) throw new ApiError(400, t("mock.task.closedEdit"));
+  for (const p of pending) {
+    const change = p.change;
+    p.apply();
+    if (change) emitFieldChange("TaskFieldChanged", { task: tk.id, goal: tk.goal_id, title: tk.title }, change);
+  }
   if (b.points !== undefined && b.points !== tk.points) {
     tk.points = b.points === null ? null : Math.max(0, Math.round(Number(b.points)));
     emit("PointsChanged", { task: tk.id, actor: ME, summary: tk.points === null ? t("mock.ev.pointsCleared") : t("mock.ev.pointsChanged", { n: tk.points }), data: { points: tk.points } });
   }
   if (b.sprint_id !== undefined) setTaskSprint(tk, b.sprint_id || null, ME);
-  tk.updated_at = nowISO();
-  emit("TaskUpdated", { task: tk.id, actor: ME, summary: t("mock.ev.taskUpdated", { title: L(tk.title) }) });
+  if (pending.length || b.points !== undefined || b.sprint_id !== undefined) tk.updated_at = nowISO();
   return viewTask(tk);
 });
 on("GET", "/tasks/:id/workflow", (m) => { requireLogin(); return workflowView(getTask(m.groups!.id)); });
@@ -1418,12 +1586,14 @@ on("GET", "/backlog", (_m, _b, q) => {
 });
 on("GET", "/gantt", (_m, _b, q) => { requireLogin(); return gantt((str(q, "group") as GanttGroup) || "goal", str(q, "from") ?? "", str(q, "to") ?? "", scopePick(q)); });
 
-on("GET", "/agents", () => { requireLogin(); return Object.values(AGENTS); });
+// 可见范围：组织负责人 / 持「组织设置」权限的人看到全部并都能管；其他人只看到自己的加公共 Agent，公共 Agent 对非所有者只读
+const viewAgent = (a: Agent): Agent => ({ ...a, can_manage: canManageOrg() || a.owner.id === ME });
+on("GET", "/agents", () => { requireLogin(); return Object.values(AGENTS).filter((a) => canManageOrg() || a.owner.id === ME || a.shared).map(viewAgent); });
 on("POST", "/agents", (_m, body): AgentRegistration => {
   requireLogin();
   const b = body as AgentInput;
   if (!b.name?.trim()) throw new ApiError(400, t("mock.agentEmptyName"));
-  const a: Agent = { id: nextId("agent-"), name: b.name.trim(), owner: ref(ME), shared: !!b.shared, capabilities: b.capabilities ?? [], grants: b.grants ?? [], online: false, last_seen_at: null, max_concurrency: b.max_concurrency ?? 1, created_at: nowISO() };
+  const a: Agent = { id: nextId("agent-"), name: b.name.trim(), owner: ref(ME), shared: !!b.shared, capabilities: b.capabilities ?? [], grants: b.grants ?? [], online: false, last_seen_at: null, max_concurrency: b.max_concurrency ?? 1, created_at: nowISO(), can_manage: true };
   AGENTS[a.id] = a;
   emit("AgentRegistered", { actor: ME, summary: t("mock.ev.agentRegistered", { name: a.name }) });
   const token = `axm_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
@@ -1433,6 +1603,7 @@ on("DELETE", "/agents/:id", (m) => {
   requireLogin();
   const a = AGENTS[m.groups!.id];
   if (!a) throw new ApiError(404, t("mock.agentNotFound"));
+  if (!viewAgent(a).can_manage) throw new ApiError(403, t("mock.forbidden"));
   delete AGENTS[m.groups!.id];
   emit("AgentRemoved", { actor: ME, summary: t("mock.ev.agentRemoved", { name: L(a.name) }) });
   return undefined;
@@ -2133,57 +2304,122 @@ on("DELETE", "/sprints/:id/tasks/:task", (m) => {
   return undefined;
 });
 
-// ---------- 工作台（ADR 0015：/workspace、/org/workspace） ----------
+// ---------- 工作台（ADR 0015 与补记二：/workspace、/org/workspace；区块带宽高） ----------
 const BLOCK_DEFS: BlockDef[] = [
-  { key: "overview_summary", title: "组织概览摘要", description: "当前范围这一个月的目标进度、任务、逾期、吞吐与成本合计。" },
-  { key: "exceptions", title: "要我关注的异常", description: "逾期与停滞的任务、逾期或超预算的目标、等我确认的操作。" },
-  { key: "my_tasks", title: "我的任务", description: "我和我的 Agent 名下未结束的任务。" },
-  { key: "my_review", title: "等我验收", description: "我是验收人、正在等我处理的任务。" },
-  { key: "team_load", title: "人员与 Agent 负荷", description: "每个人和 Agent 手上有多少活、有没有逾期。" },
-  { key: "cost_budget", title: "成本与预算", description: "这一个月的成本、预算执行率，以及成本最高的目标。" },
-  { key: "events", title: "最近动态", description: "当前范围里最近发生了什么。" },
-  { key: "sprint", title: "当前迭代", description: "进行中的迭代：进度、剩余天数与燃尽图。" },
-  { key: "backlog", title: "待领取任务", description: "现在我能领的任务。" },
-  { key: "trend", title: "趋势与环比", description: "成本与吞吐随时间的变化，与上一段时间对比。" },
+  { key: "inbox", title: "待我处理", description: "等我确认、验收、答复的事和我负责但逾期的任务，只看本人、不受范围影响。", default_w: 12, default_h: 2, min_w: 6 },
+  { key: "readouts", title: "组织概况", description: "进行中、待验收、逾期与今日成本四个实时读数，带 24 小时趋势线。", default_w: 12, default_h: 1, min_w: 6 },
+  { key: "overview_summary", title: "组织概览摘要", description: "当前范围这一个月的目标进度、任务、逾期、吞吐与成本合计。", default_w: 12, default_h: 1, min_w: 3 },
+  { key: "exceptions", title: "要我关注的异常", description: "逾期与停滞的任务、逾期或超预算的目标、等我确认的操作。", default_w: 6, default_h: 2, min_w: 3 },
+  { key: "my_tasks", title: "我的任务", description: "我和我的 Agent 名下未结束的任务。", default_w: 12, default_h: 2, min_w: 6 },
+  { key: "my_review", title: "等我验收", description: "我是验收人、正在等我处理的任务。", default_w: 12, default_h: 2, min_w: 6 },
+  { key: "team_load", title: "人员与 Agent 负荷", description: "每个人和 Agent 手上有多少活、有没有逾期。", default_w: 6, default_h: 2, min_w: 3 },
+  { key: "cost_budget", title: "成本与预算", description: "这一个月的成本、预算执行率，以及成本最高的目标。", default_w: 6, default_h: 2, min_w: 3 },
+  { key: "events", title: "最近动态", description: "当前范围里最近发生了什么。", default_w: 6, default_h: 3, min_w: 3 },
+  { key: "sprint", title: "当前迭代", description: "进行中的迭代：进度、剩余天数与燃尽图。", default_w: 6, default_h: 2, min_w: 3 },
+  { key: "backlog", title: "待领取任务", description: "现在我能领的任务。", default_w: 6, default_h: 2, min_w: 3 },
+  { key: "trend", title: "趋势与环比", description: "成本与吞吐随时间的变化，与上一段时间对比。", default_w: 12, default_h: 2, min_w: 6 },
 ];
+const blockDef = (k: BlockKey) => BLOCK_DEFS.find((b) => b.key === k);
+/** 预设里的区块带坐标（与后端 internal/app 的内置预设一致）：[key, x, y, w, h]。补记四：每个预设最上面是「待我处理」，随后「组织概况」（执行视角不带它）。 */
+type Placed = [BlockKey, number, number, number, number];
+const placed = (xs: Placed[]): LayoutBlock[] => xs.map(([key, x, y, w, h]) => ({ key, x, y, w, h }));
 const PRESETS: Preset[] = [
-  { key: "global", title: "全局视角", description: "看全公司：概览、异常、成本、负荷与趋势。", blocks: ["overview_summary", "exceptions", "cost_budget", "team_load", "trend", "events"] },
-  { key: "unit", title: "部门视角", description: "看本部：概览、异常、负荷、成本，加上等我验收的。", blocks: ["overview_summary", "exceptions", "team_load", "cost_budget", "my_review", "events"] },
-  { key: "team", title: "小组视角", description: "带小组：异常、负荷、当前迭代、验收与待领取。", blocks: ["exceptions", "team_load", "sprint", "my_review", "backlog", "events"] },
-  { key: "doer", title: "执行视角", description: "干活：我的任务、等我验收、待领取、当前迭代与动态。", blocks: ["my_tasks", "my_review", "backlog", "sprint", "events"] },
-  { key: "ops", title: "运营视角", description: "看经营：成本、趋势、负荷与异常。", blocks: ["cost_budget", "trend", "team_load", "exceptions", "overview_summary", "events"] },
+  {
+    key: "global",
+    title: "全局视角",
+    description: "看全公司的概览、异常、成本与趋势，适合组织负责人。",
+    blocks: placed([["inbox", 0, 0, 12, 2], ["readouts", 0, 2, 12, 1], ["overview_summary", 0, 3, 12, 1], ["exceptions", 0, 4, 6, 2], ["cost_budget", 6, 4, 6, 2], ["trend", 0, 6, 12, 2]]),
+  },
+  {
+    key: "unit",
+    title: "部门视角",
+    description: "看本部的概览、异常与负荷，兼顾等我验收，适合部门负责人。",
+    blocks: placed([["inbox", 0, 0, 12, 2], ["readouts", 0, 2, 12, 1], ["overview_summary", 0, 3, 12, 1], ["exceptions", 0, 4, 6, 2], ["team_load", 6, 4, 6, 2], ["my_review", 0, 6, 6, 3], ["events", 6, 6, 6, 3]]),
+  },
+  {
+    key: "team",
+    title: "小组视角",
+    description: "先看等我验收和小组负荷，再看异常、我的任务与当前迭代，适合小组负责人。",
+    blocks: placed([["inbox", 0, 0, 12, 2], ["readouts", 0, 2, 12, 1], ["my_review", 0, 3, 6, 2], ["team_load", 6, 3, 6, 2], ["exceptions", 0, 5, 6, 2], ["sprint", 6, 5, 6, 2], ["my_tasks", 0, 7, 12, 2], ["events", 0, 9, 12, 3]]),
+  },
+  {
+    key: "doer",
+    title: "执行视角",
+    description: "先看我的任务，再看等我验收、待领取任务与当前迭代，适合一线成员。",
+    blocks: placed([["inbox", 0, 0, 12, 2], ["my_tasks", 0, 2, 12, 2], ["my_review", 0, 4, 12, 2], ["backlog", 0, 6, 6, 2], ["sprint", 6, 6, 6, 2], ["events", 0, 8, 12, 3]]),
+  },
+  {
+    key: "ops",
+    title: "运营视角",
+    description: "先看成本与趋势，再看异常与负荷，适合运营与流程管理。",
+    blocks: placed([["inbox", 0, 0, 12, 2], ["readouts", 0, 2, 12, 1], ["cost_budget", 0, 3, 6, 2], ["trend", 6, 3, 6, 2], ["exceptions", 0, 5, 6, 2], ["team_load", 6, 5, 6, 2], ["events", 0, 7, 12, 3]]),
+  },
 ];
 const presetOf = (key: string) => PRESETS.find((p) => p.key === key);
+const copyLayout = (xs: LayoutBlock[]) => xs.map((b) => ({ ...b }));
+/**
+ * 补记四的迁移（与后端一致）：补记四之前存下来的布局没有 `inbox` / `readouts`，加载时把缺的补到最上方、其余区块下移；
+ * 之后用户自己移除的不再补回（这只在加载时对存好的布局跑一次，不在解析时跑；按新预设种下的角色布局不需要——执行视角本来就不带 readouts）。
+ */
+const migrateTopBlocks = (blocks: LayoutBlock[]): LayoutBlock[] => {
+  const top: LayoutBlock[] = [];
+  if (!blocks.some((b) => b.key === "inbox")) top.push({ key: "inbox", x: 0, y: 0, w: 12, h: 2 });
+  if (!blocks.some((b) => b.key === "readouts")) top.push({ key: "readouts", x: 0, y: top.length ? 2 : 0, w: 12, h: 1 });
+  if (!top.length) return blocks;
+  const shift = top.reduce((s, b) => s + b.h, 0);
+  return compactLayout([...top, ...blocks.map((b) => ({ ...b, y: b.y + shift }))]);
+};
 /** 首次种子：管理员 → 全局视角；运营、流程管理 → 运营视角；产品、设计、开发、测试、发布 → 执行视角。 */
-const ROLE_LAYOUTS: Record<string, { blocks: BlockKey[]; preset: string | null }> = Object.fromEntries(
+const ROLE_LAYOUTS: Record<string, { blocks: LayoutBlock[]; preset: string | null }> = Object.fromEntries(
   ROLES.map((r) => {
     const key = r.name === "admin" ? "global" : r.name === "ops" || r.name === "workflow_admin" ? "ops" : "doer";
-    return [r.name, { blocks: [...presetOf(key)!.blocks], preset: key }];
+    return [r.name, { blocks: copyLayout(presetOf(key)!.blocks), preset: key }];
   }),
 );
-/** 个人微调：成员 id → 区块顺序；没有就是没调过 */
-const PERSONAL_LAYOUTS: Record<ID, BlockKey[]> = {};
-const blockView = (k: BlockKey) => ({ key: k, title: BLOCK_DEFS.find((b) => b.key === k)?.title ?? k });
-const parseBlocks = (v: unknown): BlockKey[] => {
+/** 补记四之前存下来的个人布局（示例数据里没有）：加载时过一遍 migrateTopBlocks */
+const STORED_PERSONAL_LAYOUTS: Record<ID, LayoutBlock[]> = {};
+/** 个人微调：成员 id → 区块（带宽高）；没有就是没调过 */
+const PERSONAL_LAYOUTS: Record<ID, LayoutBlock[]> = Object.fromEntries(Object.entries(STORED_PERSONAL_LAYOUTS).map(([id, xs]) => [id, migrateTopBlocks(xs)]));
+const blockView = (b: LayoutBlock): WorkspaceBlock => ({ ...b, title: blockDef(b.key)?.title ?? b.key });
+/**
+ * 解析 PUT 的 blocks：接受字符串数组或 {key, x?, y?, w?, h?} 对象数组（docs/api.md）；缺省宽高取目录默认，缺坐标的按顺序致密排布。
+ * 校验：键存在且不重复、0 ≤ x、x + w ≤ 12、w ≥ min_w、1 ≤ h ≤ 6；坐标重叠的后一块另找空位；保存前向上压实。拒绝理由是完整的中文句子（与后端同句）。
+ */
+const parseBlocks = (v: unknown): LayoutBlock[] => {
   if (!Array.isArray(v)) throw new ApiError(400, t("mock.ws.needBlocks"));
-  const out: BlockKey[] = [];
-  for (const k of v) {
-    if (typeof k !== "string" || !isBlockKey(k)) throw new ApiError(400, t("mock.ws.badBlock", { key: String(k) }));
-    if (!out.includes(k)) out.push(k);
+  const raws: RawBlock[] = [];
+  for (const item of v) {
+    const key = typeof item === "string" ? item : item && typeof item === "object" ? (item as { key?: unknown }).key : undefined;
+    if (typeof key !== "string" || !isBlockKey(key)) throw new ApiError(400, t("mock.ws.badBlock", { key: String(key) }));
+    if (raws.some((b) => (typeof b === "string" ? b : b.key) === key)) throw new ApiError(400, t("mock.ws.dupBlock", { title: blockDef(key)?.title ?? key }));
+    const def = blockDef(key)!;
+    const raw = typeof item === "string" ? {} : (item as { x?: unknown; y?: unknown; w?: unknown; h?: unknown });
+    const given = (k: "x" | "y" | "w" | "h") => raw[k] !== undefined && raw[k] !== null;
+    if (given("w") && !isBlockWidth(raw.w)) throw new ApiError(400, t("mock.ws.badWidth", { title: def.title, n: def.min_w, cols: GRID_COLS }));
+    if (given("h") && !isBlockHeight(raw.h)) throw new ApiError(400, t("mock.ws.badHeight", { title: def.title, max: GRID_MAX_H }));
+    const w = isBlockWidth(raw.w) ? raw.w : def.default_w;
+    if (w < def.min_w) throw new ApiError(400, t("mock.ws.badWidth", { title: def.title, n: def.min_w, cols: GRID_COLS }));
+    if (given("x") && (typeof raw.x !== "number" || !Number.isInteger(raw.x) || raw.x < 0 || raw.x + w > GRID_COLS)) throw new ApiError(400, t("mock.ws.badX", { title: def.title }));
+    if (given("y") && (typeof raw.y !== "number" || !Number.isInteger(raw.y) || raw.y < 0)) throw new ApiError(400, t("mock.ws.badY", { title: def.title }));
+    raws.push({ key, x: raw.x as number | undefined, y: raw.y as number | undefined, w, h: isBlockHeight(raw.h) ? raw.h : def.default_h });
   }
-  if (!out.length) throw new ApiError(400, t("mock.ws.needBlocks"));
-  return out;
+  if (!raws.length) throw new ApiError(400, t("mock.ws.needBlocks"));
+  return compactLayout(replaceOverlapping(normalizeLayout(raws, BLOCK_DEFS)));
 };
-/** 解析顺序：个人微调 → 各角色布局并集（按首次出现顺序去重）→ 默认（组织负责人 global，其他 doer）。 */
+/** 与后端一致：坐标重叠不拒绝，后面的那块丢掉坐标按顺序另找空位。 */
+const replaceOverlapping = (xs: LayoutBlock[]): LayoutBlock[] => normalizeLayout(xs.map((b, i) => (xs.slice(0, i).some((p) => blocksOverlap(p, b)) ? { key: b.key, w: b.w, h: b.h } : b)), BLOCK_DEFS);
+/** 解析顺序：个人微调 → 各角色布局并集（按首次出现顺序去重，宽高取首次出现的那份）→ 默认（组织负责人 global，其他 doer）。 */
 function resolveWorkspace(): Workspace {
   const me = MEMBERS[ME];
   const personal = PERSONAL_LAYOUTS[ME];
   if (personal) return { blocks: personal.map(blockView), source: "personal", roles_used: [], can_customize: true };
   const used = me.roles.filter((r) => ROLE_LAYOUTS[r]);
   if (used.length) {
-    const merged: BlockKey[] = [];
-    for (const r of used) for (const k of ROLE_LAYOUTS[r].blocks) if (!merged.includes(k)) merged.push(k);
-    return { blocks: merged.map(blockView), source: "roles", roles_used: used, can_customize: true };
+    const merged: LayoutBlock[] = [];
+    for (const r of used) for (const b of ROLE_LAYOUTS[r].blocks) if (!merged.some((x) => x.key === b.key)) merged.push({ ...b });
+    // 并集里来自后面角色的块可能与前面的重叠：重叠的丢掉坐标按顺序找空位，再向上压实
+    const union = compactLayout(replaceOverlapping(merged));
+    return { blocks: union.map(blockView), source: "roles", roles_used: used, can_customize: true };
   }
   const fallback = presetOf(ORG.owner_id === ME ? "global" : "doer")!;
   return { blocks: fallback.blocks.map(blockView), source: "default", roles_used: [], can_customize: true };
@@ -2194,7 +2430,7 @@ const viewRoleWorkspace = (r: OrgRole): RoleWorkspace => {
   return {
     role: r.name,
     role_title: r.title,
-    blocks: layout ? [...layout.blocks] : [...fallback.blocks],
+    blocks: copyLayout(layout ? layout.blocks : fallback.blocks),
     preset: layout ? layout.preset : fallback.key,
     member_count: Object.values(MEMBERS).filter((m) => m.active && m.roles.includes(r.name)).length,
   };
@@ -2203,10 +2439,11 @@ on("GET", "/workspace", () => { requireLogin(); return resolveWorkspace(); });
 on("PUT", "/workspace/me", (_m, body) => {
   requireLogin();
   PERSONAL_LAYOUTS[ME] = parseBlocks((body as { blocks?: unknown } | null)?.blocks);
+  emit("WorkspaceLayoutUpdated", { actor: ME, summary: t("mock.ev.workspaceLayoutMine"), data: { blocks: PERSONAL_LAYOUTS[ME] } });
   return resolveWorkspace();
 });
 on("DELETE", "/workspace/me", () => { requireLogin(); delete PERSONAL_LAYOUTS[ME]; return undefined; });
-on("GET", "/workspace/blocks", (): WorkspaceCatalog => { requireLogin(); return { blocks: BLOCK_DEFS.filter((b) => BLOCK_KEYS.includes(b.key)), presets: PRESETS }; });
+on("GET", "/workspace/blocks", (): WorkspaceCatalog => { requireLogin(); return { blocks: BLOCK_DEFS.filter((b) => BLOCK_KEYS.includes(b.key)), presets: PRESETS.map((p) => ({ ...p, blocks: copyLayout(p.blocks) })) }; });
 on("GET", "/org/workspace", () => { requireOrgAdmin(); return ROLES.map(viewRoleWorkspace); });
 on("PUT", "/org/workspace/:role", (m, body) => {
   requireOrgAdmin();
@@ -2216,10 +2453,10 @@ on("PUT", "/org/workspace/:role", (m, body) => {
   if (typeof b.preset === "string") {
     const p = presetOf(b.preset);
     if (!p) throw new ApiError(400, t("mock.ws.badPreset"));
-    ROLE_LAYOUTS[role.name] = { blocks: [...p.blocks], preset: p.key };
+    ROLE_LAYOUTS[role.name] = { blocks: copyLayout(p.blocks), preset: p.key };
   } else {
     const blocks = parseBlocks(b.blocks);
-    const same = PRESETS.find((p) => p.blocks.length === blocks.length && p.blocks.every((k, i) => k === blocks[i]));
+    const same = PRESETS.find((p) => sameLayout(p.blocks, blocks));
     ROLE_LAYOUTS[role.name] = { blocks, preset: same?.key ?? null };
   }
   emit("WorkspaceLayoutUpdated", { actor: ME, summary: t("mock.ev.workspaceLayout", { role: L(role.title) }), data: { role: role.name, preset: ROLE_LAYOUTS[role.name].preset, blocks: ROLE_LAYOUTS[role.name].blocks } });
@@ -2247,20 +2484,25 @@ on("PATCH", "/org", (_m, body) => {
   return orgInfo();
 });
 const getMember = (id: string) => { const m = MEMBERS[id]; if (!m) throw new ApiError(404, t("mock.org.memberNotFound")); return m; };
-on("GET", "/org/members", () => { requireOrgAdmin(); return Object.values(MEMBERS).map(viewOrgMember); });
+const isSyncedRow = (x: { source?: string }) => !!x.source && x.source !== "manual";
+/** 换直属团队：从所有团队里摘掉，再放进目标团队（null = 不属于任何团队） */
+const moveMember = (mem: MemberRow, teamId: ID | null) => {
+  for (const tm of TEAMS) tm.member_ids = tm.member_ids.filter((x) => x !== mem.id);
+  const tm = TEAMS.find((x) => x.id === teamId);
+  mem.team_id = tm?.id ?? null;
+  if (tm) tm.member_ids.push(mem.id);
+};
+on("GET", "/org/members", () => { requireOrgAdmin(); const dups = findDuplicates(); return Object.values(MEMBERS).map((m) => viewOrgMember(m, dups)); });
 on("PATCH", "/org/members/:id", (m, body) => {
   requireOrgAdmin();
   const mem = getMember(m.groups!.id);
   const b = (body ?? {}) as { name?: string; roles?: string[]; active?: boolean; team_id?: ID | null };
-  if (b.name !== undefined) mem.name = b.name;
+  if (b.team_id !== undefined && b.team_id !== mem.team_id && isSyncedRow(mem)) throw new ApiError(409, t("mock.people.syncedMemberTeam", { name: sourceTitle(mem.source) }));
+  if (b.active === false && ORG.owner_id === mem.id) throw new ApiError(409, t("mock.people.ownerKeep"));
+  if (b.name !== undefined && !isSyncedRow(mem)) mem.name = b.name;
   if (b.roles !== undefined) mem.roles = b.roles.filter((r) => roleOf(r));
   if (b.active !== undefined) mem.active = b.active;
-  if (b.team_id !== undefined) {
-    mem.team_id = b.team_id;
-    for (const tm of TEAMS) tm.member_ids = tm.member_ids.filter((x) => x !== mem.id);
-    const tm = TEAMS.find((x) => x.id === b.team_id);
-    if (tm) tm.member_ids.push(mem.id);
-  }
+  if (b.team_id !== undefined) moveMember(mem, b.team_id);
   return viewOrgMember(mem);
 });
 on("POST", "/org/members/:id/make-owner", (m) => {
@@ -2273,17 +2515,36 @@ on("POST", "/org/members/:id/make-owner", (m) => {
 on("GET", "/org/invitations", () => { requireOrgAdmin(); return INVITATIONS.map(viewInvitation); });
 on("POST", "/org/invitations", (_m, body) => {
   requireOrgAdmin();
-  const b = (body ?? {}) as { email?: string; name?: string; roles?: string[] };
+  const b = (body ?? {}) as { email?: string; name?: string; roles?: string[]; team_id?: ID | null };
   if (!b.email?.trim()) throw new ApiError(400, t("mock.org.needEmail"));
   const row: InvitationRow = { id: nextId("I"), token: `inv_${Math.random().toString(36).slice(2, 10)}`, email: b.email.trim(), name: b.name?.trim() ?? "", roles: b.roles ?? [], url: "", expires_at: at(7), accepted_at: null, created_at: nowISO() };
   INVITATIONS.push(row);
+  // 被邀请的人立刻以「待激活」出现在成员表里（成员与团队页），接受邀请后转正常
+  let mem = Object.values(MEMBERS).find((x) => x.email.toLowerCase() === row.email.toLowerCase());
+  if (!mem) {
+    mem = { id: nextId("m"), name: row.name || row.email, email: row.email, roles: row.roles, team_id: null, locale: getLocale(), active: true, created_at: nowISO(), source: "manual", status: "pending_activation", invite_token: row.token };
+    MEMBERS[mem.id] = mem;
+    ADMIN_ORGS[0].member_count += 1;
+  } else if (mem.status === "pending_activation") {
+    mem.invite_token = row.token;
+    if (row.roles.length) mem.roles = row.roles;
+  }
+  if (b.team_id !== undefined && mem.status === "pending_activation") {
+    const tm = TEAMS.find((x) => x.id === b.team_id);
+    for (const x of TEAMS) x.member_ids = x.member_ids.filter((id) => id !== mem!.id);
+    mem.team_id = tm?.id ?? null;
+    if (tm) tm.member_ids.push(mem.id);
+  }
   return viewInvitation(row);
 });
 on("DELETE", "/org/invitations/:id", (m) => {
   requireOrgAdmin();
   const i = INVITATIONS.findIndex((x) => x.id === m.groups!.id);
   if (i < 0) throw new ApiError(404, t("mock.invite.notFound"));
-  INVITATIONS.splice(i, 1);
+  const [row] = INVITATIONS.splice(i, 1);
+  // 撤回邀请 = 连带删掉它建出的、还没接受的待激活成员
+  const mem = Object.values(MEMBERS).find((x) => x.invite_token === row.token && x.status === "pending_activation");
+  if (mem) { for (const tm of TEAMS) tm.member_ids = tm.member_ids.filter((id) => id !== mem.id); delete MEMBERS[mem.id]; ADMIN_ORGS[0].member_count = Math.max(0, ADMIN_ORGS[0].member_count - 1); }
   return undefined;
 });
 on("GET", "/org/roles", () => { requireLogin(); return ROLES.map(viewRole); });
@@ -2313,39 +2574,713 @@ on("DELETE", "/org/roles/:name", (m) => {
   return undefined;
 });
 const getTeam = (id: string) => { const tm = TEAMS.find((x) => x.id === id); if (!tm) throw new ApiError(404, t("mock.org.teamNotFound")); return tm; };
+// ---------- IM 集成同步（ADR 0017 及补记）：提供方是数据——这里的两份声明就是"服务器会返回的数据"，界面代码里没有平台名 ----------
+/** 可接入的提供方声明（与 internal/directory 里注册的一致；标题、提示、指引按当前语言给） */
+function mockProviders(): DirectoryProviderInfo[] {
+  const zh = getLocale() === "zh-CN";
+  const x = (a: string, b: string) => (zh ? a : b);
+  return [
+    {
+      key: "feishu", title: x("飞书", "Feishu"), root_department_id: "0",
+      fields: [
+        { key: "app_id", title: "App ID", secret: false, placeholder: "cli_xxxxxxxxxxxxxxxx", hint: x("飞书开放平台 → 开发者后台 → 应用 → 凭证与基础信息", "Feishu Open Platform → Developer Console → the app → Credentials & Basic Info") },
+        { key: "app_secret", title: "App Secret", secret: true, placeholder: "", hint: x("与 App ID 同一页；保存后只显示是否已设置", "Same page as the App ID; only whether it is set is shown after saving") },
+      ],
+      prerequisites: [
+        x("在飞书开放平台创建一个企业自建应用", "Create a custom enterprise app on Feishu Open Platform"),
+        x("为它开通通讯录只读权限（contact:contact.base:readonly 等），并发布版本", "Grant it read-only contact permissions (contact:contact.base:readonly, etc.) and publish a version"),
+        x("把要同步的部门加进应用的通讯录权限范围", "Add the departments to sync to the app's contact permission scope"),
+      ],
+      tip: { text: x("App ID 和 App Secret 在飞书开放平台里你创建的企业自建应用的「凭证与基础信息」页；应用要开通通讯录只读权限并发布版本。", "The App ID and App Secret are on the “Credentials & Basic Info” page of your custom app on Feishu Open Platform; the app needs read-only contact permissions and a released version."), url: "https://open.feishu.cn/app" },
+    },
+    {
+      key: "wecom", title: x("企业微信", "WeCom"), root_department_id: "1",
+      fields: [
+        { key: "corp_id", title: x("企业 ID", "Corp ID"), secret: false, placeholder: "wwxxxxxxxxxxxxxxxx", hint: x("企业微信管理后台 → 我的企业 → 企业信息 → 企业 ID", "WeCom admin console → My Company → Company Info → Corp ID") },
+        { key: "corp_secret", title: x("通讯录同步 Secret", "Contacts sync Secret"), secret: true, placeholder: "", hint: x("管理后台 → 管理工具 → 通讯录同步 → Secret；保存后只显示是否已设置", "Admin console → Management Tools → Contacts Sync → Secret; only whether it is set is shown after saving") },
+      ],
+      prerequisites: [
+        x("在企业微信管理后台的「管理工具 → 通讯录同步」里开启 API 接口同步，取得 Secret", "In the WeCom admin console open Management Tools → Contacts Sync, enable API sync and copy the Secret"),
+        x("把本系统的出网 IP 加进通讯录同步的可信 IP 列表", "Add this system's outbound IP to the contacts-sync trusted IP list"),
+        x("新建的应用可能拿不到姓名、手机、邮箱等敏感字段；拿不到时只同步能拿到的字段，并在同步结果里说明", "Newly created apps may not receive sensitive fields (name, mobile, email); then only the available fields are synced and the sync result says so"),
+      ],
+      tip: { text: x("企业 ID 在企业微信管理后台「我的企业 → 企业信息」最底部；通讯录同步 Secret 在「管理工具 → 通讯录同步」开启 API 接口同步后显示，并要把服务器出网 IP 加入企业可信 IP。", "The Corp ID is at the bottom of “My Company → Company Info” in the WeCom admin console; the contacts-sync Secret appears under “Management Tools → Contacts Sync” after enabling API sync, and the server’s outbound IP must be added to the trusted IPs."), url: "https://work.weixin.qq.com/wework_admin/frame" },
+    },
+  ];
+}
+const providerOf = (key: string | null | undefined) => (key ? mockProviders().find((p) => p.key === key) ?? null : null);
+/** 成员 / 团队来源的界面名：手工，或提供方名称（找不到声明时退回代码名） */
+function sourceTitle(source: string | undefined): string {
+  if (!source || source === "manual") return t("mock.source.manual");
+  return providerOf(source)?.title ?? source;
+}
+
+interface DirectoryState { provider: string | null; credentials: Record<string, string>; secrets: Record<string, string>; root_department_id: string; root_department_ids: string[]; default_role: string; schedule: DirectoryConfig["schedule"]; proxy_url: string }
+const DIR: DirectoryState = { provider: "feishu", credentials: { app_id: "cli_a1b2c3d4e5f6" }, secrets: { app_secret: "***" }, root_department_id: "od-product", root_department_ids: [], default_role: "developer", schedule: "daily", proxy_url: "" };
+/** 已接入 = 选了提供方，且它声明的每个字段都有值 */
+const dirConfigured = () => { const p = providerOf(DIR.provider); return !!p && p.fields.every((f) => (f.secret ? !!DIR.secrets[f.key] : !!DIR.credentials[f.key])); };
+/** 外部身份：IM 集成里的编号 -> 本地 id（同一个人 / 部门在多次同步之间靠它认出来）。换提供方时清空：旧来源的身份不再匹配 */
+let EXT_TEAMS: Record<string, ID> = { "od-product": "team-rd", "od-fe": "team-fe", "od-qa": "team-qa", "od-old": "team-old" };
+let EXT_MEMBERS: Record<string, ID> = { "ou-li": "li", "ou-zhang": "zhang", "ou-zhao": "zhao", "ou-wu": "wu", "ou-zheng": "zheng" };
+/** 每条外部身份是什么时候绑上的（对应关系面板的 since）；没记录的是第一次同步时绑的 */
+const EXT_SINCE: Record<string, string> = {};
+const sinceOf = (kind: DirectoryKind, ext: string) => EXT_SINCE[`${kind}:${ext}`] ?? at(-3, 3);
+/** 对候选的决定（ADR 0017 补记四）：同一外部对象只保留最后一次；换提供方时清空 */
+interface DecisionRow { provider: string; kind: DirectoryKind; external_id: string; external_name: string; decision: DirectoryDecision; local_id?: ID; decided_at: string }
+let DIR_DECISIONS: DecisionRow[] = [];
+const decisionOf = (kind: DirectoryKind, ext: string) => DIR_DECISIONS.find((d) => d.provider === DIR.provider && d.kind === kind && d.external_id === ext);
+const decisionTitle = (d: DirectoryDecision) => t(`mock.directory.decision.${d}` as Key);
+const viewDecision = (d: DecisionRow): DirectoryDecisionRecord => {
+  const local = d.local_id ? (d.kind === "team" ? TEAMS.find((x) => x.id === d.local_id)?.name : MEMBERS[d.local_id]?.name) : undefined;
+  return { kind: d.kind, external_id: d.external_id, external_name: d.external_name, decision: d.decision, decision_title: decisionTitle(d.decision), local_id: d.local_id ?? null, local_name: local ?? null, decided_at: d.decided_at };
+};
+/** 团队 / 成员的原始名字（不走 L()，认法要按存的名字比） */
+const rawTeamName = (id: ID | null | undefined) => (id ? TEAMS.find((x) => x.id === id)?.name ?? null : null);
+const candidateOf = (kind: DirectoryKind, id: ID, reason: DirectoryMatchReason, reasonText: string): DirectoryCandidate => {
+  if (kind === "team") { const tm = TEAMS.find((x) => x.id === id)!; return { local_id: id, name: tm.name, team_path: teamPath(tm.parent_id), source: tm.source ?? "manual", source_title: sourceTitle(tm.source), reason, reason_text: reasonText }; }
+  const m = MEMBERS[id]; return { local_id: id, name: m.name, team_path: teamPath(m.team_id), source: m.source ?? "manual", source_title: sourceTitle(m.source), reason, reason_text: reasonText };
+};
+/** 同步之后，用同一套认法（第二至四级）在手工对象（a）与同步对象（b）之间找疑似重复；停用的不算 */
+function findDuplicates(): DirectoryDuplicate[] {
+  const out: DirectoryDuplicate[] = [];
+  const side = (kind: DirectoryKind, id: ID): DirectoryDuplicateSide => { const c = candidateOf(kind, id, "email", ""); return { id, name: c.name, source: c.source, source_title: c.source_title, team_path: c.team_path }; };
+  const members = Object.values(MEMBERS).filter((m) => m.active);
+  const countNames = (rows: typeof members) => rows.reduce<Record<string, number>>((acc, m) => { acc[m.name] = (acc[m.name] ?? 0) + 1; return acc; }, {});
+  const manualNames = countNames(members.filter((m) => !isSyncedRow(m)));
+  const syncedNames = countNames(members.filter((m) => isSyncedRow(m)));
+  for (const a of members.filter((m) => !isSyncedRow(m))) {
+    for (const b of members.filter((m) => isSyncedRow(m))) {
+      if (a.email.toLowerCase() === b.email.toLowerCase()) out.push({ kind: "member", a: side("member", a.id), b: side("member", b.id), reason: "email", reason_text: t("mock.directory.reason.email") });
+      else if (a.name === b.name && a.team_id && rawTeamName(a.team_id) === rawTeamName(b.team_id)) out.push({ kind: "member", a: side("member", a.id), b: side("member", b.id), reason: "name_team", reason_text: t("mock.directory.reason.name_team", { team: L(rawTeamName(a.team_id)!) }) });
+      else if (a.name === b.name && manualNames[a.name] === 1 && syncedNames[b.name] === 1) out.push({ kind: "member", a: side("member", a.id), b: side("member", b.id), reason: "name_unique", reason_text: t("mock.directory.reason.name_unique") });
+    }
+  }
+  const teams = TEAMS.filter((x) => x.active !== false);
+  for (const a of teams.filter((x) => !isSyncedRow(x))) for (const b of teams.filter((x) => isSyncedRow(x))) {
+    if (a.name === b.name && (a.parent_id ?? null) === (b.parent_id ?? null)) out.push({ kind: "team", a: side("team", a.id), b: side("team", b.id), reason: "team_name_level", reason_text: t("mock.directory.reason.team_name_level") });
+  }
+  return out;
+}
+/** IM 集成里现在的部门树（根部门之下）：测试组改了名，多了一个数据平台组，旧项目组没了 */
+const REMOTE_TEAMS: Array<{ ext: string; name: string; parent: string | null }> = [
+  { ext: "od-product", name: "产品事业部", parent: null },
+  { ext: "od-fe", name: "前端组", parent: "od-product" },
+  { ext: "od-qa", name: "质量组", parent: "od-product" },
+  { ext: "od-data", name: "数据平台组", parent: "od-product" },
+];
+/** IM 集成里现在的人：小赵已经离开；多了冯小北与韩小南（韩小南没有邮箱） */
+const REMOTE_MEMBERS: Array<{ ext: string; name: string; email: string | null; team: string }> = [
+  { ext: "ou-li", name: "小李", email: "li@example.com", team: "od-fe" },
+  { ext: "ou-zhang", name: "小张", email: "zhang@example.com", team: "od-qa" },
+  { ext: "ou-wu", name: "吴小雨", email: "wu@example.com", team: "od-fe" },
+  { ext: "ou-zheng", name: "郑一", email: "zheng@example.com", team: "od-qa" },
+  { ext: "ou-feng", name: "冯小北", email: "feng@example.com", team: "od-data" },
+  { ext: "ou-han", name: "韩小南", email: null, team: "od-data" },
+];
+const DIR_RUNS: DirectoryRun[] = [
+  { id: "dr1", provider: "feishu", started_at: at(-3, 3), finished_at: at(-3, 3, 1), status: "ok", status_title: "", added_teams: 4, updated_teams: 0, deactivated_teams: 0, added_members: 5, updated_members: 0, deactivated_members: 0, errors: [] },
+];
+const runStatusTitle = (st: DirectoryRun["status"]) => (st === "ok" ? t("mock.directory.status.ok") : st === "partial" ? t("mock.directory.status.partial") : t("mock.directory.status.failed"));
+const viewDirRun = (r: DirectoryRun): DirectoryRun => ({ ...r, status_title: runStatusTitle(r.status) });
+const SCHEDULES: DirectoryConfig["schedules"] = [
+  { value: "manual", title: "手动" }, { value: "hourly", title: "每小时" }, { value: "daily", title: "每天" },
+];
+/** GET /org/directory：保密字段永远只给"有没有设"；providers[] 里当前提供方的字段带 set / value */
+const viewDirectory = (): DirectoryConfig => {
+  const cur = providerOf(DIR.provider);
+  const providers = mockProviders().map((p) => (p.key !== DIR.provider ? p : { ...p, fields: p.fields.map((f) => (f.secret ? { ...f, set: !!DIR.secrets[f.key] } : { ...f, set: !!DIR.credentials[f.key], value: DIR.credentials[f.key] || undefined })) }));
+  const secrets_set: Record<string, boolean> = {};
+  for (const f of cur?.fields ?? []) if (f.secret) secrets_set[f.key] = !!DIR.secrets[f.key];
+  return {
+    provider: DIR.provider, provider_title: cur?.title ?? "", configured: dirConfigured(), credentials: { ...DIR.credentials }, secrets_set, providers,
+    root_department_id: DIR.root_department_id, root_department_ids: [...DIR.root_department_ids], default_role: DIR.default_role,
+    schedule: DIR.schedule, schedule_title: SCHEDULES.find((x) => x.value === DIR.schedule)?.title ?? DIR.schedule, schedules: SCHEDULES, proxy_url: DIR.proxy_url,
+    last_run: lastRunOfCurrent(),
+  };
+};
+/** 上次同步只算当前提供方的：换了提供方就等于还没同步过 */
+const lastRunOfCurrent = () => { const r = [...DIR_RUNS].reverse().find((x) => x.provider === DIR.provider); return r ? viewDirRun(r) : null; };
+/** 同步根：勾了多个就按多个（每个成为顶层团队）；否则按单个根部门；根部门等于提供方的根 = 整个企业 */
+const syncRoots = (): string[] | null => {
+  if (DIR.root_department_ids.length) return DIR.root_department_ids;
+  const p = providerOf(DIR.provider);
+  return !p || !DIR.root_department_id || DIR.root_department_id === p.root_department_id ? null : [DIR.root_department_id];
+};
+/** 示例数据的剧本（ADR 0017 补记二）：保密字段以 bad 开头 → 凭据被拒；含 noname → 部门 / 人员读得到但没名字（字段级权限缺失）；
+ *  其他 → 应用只被授权了部分部门（scope 待处理，给出可选的根）且邮箱权限未开；选好同步根后范围通过。 */
+const CHECK_ORDER = ["credentials", "scope", "dept_names", "user_names", "emails", "published"] as const;
+const SUGGESTED_ROOTS = () => REMOTE_TEAMS.filter((r) => r.parent === "od-product").map((r) => ({ id: r.ext, name: r.name }));
+function directoryChecklist(): DirectoryChecklist {
+  const p = providerOf(DIR.provider);
+  if (!p || !dirConfigured()) throw new ApiError(400, t("mock.directory.notConfigured"));
+  const secret = p.fields.filter((f) => f.secret).map((f) => DIR.secrets[f.key] ?? "").join("");
+  const bad = secret.startsWith("bad");
+  const noname = secret.includes("noname");
+  const appId = Object.values(DIR.credentials)[0] ?? "";
+  // 控制台链接：尽量直达"这个应用"的那一页（这是服务端的知识，界面只管打开）
+  const consoleUrl = p.tip?.url ?? "";
+  const appPage = (page: string) => (p.key === "feishu" && appId ? `https://open.feishu.cn/app/${appId}/${page}` : consoleUrl);
+  const rootsChosen = syncRoots() !== null;
+  const scopePartial = !rootsChosen;
+  const fieldTitles = p.fields.map((f) => f.title).join(getLocale() === "zh-CN" ? "、" : ", ");
+  const mk = (key: (typeof CHECK_ORDER)[number], status: DirectoryCheck["status"], blocking: boolean, extra: Partial<DirectoryCheck> = {}): DirectoryCheck => ({ key, title: t(`mock.directory.check.${key}` as Key), status, blocking, ...extra });
+  const skipped = (key: (typeof CHECK_ORDER)[number]) => mk(key, "skipped", false, { detail: t("mock.directory.check.skippedDetail") });
+  const checks: DirectoryCheck[] = [];
+  if (bad) {
+    checks.push(mk("credentials", "blocked", true, { fix: t("mock.directory.check.credentials.fix", { name: p.title, fields: fieldTitles }), fix_url: appPage("baseinfo"), detail: t("mock.directory.check.credentials.detail") }));
+    for (const k of CHECK_ORDER.slice(1)) checks.push(skipped(k));
+  } else {
+    checks.push(mk("credentials", "ok", true, { detail: t("mock.directory.check.credentials.okDetail", { tenant: ORG.name }) }));
+    checks.push(scopePartial
+      ? mk("scope", "todo", false, { fix: t("mock.directory.check.scope.fix", { n: SUGGESTED_ROOTS().length }), fix_url: appPage("auth"), detail: t("mock.directory.check.scope.detail", { names: SUGGESTED_ROOTS().map((r) => r.name).join(" / ") }) })
+      : mk("scope", "ok", false, { detail: t("mock.directory.check.scope.okDetail", { n: syncRoots()!.length }) }));
+    if (noname) {
+      checks.push(mk("dept_names", "blocked", true, { fix: t("mock.directory.check.dept_names.fix", { name: p.title }), fix_url: appPage("auth"), detail: t("mock.directory.check.dept_names.detail") }));
+      checks.push(mk("user_names", "blocked", true, { fix: t("mock.directory.check.user_names.fix", { name: p.title }), fix_url: appPage("auth"), detail: t("mock.directory.check.user_names.detail") }));
+      checks.push(skipped("emails"));
+    } else {
+      checks.push(mk("dept_names", "ok", true));
+      checks.push(mk("user_names", "ok", true));
+      checks.push(mk("emails", "todo", false, { fix: t("mock.directory.check.emails.fix", { name: p.title }), fix_url: appPage("auth"), detail: t("mock.directory.check.emails.detail") }));
+    }
+    checks.push(mk("published", "ok", true, { detail: t("mock.directory.check.published.okDetail") }));
+  }
+  const ready = !checks.some((c) => c.status === "blocked");
+  const synced = lastRunOfCurrent()?.status !== undefined && lastRunOfCurrent()!.status !== "failed";
+  const step: DirectoryChecklist["next"]["step"] = !ready ? "checks" : scopePartial ? "scope" : checks.some((c) => c.status === "todo") ? "checks" : !synced ? "preview" : "schedule";
+  return {
+    provider: p.key, provider_title: p.title, console_url: consoleUrl, checks, ready,
+    next: { step, text: t(`mock.directory.next.${step}` as Key, { name: p.title }) },
+    // 应用被授权的部门（示例数据里应用永远只被授权了部分部门）：范围待选时用来勾，选好后用来显示名字
+    suggested_roots: ready ? SUGGESTED_ROOTS() : undefined,
+    root_department_id: DIR.root_department_id,
+  };
+}
+/** 预览 / 同步前的门：有阻塞项就 400，句子里说清楚卡在哪 */
+const requireReady = () => {
+  const cl = directoryChecklist();
+  if (!cl.ready) throw new ApiError(400, t("mock.directory.notReady", { reasons: cl.checks.filter((c) => c.status === "blocked").map((c) => c.title).join(getLocale() === "zh-CN" ? "、" : ", ") }));
+};
+/**
+ * 对照IM 集成与本地：每个部门是新建 / 更新 / 保持 / 待确认；本地有外部身份但IM 集成里没了的部门和人要停用；来自旧来源的只提醒、不停用。
+ * 冲突（ADR 0017 补记四）：认人认团队分四级——外部身份直接算同一个；邮箱相同 / 姓名相同且部门与本地主团队同名（成员）、同名同层级（团队）只产生候选，
+ * 进 confirmations 等人决定；已决定的按决定走（merge → 视为已绑定、create → 新建、skip → 不同步）。
+ */
+function directoryPlan() {
+  // 同步范围：勾了根就只要根和它们下面的部门，根成为顶层；否则整棵树
+  const roots = syncRoots();
+  const inScope = (ext: string): boolean => { if (!roots) return true; let cur: string | null = ext; while (cur) { if (roots.includes(cur)) return true; cur = REMOTE_TEAMS.find((r) => r.ext === cur)?.parent ?? null; } return false; };
+  let remote = REMOTE_TEAMS.filter((r) => inScope(r.ext)).map((r) => (roots?.includes(r.ext) ? { ...r, parent: null } : r));
+  const confirmations: DirectoryConfirmation[] = [];
+  const decided: DirectoryDecided[] = [];
+  const skipped: DirectorySkipped[] = [];
+  // 跳过的部门不同步，它的子部门提到它的父下面
+  for (const r of [...remote]) {
+    const d = decisionOf("team", r.ext);
+    if (d?.decision !== "skip") continue;
+    skipped.push({ kind: "team", external_id: r.ext, external_name: r.name, decided_at: d.decided_at });
+    remote = remote.filter((x) => x.ext !== r.ext).map((x) => (x.parent === r.ext ? { ...x, parent: r.parent } : x));
+  }
+  // 已被外部身份或合并决定占用的本地对象不再当别人的候选
+  const takenTeams = new Set<ID>([...Object.values(EXT_TEAMS), ...DIR_DECISIONS.filter((d) => d.provider === DIR.provider && d.kind === "team" && d.decision === "merge" && d.local_id).map((d) => d.local_id!)]);
+  const takenMembers = new Set<ID>([...Object.values(EXT_MEMBERS), ...DIR_DECISIONS.filter((d) => d.provider === DIR.provider && d.kind === "member" && d.decision === "merge" && d.local_id).map((d) => d.local_id!)]);
+  /** 外部部门对应的本地团队：外部身份，或合并决定 */
+  const teamLocal = (ext: string): ID | undefined => EXT_TEAMS[ext] ?? (decisionOf("team", ext)?.decision === "merge" ? decisionOf("team", ext)!.local_id : undefined);
+  const remoteName = (ext: string | null | undefined) => (ext ? REMOTE_TEAMS.find((x) => x.ext === ext)?.name : undefined);
+  const teams: DirectoryTeamPlan[] = remote.map((r) => {
+    const parentLocal = r.parent ? teamLocal(r.parent) ?? null : null;
+    const bound = EXT_TEAMS[r.ext];
+    const dec = decisionOf("team", r.ext);
+    const localId = bound ?? (dec?.decision === "merge" ? dec.local_id : undefined);
+    const local = localId ? TEAMS.find((x) => x.id === localId) : undefined;
+    const base = { external_id: r.ext, name: r.name, parent_external_id: r.parent ?? undefined };
+    // 同名同层级的本地团队（父团队也对上，或都是顶层）
+    const cands = TEAMS.filter((x) => x.active !== false && x.name === r.name && (x.parent_id ?? null) === parentLocal && !isSyncedRow(x));
+    const external = { id: r.ext, name: r.name, parent: remoteName(r.parent) };
+    const asCandidates = (ids: ID[]) => ids.map((id) => candidateOf("team", id, "team_name_level", t("mock.directory.reason.team_name_level")));
+    if (dec && dec.decision !== "skip") decided.push({ kind: "team", external, candidates: asCandidates(cands.map((x) => x.id)), decision: dec.decision, decision_title: decisionTitle(dec.decision), decided_local_id: dec.local_id ?? null, decided_local_name: dec.local_id ? rawTeamName(dec.local_id) : null });
+    if (local) {
+      const action: DirectoryTeamPlan["action"] = local.name !== r.name || (local.parent_id ?? null) !== parentLocal || !local.active ? "update" : "keep";
+      return { ...base, local_id: local.id, action, ...(bound ? {} : { bind: true }) };
+    }
+    if (dec?.decision === "create") return { ...base, local_id: null, action: "create" };
+    const open = cands.filter((x) => !takenTeams.has(x.id));
+    if (open.length) {
+      confirmations.push({ kind: "team", external, candidates: asCandidates(open.map((x) => x.id)) });
+      return { ...base, local_id: null, action: "confirm", candidates: open.map((x) => ({ local_id: x.id, reason: "team_name_level" as const })) };
+    }
+    return { ...base, local_id: null, action: "create" };
+  });
+  const remoteTeamExts = new Set(remote.map((r) => r.ext));
+  const teamsToDeactivate = Object.entries(EXT_TEAMS).filter(([ext, id]) => !remoteTeamExts.has(ext) && TEAMS.find((x) => x.id === id)?.active).map(([, id]) => ({ id, name: TEAMS.find((x) => x.id === id)!.name }));
+  // 成员：跳过的不进名单；合并决定的视为已有；其余按邮箱 / 姓名+部门找候选
+  const mergeTargets: Record<string, ID> = {};
+  const members = REMOTE_MEMBERS.filter((r) => remoteTeamExts.has(r.team)).filter((r) => {
+    const d = decisionOf("member", r.ext);
+    if (d?.decision === "skip") { skipped.push({ kind: "member", external_id: r.ext, external_name: r.name, decided_at: d.decided_at }); return false; }
+    return true;
+  });
+  const membersNew: typeof members = [];
+  const membersExisting: typeof members = [];
+  const membersToConfirm: typeof members = [];
+  for (const r of members) {
+    const dec = decisionOf("member", r.ext);
+    const deptName = remoteName(r.team) ?? "";
+    const byEmail = r.email ? Object.values(MEMBERS).filter((m) => !isSyncedRow(m) && m.email.toLowerCase() === r.email!.toLowerCase()) : [];
+    const byName = Object.values(MEMBERS).filter((m) => !isSyncedRow(m) && m.name === r.name && rawTeamName(m.team_id) === deptName);
+    const cands = byEmail.length ? byEmail.map((m) => candidateOf("member", m.id, "email", t("mock.directory.reason.email"))) : byName.map((m) => candidateOf("member", m.id, "name_team", t("mock.directory.reason.name_team", { team: L(deptName) })));
+    const external = { id: r.ext, name: r.name, dept: deptName, email_masked: r.email ? r.email.replace(/^(.).*(@.*)$/, "$1***$2") : undefined, mobile_tail: undefined };
+    if (dec && dec.decision !== "skip") decided.push({ kind: "member", external, candidates: cands, decision: dec.decision, decision_title: decisionTitle(dec.decision), decided_local_id: dec.local_id ?? null, decided_local_name: dec.local_id ? MEMBERS[dec.local_id]?.name ?? null : null });
+    if (EXT_MEMBERS[r.ext]) { membersExisting.push(r); continue; }
+    if (dec?.decision === "merge" && dec.local_id) { mergeTargets[r.ext] = dec.local_id; membersExisting.push(r); continue; }
+    if (dec?.decision === "create") { membersNew.push(r); continue; }
+    const open = cands.filter((c) => !takenMembers.has(c.local_id));
+    if (open.length) { confirmations.push({ kind: "member", external, candidates: open }); membersToConfirm.push(r); continue; }
+    membersNew.push(r);
+  }
+  const remoteMemberExts = new Set(members.map((r) => r.ext));
+  const membersToDeactivate = Object.entries(EXT_MEMBERS).filter(([ext, id]) => !remoteMemberExts.has(ext) && MEMBERS[id]?.active && ORG.owner_id !== id).map(([, id]) => ({ id, name: MEMBERS[id].name }));
+  const providerTitle = providerOf(DIR.provider)?.title ?? "";
+  // 没邮箱的人要手工邀请——除非他要并入一个已有成员（那就有邮箱了）或还在等确认
+  const notes = membersNew.filter((r) => !r.email).map((r) => t("mock.directory.noteNoEmail", { name: r.name, provider: providerTitle }));
+  // 换过提供方：来自旧来源、还在用的团队与成员改为手工维护（ADR 0017 补记：不自动停用）
+  const oldSource = (x: string | undefined) => !!x && x !== "manual" && x !== DIR.provider;
+  for (const tm of TEAMS) if (oldSource(tm.source) && tm.active !== false) notes.push(t("mock.directory.noteOldSource", { kind: t("mock.directory.kindTeam"), name: tm.name, provider: sourceTitle(tm.source) }));
+  for (const m of Object.values(MEMBERS)) if (oldSource(m.source) && m.active) notes.push(t("mock.directory.noteOldSource", { kind: t("mock.directory.kindMember"), name: m.name, provider: sourceTitle(m.source) }));
+  return { teams, members, teamsToDeactivate, membersNew, membersExisting, membersToConfirm, membersToDeactivate, mergeTargets, notes, confirmations, decided, skipped };
+}
+on("GET", "/org/directory/providers", () => { requireOrgAdmin(); return mockProviders(); });
+on("GET", "/org/directory", () => { requireOrgAdmin(); return viewDirectory(); });
+on("PUT", "/org/directory", (_m, body) => {
+  requireOrgAdmin();
+  const b = (body ?? {}) as Partial<DirectoryInput>;
+  const key = b.provider?.trim() || DIR.provider;
+  if (!key) throw new ApiError(400, t("mock.directory.needProvider"));
+  const p = providerOf(key);
+  if (!p) throw new ApiError(400, t("mock.directory.unknownProvider", { key }));
+  const changed = key !== DIR.provider;
+  const creds = b.credentials ?? {};
+  // 校验按声明逐字段来：非保密必填；保密字段第一次（或换了提供方）必填，之后省略 / 空串 = 沿用
+  for (const f of p.fields) {
+    const v = (creds[f.key] ?? "").trim();
+    if (!f.secret && !v) throw new ApiError(400, t("mock.directory.needField", { title: f.title }));
+    if (f.secret && !v && (changed || !DIR.secrets[f.key])) throw new ApiError(400, t("mock.directory.needSecretField", { title: f.title }));
+  }
+  if (changed) { DIR.credentials = {}; DIR.secrets = {}; EXT_TEAMS = {}; EXT_MEMBERS = {}; DIR_DECISIONS = DIR_DECISIONS.filter((d) => d.provider !== DIR.provider); }
+  DIR.provider = key;
+  for (const f of p.fields) {
+    const v = (creds[f.key] ?? "").trim();
+    if (!f.secret) DIR.credentials[f.key] = v;
+    else if (v) DIR.secrets[f.key] = v;
+  }
+  if (b.root_department_id !== undefined || changed) DIR.root_department_id = (b.root_department_id ?? "").trim() || p.root_department_id;
+  if (b.root_department_ids !== undefined || changed) DIR.root_department_ids = (b.root_department_ids ?? []).map((x) => x.trim()).filter(Boolean);
+  if (b.default_role !== undefined) DIR.default_role = b.default_role;
+  if (b.schedule !== undefined) DIR.schedule = b.schedule;
+  if (b.proxy_url !== undefined) DIR.proxy_url = b.proxy_url.trim();
+  emit("DirectoryConfigured", { actor: ME, summary: t("mock.ev.directoryConfigured", { name: p.title }) });
+  return viewDirectory();
+});
+on("POST", "/org/directory/test", (): DirectoryTest => {
+  requireOrgAdmin();
+  const p = providerOf(DIR.provider);
+  if (!p || !dirConfigured()) throw new ApiError(400, t("mock.directory.notConfigured"));
+  // 示例数据里：保密字段以 bad 开头就当作被提供方拒绝
+  if (p.fields.some((f) => f.secret && DIR.secrets[f.key]?.startsWith("bad"))) return { ok: false, error: t("mock.directory.testBad", { name: p.title, fields: p.fields.map((f) => f.title).join(getLocale() === "zh-CN" ? " 或 " : " or ") }) };
+  // 测试连接 = 检查清单的一句话摘要（阻塞项的标题 + 怎么做；范围待选时附可选的根）
+  const cl = directoryChecklist();
+  const blocked = cl.checks.find((c) => c.status === "blocked");
+  if (blocked) return { ok: false, error: `${blocked.title}：${blocked.fix ?? ""}`, suggested_roots: cl.suggested_roots };
+  return { ok: true, tenant_name: ORG.name, department_name: TEAMS.find((x) => x.id === EXT_TEAMS[DIR.root_department_id])?.name ?? ORG.name, suggested_roots: cl.suggested_roots };
+});
+on("GET", "/org/directory/checklist", () => { requireOrgAdmin(); return directoryChecklist(); });
+on("GET", "/org/directory/preview", (): DirectoryPreview => {
+  requireOrgAdmin();
+  if (!dirConfigured()) throw new ApiError(400, t("mock.directory.notConfigured"));
+  requireReady();
+  const p = directoryPlan();
+  return {
+    teams: p.teams, teams_to_deactivate: p.teamsToDeactivate,
+    members_total: p.members.length, members_new: p.membersNew.length, members_existing: p.membersExisting.length, members_to_deactivate: p.membersToDeactivate,
+    notes: p.notes, confirmations: p.confirmations, decided: p.decided, skipped: p.skipped, blocked_by_confirmations: p.confirmations.length,
+  };
+});
+on("POST", "/org/directory/sync", (): DirectoryRun => {
+  requireOrgAdmin();
+  if (!dirConfigured()) throw new ApiError(400, t("mock.directory.notConfigured"));
+  requireReady();
+  const provider = DIR.provider!;
+  const p = directoryPlan();
+  // 预览里还有未决定的候选：不同步（ADR 0017 补记四）
+  if (p.confirmations.length) throw new ApiError(400, t("mock.directory.confirmFirst", { n: p.confirmations.length }), "err.directory_confirm_first");
+  const started = nowISO();
+  let addedTeams = 0, updatedTeams = 0;
+  for (const tp of p.teams) {
+    const parentLocal = tp.parent_external_id ? EXT_TEAMS[tp.parent_external_id] ?? null : null;
+    if (tp.action === "create") {
+      const tm: OrgTeam = { id: nextId("team-"), name: tp.name, parent_id: parentLocal, lead_id: null, member_ids: [], source: provider, external_name: tp.name, active: true };
+      TEAMS.push(tm); EXT_TEAMS[tp.external_id] = tm.id; EXT_SINCE[`team:${tp.external_id}`] = started; addedTeams++;
+    } else if (tp.action === "update" || tp.bind) {
+      const tm = getTeam(tp.local_id!);
+      // 合并决定：补外部身份，名称 / 上级按 IM，来源改为提供方
+      if (tp.bind) { EXT_TEAMS[tp.external_id] = tm.id; EXT_SINCE[`team:${tp.external_id}`] = started; tm.source = provider; }
+      if (tp.action === "update") { tm.name = tp.name; tm.parent_id = parentLocal; tm.active = true; updatedTeams++; }
+      tm.external_name = tp.name;
+    }
+  }
+  for (const x of p.teamsToDeactivate) getTeam(x.id).active = false;
+  let addedMembers = 0, updatedMembers = 0;
+  const invitations: NonNullable<DirectoryRun["invitations"]> = [];
+  for (const r of p.members) {
+    const teamId = EXT_TEAMS[r.team] ?? null;
+    let localId = EXT_MEMBERS[r.ext];
+    // 合并决定：绑上外部身份，来源改为提供方，停用的恢复；姓名 / 团队按 IM，角色不动
+    if (!localId && p.mergeTargets[r.ext] && MEMBERS[p.mergeTargets[r.ext]]) {
+      localId = p.mergeTargets[r.ext];
+      EXT_MEMBERS[r.ext] = localId; EXT_SINCE[`member:${r.ext}`] = started;
+      const m = MEMBERS[localId]; m.source = provider; if (!m.active) { m.active = true; m.status = "active"; }
+      updatedMembers++;
+    }
+    if (!localId) {
+      const id = nextId("mem-");
+      const token = `dir_${id}`;
+      // 没邮箱的人先给一个占位邮箱：<外部编号>@<提供方>.invalid
+      MEMBERS[id] = { id, name: r.name, email: r.email ?? `${r.ext}@${provider}.invalid`, roles: DIR.default_role ? [DIR.default_role] : [], team_id: teamId, locale: ORG.default_locale, active: true, created_at: started, source: provider, status: "pending_activation", invite_token: token };
+      EXT_MEMBERS[r.ext] = id; EXT_SINCE[`member:${r.ext}`] = started;
+      if (teamId) getTeam(teamId).member_ids.push(id);
+      invitations.push({ member_id: id, name: r.name, url: inviteUrl(token) });
+      addedMembers++;
+    } else {
+      const m = MEMBERS[localId];
+      if (m.name !== r.name || m.team_id !== teamId) {
+        m.name = r.name;
+        if (m.team_id !== teamId) { for (const tm of TEAMS) tm.member_ids = tm.member_ids.filter((x) => x !== m.id); if (teamId) getTeam(teamId).member_ids.push(m.id); m.team_id = teamId; }
+        updatedMembers++;
+      }
+    }
+  }
+  for (const x of p.membersToDeactivate) { MEMBERS[x.id].active = false; MEMBERS[x.id].status = "inactive"; }
+  const run: DirectoryRun = {
+    id: nextId("dr"), provider, started_at: started, finished_at: nowISO(), status: p.notes.length ? "partial" : "ok", status_title: "",
+    added_teams: addedTeams, updated_teams: updatedTeams, deactivated_teams: p.teamsToDeactivate.length,
+    added_members: addedMembers, updated_members: updatedMembers, deactivated_members: p.membersToDeactivate.length, errors: p.notes,
+  };
+  DIR_RUNS.push(run);
+  emit("DirectorySyncRan", { actor: ME, summary: t("mock.ev.directorySyncRan", { a: addedMembers, u: updatedMembers, d: p.membersToDeactivate.length }) });
+  return { ...viewDirRun(run), invitations };
+});
+on("GET", "/org/directory/runs", (_m, _b, q) => { requireOrgAdmin(); const limit = Number(str(q, "limit") ?? 20) || 20; return [...DIR_RUNS].reverse().slice(0, limit).map(viewDirRun); });
+// ---- 冲突与对应关系（ADR 0017 补记四） ----
+on("PUT", "/org/directory/decisions", (_m, body) => {
+  requireOrgAdmin();
+  if (!DIR.provider) throw new ApiError(400, t("mock.directory.notConfigured"));
+  const items = ((body ?? {}) as { items?: DirectoryDecisionInput[] }).items ?? [];
+  const out: DecisionRow[] = [];
+  for (const it of items) {
+    if (it.kind !== "member" && it.kind !== "team") throw new ApiError(400, t("mock.directory.badDecision"));
+    if (it.decision !== "merge" && it.decision !== "create" && it.decision !== "skip") throw new ApiError(400, t("mock.directory.badDecision"));
+    if (it.decision === "merge" && !it.local_id) throw new ApiError(400, t("mock.directory.needLocal"));
+    if (it.decision === "merge" && it.kind === "team") { const tm = getTeam(it.local_id!); if (tm.active === false) throw new ApiError(400, t("mock.merge.teamInactive", { name: tm.name })); }
+    if (it.decision === "merge" && it.kind === "member" && !MEMBERS[it.local_id!]) throw new ApiError(404, t("mock.org.memberNotFound"));
+    const name = it.external_name ?? (it.kind === "team" ? REMOTE_TEAMS.find((r) => r.ext === it.external_id)?.name : REMOTE_MEMBERS.find((r) => r.ext === it.external_id)?.name) ?? it.external_id;
+    const row: DecisionRow = { provider: DIR.provider, kind: it.kind, external_id: it.external_id, external_name: name, decision: it.decision, local_id: it.decision === "merge" ? it.local_id : undefined, decided_at: nowISO() };
+    DIR_DECISIONS = DIR_DECISIONS.filter((d) => !(d.provider === row.provider && d.kind === row.kind && d.external_id === row.external_id));
+    DIR_DECISIONS.push(row); out.push(row);
+    emit("DirectoryDecided", { actor: ME, summary: t("mock.ev.directoryDecided", { provider: providerOf(DIR.provider)?.title ?? "", name, decision: decisionTitle(row.decision) }), data: { kind: row.kind, external_id: row.external_id, decision: row.decision } });
+  }
+  return out.map(viewDecision);
+});
+on("DELETE", "/org/directory/decisions/:kind/:ext", (m) => {
+  requireOrgAdmin();
+  const { kind, ext } = m.groups!;
+  const d = DIR_DECISIONS.find((x) => x.provider === DIR.provider && x.kind === kind && x.external_id === decodeURIComponent(ext));
+  if (!d) throw new ApiError(404, t("mock.directory.noDecision"));
+  DIR_DECISIONS = DIR_DECISIONS.filter((x) => x !== d);
+  emit("DirectoryDecided", { actor: ME, summary: t("mock.ev.directoryReconsider", { name: d.external_name }), data: { kind: d.kind, external_id: d.external_id, decision: "reconsider" } });
+  return undefined;
+});
+on("GET", "/org/directory/mappings", (): DirectoryMappings => {
+  requireOrgAdmin();
+  const p = providerOf(DIR.provider);
+  if (!p) return { provider: null, bound: [], duplicates: findDuplicates(), skipped: [] };
+  const bound: DirectoryBinding[] = [
+    ...Object.entries(EXT_TEAMS).map(([ext, id]): DirectoryBinding | null => { const tm = TEAMS.find((x) => x.id === id); return tm ? { kind: "team", external_id: ext, external_name: REMOTE_TEAMS.find((r) => r.ext === ext)?.name ?? tm.external_name ?? tm.name, local_id: id, local_name: tm.name, local_active: tm.active !== false, since: sinceOf("team", ext) } : null; }).filter((x): x is DirectoryBinding => !!x),
+    ...Object.entries(EXT_MEMBERS).map(([ext, id]): DirectoryBinding | null => { const mem = MEMBERS[id]; return mem ? { kind: "member", external_id: ext, external_name: REMOTE_MEMBERS.find((r) => r.ext === ext)?.name ?? mem.name, local_id: id, local_name: mem.name, local_active: mem.active, since: sinceOf("member", ext) } : null; }).filter((x): x is DirectoryBinding => !!x),
+  ];
+  const skipped: DirectorySkipped[] = DIR_DECISIONS.filter((d) => d.provider === DIR.provider && d.decision === "skip").map((d) => ({ kind: d.kind, external_id: d.external_id, external_name: d.external_name, decided_at: d.decided_at }));
+  return { provider: p.key, provider_title: p.title, bound, duplicates: findDuplicates(), skipped };
+});
+on("DELETE", "/org/directory/bindings/:kind/:ext", (m) => {
+  requireOrgAdmin();
+  const kind = m.groups!.kind as DirectoryKind;
+  const ext = decodeURIComponent(m.groups!.ext);
+  const map = kind === "team" ? EXT_TEAMS : EXT_MEMBERS;
+  const id = map[ext];
+  if (!id) throw new ApiError(404, t("mock.directory.noBinding"));
+  delete map[ext];
+  DIR_DECISIONS = DIR_DECISIONS.filter((d) => !(d.kind === kind && d.external_id === ext));
+  // 本地对象改为手工维护
+  let name = ext;
+  if (kind === "team") { const tm = TEAMS.find((x) => x.id === id); if (tm) { tm.source = "manual"; tm.external_name = null; name = tm.name; } }
+  else if (MEMBERS[id]) { MEMBERS[id].source = "manual"; name = MEMBERS[id].name; }
+  emit("DirectoryUnbound", { actor: ME, summary: t("mock.ev.directoryUnbound", { name }), data: { kind, external_id: ext, local_id: id } });
+  return undefined;
+});
+/** 把团队 from 并入 into：成员、下级团队、迭代、目标、共享边界、负责人、外部身份整体过去；旧团队停用不删除、改为手工来源 */
+on("POST", "/org/teams/:id/merge", (m, body) => {
+  requireOrgAdmin();
+  const from = getTeam(m.groups!.id);
+  const into = getTeam(String((body as { into?: string } | undefined)?.into ?? ""));
+  if (from.id === into.id) throw new ApiError(400, t("mock.merge.self"));
+  if (into.active === false) throw new ApiError(400, t("mock.merge.teamInactive", { name: into.name }));
+  if (from.active === false) throw new ApiError(400, t("mock.merge.teamEmpty", { name: from.name }));
+  // 目标在旧团队子树里时先提到旧团队的位置，不成环
+  if (teamSubtree(from.id).includes(into.id)) into.parent_id = from.parent_id;
+  for (const id of from.member_ids) { if (!into.member_ids.includes(id)) into.member_ids.push(id); if (MEMBERS[id]?.team_id === from.id) MEMBERS[id].team_id = into.id; }
+  from.member_ids = [];
+  for (const tm of TEAMS) if (tm.parent_id === from.id && tm.id !== into.id) tm.parent_id = into.id;
+  for (const sp of Object.values(sprints)) if (sp.team_id === from.id) sp.team_id = into.id;
+  for (const gr of Object.values(goals)) if (gr.team_id === from.id) gr.team_id = into.id;
+  if (from.is_boundary) into.is_boundary = true;
+  if (!into.lead_id && from.lead_id) into.lead_id = from.lead_id;
+  for (const [ext, id] of Object.entries(EXT_TEAMS)) if (id === from.id) EXT_TEAMS[ext] = into.id;
+  for (const d of DIR_DECISIONS) if (d.kind === "team" && d.local_id === from.id) d.local_id = into.id;
+  if (isSyncedRow(from) && !isSyncedRow(into)) { into.source = from.source; into.external_name = from.external_name; }
+  from.active = false; from.source = "manual"; from.external_name = null; from.lead_id = null;
+  emit("TeamMerged", { actor: ME, summary: t("mock.ev.teamMerged", { a: from.name, b: into.name }), data: { from: from.id, into: into.id } });
+  return viewOrgTeam(into);
+});
+/** 把成员 from 并入 into：任务 / 目标 / Agent / 团队负责人 / 团队归属改到目标，历史不改；外部身份过去；旧成员停用 */
+on("POST", "/org/members/:id/merge", (m, body) => {
+  requireOrgAdmin();
+  const from = MEMBERS[m.groups!.id];
+  const into = MEMBERS[String((body as { into?: string } | undefined)?.into ?? "")];
+  if (!from || !into) throw new ApiError(404, t("mock.org.memberNotFound"));
+  if (from.id === into.id) throw new ApiError(400, t("mock.merge.self"));
+  if (ORG.owner_id === from.id) throw new ApiError(400, t("mock.merge.owner"));
+  if (!into.active) throw new ApiError(400, t("mock.merge.memberInactive", { name: into.name }));
+  for (const tk of Object.values(tasks)) { if (tk.assignee_id === from.id) tk.assignee_id = into.id; if (tk.reviewer_id === from.id) tk.reviewer_id = into.id; }
+  for (const gr of Object.values(goals)) if (gr.owner_id === from.id) gr.owner_id = into.id;
+  for (const a of Object.values(AGENTS)) if (a.owner.id === from.id) a.owner = ref(into.id);
+  for (const tm of TEAMS) {
+    if (tm.lead_id === from.id) tm.lead_id = into.id;
+    if (tm.member_ids.includes(from.id)) { tm.member_ids = tm.member_ids.filter((x) => x !== from.id); if (!tm.member_ids.includes(into.id)) tm.member_ids.push(into.id); }
+  }
+  if (!into.team_id && from.team_id) into.team_id = from.team_id;
+  for (const n of notifications) if (n.member_id === from.id && !n.read_at) n.member_id = into.id;
+  for (const [ext, id] of Object.entries(EXT_MEMBERS)) if (id === from.id) EXT_MEMBERS[ext] = into.id;
+  for (const d of DIR_DECISIONS) if (d.kind === "member" && d.local_id === from.id) d.local_id = into.id;
+  // 旧成员来自 IM 而目标是手工的 → 目标接上 IM 身份并按 IM 改名
+  if (isSyncedRow(from) && !isSyncedRow(into)) { into.source = from.source; into.name = from.name; }
+  from.active = false; from.status = "inactive"; from.team_id = null;
+  emit("MemberMerged", { actor: ME, summary: t("mock.ev.memberMerged", { a: from.name, b: into.name }), data: { from: from.id, into: into.id } });
+  return viewOrgMember(into, findDuplicates());
+});
+
 const applyTeamMembers = (tm: OrgTeam) => { for (const id of tm.member_ids) if (MEMBERS[id]) MEMBERS[id].team_id = tm.id; };
-on("GET", "/org/teams", () => { requireOrgAdmin(); return TEAMS; });
+const countable = (id: ID) => { const m = MEMBERS[id]; return !!m && m.active; };
+const viewOrgTeam = (tm: OrgTeam): OrgTeam => {
+  const sub = teamSubtree(tm.id);
+  const all = new Set<ID>();
+  for (const x of TEAMS) if (sub.includes(x.id)) for (const id of x.member_ids) if (countable(id)) all.add(id);
+  return { ...tm, source: tm.source ?? "manual", source_title: sourceTitle(tm.source), member_count: tm.member_ids.filter(countable).length, subtree_member_count: all.size };
+};
+on("GET", "/org/teams", () => { requireOrgAdmin(); return TEAMS.map(viewOrgTeam); });
 on("POST", "/org/teams", (_m, body) => {
   requireOrgAdmin();
   const b = (body ?? {}) as { name?: string; parent_id?: ID | null; lead_id?: ID | null; member_ids?: ID[]; is_boundary?: boolean };
   if (!b.name?.trim()) throw new ApiError(400, t("mock.org.needName"));
   const tm: OrgTeam = { id: nextId("team-"), name: b.name.trim(), parent_id: b.parent_id ?? null, lead_id: b.lead_id ?? null, member_ids: b.member_ids ?? [], is_boundary: !!b.is_boundary };
+  if (tm.parent_id) getTeam(tm.parent_id);
   TEAMS.push(tm);
   applyTeamMembers(tm);
-  return tm;
+  return viewOrgTeam(tm);
 });
 on("PATCH", "/org/teams/:id", (m, body) => {
   requireOrgAdmin();
   const tm = getTeam(m.groups!.id);
-  const b = (body ?? {}) as { name?: string; parent_id?: ID | null; lead_id?: ID | null; member_ids?: ID[]; is_boundary?: boolean };
-  if (b.name !== undefined) tm.name = b.name;
-  if (b.parent_id !== undefined) tm.parent_id = b.parent_id === tm.id ? tm.parent_id : b.parent_id;
+  const b = (body ?? {}) as { name?: string; parent_id?: ID | null; lead_id?: ID | null; member_ids?: ID[]; is_boundary?: boolean; active?: boolean };
+  // 拒绝都用整句说明（和后端一致）：同步团队不能改名；不能挪到自己或下级下面；有人或有下级的团队不能停用
+  if (b.name !== undefined && b.name.trim() !== tm.name && isSyncedRow(tm)) throw new ApiError(409, t("mock.people.syncedTeamName", { name: sourceTitle(tm.source) }));
+  if (b.name !== undefined && !b.name.trim()) throw new ApiError(400, t("mock.org.needName"));
+  if (b.parent_id !== undefined && b.parent_id !== null) {
+    if (teamSubtree(tm.id).includes(b.parent_id)) throw new ApiError(409, t("mock.people.moveIntoSelf"));
+    getTeam(b.parent_id);
+  }
+  if (b.active === false && tm.active !== false && (tm.member_ids.length > 0 || TEAMS.some((x) => x.parent_id === tm.id && x.active !== false))) throw new ApiError(409, t("mock.people.teamNotEmpty"));
+  if (b.name !== undefined) tm.name = b.name.trim();
+  if (b.parent_id !== undefined) tm.parent_id = b.parent_id;
   if (b.lead_id !== undefined) tm.lead_id = b.lead_id;
   if (b.is_boundary !== undefined) tm.is_boundary = !!b.is_boundary;
+  if (b.active !== undefined) tm.active = b.active;
   if (b.member_ids !== undefined) {
     for (const id of tm.member_ids) if (MEMBERS[id] && !b.member_ids.includes(id) && MEMBERS[id].team_id === tm.id) MEMBERS[id].team_id = null;
     tm.member_ids = b.member_ids;
     applyTeamMembers(tm);
   }
-  return tm;
+  return viewOrgTeam(tm);
 });
 on("DELETE", "/org/teams/:id", (m) => {
   requireOrgAdmin();
   const tm = getTeam(m.groups!.id);
-  for (const mem of Object.values(MEMBERS)) if (mem.team_id === tm.id) mem.team_id = null;
-  for (const child of TEAMS) if (child.parent_id === tm.id) child.parent_id = tm.parent_id;
+  // 只能删空的手工团队（有人或有下级要先挪走；同步团队只能停用）
+  if (isSyncedRow(tm)) throw new ApiError(409, t("mock.people.syncedTeamDelete", { name: sourceTitle(tm.source) }));
+  if (tm.member_ids.length > 0 || TEAMS.some((x) => x.parent_id === tm.id)) throw new ApiError(409, t("mock.people.teamNotEmpty"));
   TEAMS.splice(TEAMS.indexOf(tm), 1);
   return undefined;
+});
+
+// ---------- 成员与团队页：批量操作、CSV 导入导出（DESIGN.md §16） ----------
+on("POST", "/org/members/bulk", (_m, body) => {
+  requireOrgAdmin();
+  const b = (body ?? {}) as { member_ids?: ID[]; action?: string; team_id?: ID | null; roles?: string[] };
+  const ids = [...new Set(b.member_ids ?? [])];
+  if (!ids.length) throw new ApiError(400, t("mock.people.needMembers"));
+  const skipped: Array<{ id: ID; reason: string }> = [];
+  let updated = 0;
+  const target = b.team_id ? getTeam(b.team_id) : null;
+  for (const id of ids) {
+    const mem = MEMBERS[id];
+    if (!mem) { skipped.push({ id, reason: t("mock.org.memberNotFound") }); continue; }
+    switch (b.action) {
+      case "move_team":
+        if (isSyncedRow(mem)) { skipped.push({ id, reason: t("mock.people.syncedMemberTeam", { name: sourceTitle(mem.source) }) }); continue; }
+        moveMember(mem, target?.id ?? null); break;
+      case "add_team":
+        if (!target) throw new ApiError(400, t("mock.org.teamNotFound"));
+        if (target.member_ids.includes(id)) { skipped.push({ id, reason: t("mock.people.alreadyInTeam", { team: target.name }) }); continue; }
+        target.member_ids.push(id);
+        if (!mem.team_id) mem.team_id = target.id;
+        break;
+      case "set_roles": mem.roles = (b.roles ?? []).filter((r) => roleOf(r)); break;
+      case "deactivate":
+        if (ORG.owner_id === id) { skipped.push({ id, reason: t("mock.people.ownerKeep") }); continue; }
+        if (!mem.active) { skipped.push({ id, reason: t("mock.people.alreadyInactive") }); continue; }
+        mem.active = false; break;
+      case "reactivate":
+        if (mem.active) { skipped.push({ id, reason: t("mock.people.alreadyActive") }); continue; }
+        mem.active = true; break;
+      default: throw new ApiError(400, t("mock.people.badAction"));
+    }
+    updated++;
+  }
+  return { updated, skipped };
+});
+
+const teamPath = (id: ID | null): string => { const parts: string[] = []; let cur = TEAMS.find((x) => x.id === id); while (cur) { parts.unshift(cur.name); cur = TEAMS.find((x) => x.id === cur!.parent_id); } return parts.join(" / "); };
+const teamByPath = (path: string): OrgTeam | null => {
+  const parts = path.split("/").map((x) => x.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  // 先按完整路径找，找不到再按最后一段的名字找（导入表里常常只写团队名）
+  let parent: ID | null = null; let cur: OrgTeam | undefined;
+  for (const name of parts) { cur = TEAMS.find((x) => x.name === name && (x.parent_id ?? null) === parent); if (!cur) break; parent = cur.id; }
+  if (cur && parts.length) return cur;
+  const last = parts[parts.length - 1];
+  return TEAMS.find((x) => x.name === last) ?? null;
+};
+const csvCell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+const parseCsv = (text: string): string[][] => {
+  const rows: string[][] = []; let row: string[] = []; let cell = ""; let q = false;
+  const src = text.replace(/^\uFEFF/, "");
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (q) { if (c === '"') { if (src[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; continue; }
+    if (c === '"') q = true;
+    else if (c === ",") { row.push(cell); cell = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && src[i + 1] === "\n") i++; row.push(cell); rows.push(row); row = []; cell = ""; }
+    else cell += c;
+  }
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter((r) => r.some((x) => x.trim() !== ""));
+};
+// 导出六列（和真实后端一致）：姓名、邮箱、团队（路径用「 / 」）、角色（用「、」分开）、状态、来源；导入只看前四列
+const csvHeader = () => [t("mock.people.csv.name"), t("mock.people.csv.email"), t("mock.people.csv.team"), t("mock.people.csv.roles"), t("mock.people.csv.status"), t("mock.people.csv.source")];
+on("GET", "/org/members/export.csv", () => {
+  requireOrgAdmin();
+  const lines = [csvHeader().join(",")];
+  for (const m of Object.values(MEMBERS)) lines.push([m.name, m.email, teamPath(m.team_id), m.roles.map((r) => roleOf(r)?.title ?? r).join("、"), memberStatusTitle(memberStatus(m)), sourceTitle(m.source)].map(csvCell).join(","));
+  return lines.join("\n") + "\n";
+});
+const emailOk = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+/** 导入请求体：整个请求体是 CSV 文本，或 JSON `{csv, decisions}`（对 confirm 行的决定） */
+const importInput = (body: unknown): { csv: string; decisions: MemberImportDecision[] } => {
+  if (typeof body === "string") return { csv: body, decisions: [] };
+  const b = (body ?? {}) as { csv?: string; decisions?: MemberImportDecision[] };
+  return { csv: b.csv ?? "", decisions: b.decisions ?? [] };
+};
+function importPreview(text: string, decisions: MemberImportDecision[] = []): MemberImportPreview {
+  const rows = parseCsv(text);
+  const out: MemberImportRow[] = [];
+  const seen = new Map<string, number>();
+  rows.forEach((cells, idx) => {
+    const line = idx + 1;
+    const [name = "", email = "", team_path = "", rolesRaw = ""] = cells.map((x) => x.trim());
+    // 第一行如果不含邮箱就是表头
+    if (idx === 0 && !email.includes("@")) return;
+    const roles = rolesRaw.split(/[;|、；,，/]/).map((x) => x.trim()).filter(Boolean);
+    const base = { line, name, email, team_path, roles: [] as string[], team_id: null as ID | null };
+    const invalid = (reason: string): MemberImportRow => ({ ...base, action: "invalid", reason });
+    if (!email) { out.push(invalid(t("mock.people.csv.needEmail"))); return; }
+    if (!emailOk(email)) { out.push(invalid(t("mock.people.csv.badEmail"))); return; }
+    const dup = seen.get(email.toLowerCase());
+    if (dup) { out.push(invalid(t("mock.people.csv.duplicate", { line: dup }))); return; }
+    seen.set(email.toLowerCase(), line);
+    const existing = Object.values(MEMBERS).find((m) => m.email.toLowerCase() === email.toLowerCase());
+    if (!existing && !name) { out.push(invalid(t("mock.people.csv.needName"))); return; }
+    const badRole = roles.find((r) => !ROLES.some((x) => x.name === r || x.title === r || EN[x.title] === r));
+    if (badRole) { out.push(invalid(t("mock.people.csv.roleMissing", { name: badRole }))); return; }
+    const roleNames = roles.map((r) => ROLES.find((x) => x.name === r || x.title === r || EN[x.title] === r)!.name);
+    let team: OrgTeam | null = null;
+    if (team_path) { team = teamByPath(team_path); if (!team) { out.push(invalid(t("mock.people.csv.teamMissing", { name: team_path }))); return; } }
+    let reason: string | undefined;
+    if (existing && isSyncedRow(existing) && team && team.id !== existing.team_id) reason = t("mock.people.csv.syncedTeamKept", { name: sourceTitle(existing.source) });
+    // 新邮箱、但姓名与某个手工成员相同且行里的团队与他的主团队同名（同步同一套认法的第四级，ADR 0017 补记四）→ 要人决定
+    if (!existing && team) {
+      const cands = Object.values(MEMBERS).filter((m) => !isSyncedRow(m) && m.name === name && m.team_id === team!.id).map((m) => candidateOf("member", m.id, "name_team", t("mock.directory.reason.name_team", { team: L(team!.name) })));
+      if (cands.length) {
+        const d = decisions.find((x) => x.line === line);
+        if (d?.decision === "merge") {
+          if (!d.local_id || !cands.some((c) => c.local_id === d.local_id)) { out.push(invalid(t("mock.people.csv.mergeNotCandidate", { line }))); return; }
+          out.push({ ...base, roles: roleNames, team_id: team.id, action: "update", merge_into: d.local_id, candidates: cands } as MemberImportRow); return;
+        }
+        if (d?.decision === "skip") { out.push({ ...base, roles: roleNames, team_id: team.id, action: "skip", reason: t("mock.people.csv.skippedByDecision"), candidates: cands }); return; }
+        if (d?.decision !== "create") { out.push({ ...base, roles: roleNames, team_id: team.id, action: "confirm", candidates: cands }); return; }
+      }
+    }
+    out.push({ ...base, roles: roleNames, team_id: team?.id ?? null, action: existing ? "update" : "create", reason });
+  });
+  const n = (a: MemberImportRow["action"]) => out.filter((r) => r.action === a).length;
+  return { rows: out, summary: { create: n("create"), update: n("update"), invalid: n("invalid"), confirm: n("confirm"), skip: n("skip") } };
+}
+on("POST", "/org/members/import/preview", (_m, body) => { requireOrgAdmin(); const { csv, decisions } = importInput(body); return importPreview(csv, decisions); });
+on("POST", "/org/members/import", (_m, body) => {
+  requireOrgAdmin();
+  const { csv, decisions } = importInput(body);
+  const preview = importPreview(csv, decisions);
+  const result: MemberImportResult = { created: 0, updated: 0, skipped: [], invitations: [] };
+  for (const r of preview.rows) {
+    if (r.action === "invalid" || r.action === "skip") { result.skipped.push({ line: r.line, email: r.email, reason: r.reason ?? "" }); continue; }
+    // 没决定的 confirm 行这次不导入
+    if (r.action === "confirm") { result.skipped.push({ line: r.line, email: r.email, reason: t("mock.people.csv.undecided") }); continue; }
+    const mergeInto = (r as MemberImportRow & { merge_into?: ID }).merge_into;
+    const existing = mergeInto ? MEMBERS[mergeInto] : Object.values(MEMBERS).find((m) => m.email.toLowerCase() === r.email.toLowerCase());
+    if (existing) {
+      if (r.name && !isSyncedRow(existing)) existing.name = r.name;
+      if (r.roles.length) existing.roles = r.roles;
+      if (r.team_path && !isSyncedRow(existing)) moveMember(existing, r.team_id);
+      result.updated++;
+      continue;
+    }
+    const token = `imp_${Math.random().toString(36).slice(2, 10)}`;
+    const mem: MemberRow = { id: nextId("m"), name: r.name, email: r.email, roles: r.roles, team_id: null, locale: getLocale(), active: true, created_at: nowISO(), source: "manual", status: "pending_activation", invite_token: token };
+    MEMBERS[mem.id] = mem;
+    ADMIN_ORGS[0].member_count += 1;
+    if (r.team_id) moveMember(mem, r.team_id);
+    INVITATIONS.push({ id: nextId("I"), token, email: r.email, name: r.name, roles: r.roles, url: "", expires_at: at(7), accepted_at: null, created_at: nowISO() });
+    result.created++;
+    result.invitations.push({ email: r.email, name: r.name, url: inviteUrl(token) });
+  }
+  return result;
 });
 on("GET", "/org/capabilities", () => { requireOrgAdmin(); return CAPABILITIES.map(viewCapability); });
 on("PUT", "/org/capabilities/:name", (m, body) => {
@@ -2411,6 +3346,10 @@ on("POST", "/invitations/:token/accept", (m, body) => {
     mem = { id: nextId("m"), name: b.name?.trim() || i.name || i.email, email: i.email, roles: i.roles, team_id: null, locale: getLocale(), active: true, created_at: nowISO() };
     MEMBERS[mem.id] = mem;
     ADMIN_ORGS[0].member_count += 1;
+  } else if (mem.status === "pending_activation") {
+    mem.status = "active";
+    delete mem.invite_token;
+    if (b.name?.trim() && !isSyncedRow(mem)) mem.name = b.name.trim();
   }
   i.accepted_at = nowISO();
   ME = mem.id;

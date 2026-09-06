@@ -34,7 +34,7 @@ async function defaultViewByRole(): Promise<TaskView> {
   try {
     const [ws, catalog] = await Promise.all([api.workspace.get(), api.workspace.catalog().catch(() => ({ blocks: [], presets: [] }))]);
     const keys = ws.blocks.map((b) => b.key);
-    const preset = catalog.presets.find((p) => p.blocks.length === keys.length && p.blocks.every((k, i) => k === keys[i]));
+    const preset = catalog.presets.find((p) => p.blocks.length === keys.length && p.blocks.every((b, i) => b.key === keys[i]));
     if (preset) return preset.key === "doer" || preset.key === "team" ? "board" : "list";
     if (keys.some((k) => MANAGE_BLOCKS.has(k))) return "list";
     return keys.includes("my_tasks") ? "board" : "list";

@@ -26,12 +26,15 @@ type Role struct {
 
 // Invitation 是加入组织的邀请。
 type Invitation struct {
-	ID         string     `json:"id"`
-	OrgID      string     `json:"org_id"`
-	Email      string     `json:"email"`
-	Name       string     `json:"name"`
-	Roles      []string   `json:"roles"`
-	InvitedBy  string     `json:"invited_by"`
+	ID        string   `json:"id"`
+	OrgID     string   `json:"org_id"`
+	Email     string   `json:"email"`
+	Name      string   `json:"name"`
+	Roles     []string `json:"roles"`
+	InvitedBy string   `json:"invited_by"`
+	// TeamID 是邀请时指定要加入的团队；MemberID 是这条邀请对应的待激活成员（手工邀请 / 导入 / 同步预建）。
+	TeamID     string     `json:"team_id,omitempty"`
+	MemberID   string     `json:"member_id,omitempty"`
 	ExpiresAt  time.Time  `json:"expires_at"`
 	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
@@ -108,6 +111,16 @@ func (o *Organization) Finance() Visibility {
 	return DefaultFinanceVisibility
 }
 
+// 成员与团队的来源（ADR 0017）：手工建的（manual），或从外部目录同步进来的——此时存提供方代码名（feishu、wecom…）。
+const SourceManual = "manual"
+
+// 成员状态（ADR 0017）。已停用仍以 Active 布尔为准，Status 是派生给界面看的。
+const (
+	MemberActive            = "active"
+	MemberPendingActivation = "pending_activation"
+	MemberInactive          = "inactive"
+)
+
 // Member 是组织成员。
 type Member struct {
 	ID        string    `json:"id"`
@@ -117,6 +130,21 @@ type Member struct {
 	Roles     []string  `json:"roles"`
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`
+	// Source 是来源：manual 或提供方代码名（ADR 0017）。
+	Source string `json:"source"`
+	// Status 是激活状态：active | pending_activation | inactive。停用以 Active 为准，这里派生。
+	Status string `json:"status"`
+}
+
+// DerivedStatus 按 Active 与激活状态算出对外的状态。
+func (m *Member) DerivedStatus() string {
+	if !m.Active {
+		return MemberInactive
+	}
+	if m.Status == MemberPendingActivation {
+		return MemberPendingActivation
+	}
+	return MemberActive
 }
 
 // Team 是团队。
@@ -128,6 +156,11 @@ type Team struct {
 	LeadMemberID string `json:"lead_member_id,omitempty"`
 	// IsBoundary 标记这个团队是共享边界：它的整棵子树内部互相可见，外面看不进来（ADR 0013）。
 	IsBoundary bool `json:"is_boundary"`
+	// Source 是来源：manual 或提供方代码名；ExternalName 是外部目录里的原名（ADR 0017）。
+	Source       string `json:"source"`
+	ExternalName string `json:"external_name,omitempty"`
+	// Inactive 为真表示这个团队在外部目录里已不存在：不删，历史归口不变。
+	Inactive bool `json:"inactive"`
 }
 
 // Agent 是注册到组织里的 Agent。

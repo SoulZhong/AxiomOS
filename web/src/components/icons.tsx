@@ -143,6 +143,44 @@ export const IconLink = (p: IconProps) => (
     <path d="m9 11.5-1.5 1.5a2.83 2.83 0 0 1-4-4L5 7.5" />
   </Svg>
 );
+/** 竖排三点：行内 / 树节点的「更多操作」菜单触发 */
+export const IconMore = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="3.5" r="1" fill="currentColor" stroke="none" />
+    <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
+    <circle cx="8" cy="12.5" r="1" fill="currentColor" stroke="none" />
+  </Svg>
+);
+export const IconDownload = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 2.5v7.5" />
+    <path d="m5 7.5 3 3 3-3" />
+    <path d="M2.5 11.5v1a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1" />
+  </Svg>
+);
+export const IconUpload = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 10.5V3" />
+    <path d="m5 6 3-3 3 3" />
+    <path d="M2.5 11.5v1a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1" />
+  </Svg>
+);
+/** 团队：两个人 */
+export const IconTeam = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="6" cy="5.5" r="2.25" />
+    <path d="M1.75 13c0-2.3 1.9-3.75 4.25-3.75S10.25 10.7 10.25 13" />
+    <path d="M10.5 3.5a2.25 2.25 0 0 1 0 4.2" />
+    <path d="M11.5 9.5c1.7.35 2.75 1.6 2.75 3.5" />
+  </Svg>
+);
+/** 共享边界：一圈围栏 */
+export const IconBoundary = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2.5" y="2.5" width="11" height="11" rx="2" strokeDasharray="2.2 1.8" />
+    <circle cx="8" cy="8" r="1.75" />
+  </Svg>
+);
 export const IconClock = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="8" cy="8" r="5.5" />

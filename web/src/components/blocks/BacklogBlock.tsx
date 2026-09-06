@@ -7,12 +7,12 @@ import { capabilityTitle } from "@/lib/terms";
 import { IconBacklog, IconHand } from "@/components/icons";
 import { StateBadge } from "@/components/StateBadge";
 import { Button, ListSkeleton, Tag, TaskLink } from "@/components/ui";
-import { BlockPanel, type BlockProps } from "./BlockPanel";
+import { BlockPanel, CompactList, type BlockProps } from "./BlockPanel";
 
 const LIMIT = 8;
 
 /** 待领取任务：当前范围里我能领的（can_claim）。行内直接「领取」，领完从这里消失、出现在「我的任务」。 */
-export function BacklogBlock({ index, title, noLink }: BlockProps) {
+export function BacklogBlock({ index, title, noLink, compact, dense }: BlockProps) {
   const backlog = useLoad(() => api.backlog.list(), []);
   const caps = useCapabilityTitles();
   const { busy, run } = useAction();
@@ -23,6 +23,7 @@ export function BacklogBlock({ index, title, noLink }: BlockProps) {
     <BlockPanel
       index={index}
       noLink={noLink}
+      compact={compact}
       icon={<IconBacklog />}
       title={title ?? t("block.backlog")}
       telemetry={backlog.data ? t("block.backlog.count", { n: claimable.length, total }) : undefined}
@@ -42,6 +43,22 @@ export function BacklogBlock({ index, title, noLink }: BlockProps) {
       }
       skeleton={<ListSkeleton rows={4} />}
     >
+      {compact || dense ? (
+        <CompactList
+          dense={dense}
+          count={claimable.length}
+          label={t("block.backlog.compact", { total })}
+          rows={claimable.map((b) => ({
+            key: b.task.id,
+            title: <TaskLink id={b.task.id} title={b.task.title} className="min-w-0 truncate" />,
+            meta: (
+              <Button size="sm" variant="ghost" icon={<IconHand />} disabled={busy === b.task.id} onClick={() => void claim(b)}>
+                {t("backlog.claim")}
+              </Button>
+            ),
+          }))}
+        />
+      ) : (
       <ul className="divide-y divide-hairline">
         {claimable.slice(0, LIMIT).map((b) => (
           <li key={b.task.id} className="flex items-center gap-3 px-4 py-2">
@@ -76,6 +93,7 @@ export function BacklogBlock({ index, title, noLink }: BlockProps) {
           </li>
         )}
       </ul>
+      )}
     </BlockPanel>
   );
 }

@@ -1,18 +1,21 @@
 "use client";
 import { useState } from "react";
-import { api, type BlockKey, type RoleWorkspace } from "@/lib/api";
+import { api, sameLayout, type BlockKey, type LayoutBlock, type RoleWorkspace } from "@/lib/api";
 import { errorMessage, useAction, useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
-import { WorkspaceEditor } from "@/components/blocks/WorkspaceEditor";
+import { WorkspaceEditorDialog } from "@/components/blocks/WorkspaceEditor";
+import { SizeChip } from "@/components/blocks/WorkspaceGrid";
 import { IconEdit } from "@/components/icons";
 import { useToast } from "@/components/toast";
 import { Button, ConfirmDialog, Empty, ErrorBox, Panel, Select, Table, TableSkeleton, Tag } from "@/components/ui";
 
 /*
- * 组织设置 → 工作台（ADR 0015）：每个角色进来先看到什么。
- * 一行一个角色：角色名、成员数、当前预设（或「自定义」）、区块清单；行内换预设（PUT {preset}）、逐块编辑（PUT {blocks}）、恢复默认（DELETE）。
+ * 组织设置 → 工作台（ADR 0015 与补记二）：每个角色进来先看到什么。
+ * 一行一个角色：角色名、成员数、当前预设（或「自定义」）、区块清单（每块带「宽×高」）；
+ * 行内换预设（PUT {preset}）、在网格编辑器里拖动位置与大小（PUT {blocks[{key,x,y,w,h}]}）、恢复默认（DELETE）。
  * 下面把系统发的预设按接口给的标题和说明列出来，不写死预设名。
  */
+
 export function WorkspaceTab() {
   const toast = useToast();
   const rows = useLoad(() => api.workspace.org(), []);
@@ -24,14 +27,14 @@ export function WorkspaceTab() {
   const presets = catalog.data?.presets ?? [];
   const blockTitle = (k: BlockKey) => catalog.data?.blocks.find((b) => b.key === k)?.title ?? t(`block.${k}`);
   const presetTitle = (k: string | null) => (k ? (presets.find((p) => p.key === k)?.title ?? k) : t("settings.workspace.custom"));
-  // 后端清除布局后给的是 preset: null + 默认区块；区块恰好等于某个预设时按那个预设显示，不叫「自定义」
-  const presetOf = (r: RoleWorkspace) => r.preset ?? presets.find((p) => p.blocks.length === r.blocks.length && p.blocks.every((k, i) => k === r.blocks[i]))?.key ?? null;
+  // 后端清除布局后给的是 preset: null + 默认区块；区块（含坐标与宽高）恰好等于某个预设时按那个预设显示，不叫「自定义」
+  const presetOf = (r: RoleWorkspace) => r.preset ?? presets.find((p) => sameLayout(p.blocks, r.blocks))?.key ?? null;
 
   const applyPreset = async (r: RoleWorkspace, preset: string) => {
     if (!preset) return;
     if (await run(r.role, () => api.workspace.saveRole(r.role, { preset }), t("settings.workspace.presetApplied", { title: presetTitle(preset), role: r.role_title }))) rows.reload();
   };
-  const saveBlocks = async (blocks: BlockKey[]) => {
+  const saveBlocks = async (blocks: LayoutBlock[]) => {
     if (!editing) return;
     setSaving(true);
     try {
@@ -40,7 +43,7 @@ export function WorkspaceTab() {
       setEditing(null);
       rows.reload();
     } catch (e) {
-      toast.fail(errorMessage(e));
+      toast.fail(t("workspace.saveFailed", { reason: errorMessage(e) }));
     } finally {
       setSaving(false);
     }
@@ -52,6 +55,20 @@ export function WorkspaceTab() {
       rows.reload();
     }
   };
+
+  const chips = (blocks: LayoutBlock[]) => (
+    <span className="flex flex-wrap gap-1">
+      {blocks.map((b, i) => (
+        <Tag key={b.key} title={`${i + 1}. ${blockTitle(b.key)} · ${t("workspace.sizeChip", { w: b.w, h: b.h })}`}>
+          <span className="inline-flex items-center gap-1.5">
+            {blockTitle(b.key)}
+            <SizeChip block={b} />
+          </span>
+        </Tag>
+      ))}
+      {blocks.length === 0 && <span className="text-ink-subtle">—</span>}
+    </span>
+  );
 
   return (
     <div className="space-y-4">
@@ -95,16 +112,7 @@ export function WorkspaceTab() {
                       ))}
                     </Select>
                   </td>
-                  <td>
-                    <span className="flex flex-wrap gap-1">
-                      {r.blocks.map((k, i) => (
-                        <Tag key={k} title={`${i + 1}. ${blockTitle(k)}`}>
-                          {blockTitle(k)}
-                        </Tag>
-                      ))}
-                      {r.blocks.length === 0 && <span className="text-ink-subtle">—</span>}
-                    </span>
-                  </td>
+                  <td>{chips(r.blocks)}</td>
                   <td className="whitespace-nowrap !py-1.5 align-middle">
                     <span className="row-actions inline-flex gap-1">
                       <Button size="sm" variant="ghost" icon={<IconEdit />} onClick={() => setEditing(r)}>
@@ -139,22 +147,18 @@ export function WorkspaceTab() {
                   <span className="block text-body text-ink">{p.title}</span>
                   <span className="block text-caption text-ink-subtle">{p.description}</span>
                 </span>
-                <span className="flex flex-wrap items-center gap-1 self-center">
-                  {p.blocks.map((k) => (
-                    <Tag key={k}>{blockTitle(k)}</Tag>
-                  ))}
-                </span>
+                <span className="self-center">{chips(p.blocks)}</span>
               </li>
             ))}
           </ul>
         )}
       </Panel>
 
-      <WorkspaceEditor
+      <WorkspaceEditorDialog
         open={!!editing}
         onClose={() => setEditing(null)}
         title={editing ? t("settings.workspace.editTitle", { role: editing.role_title }) : ""}
-        description={t("settings.workspace.editHint")}
+        description={t("settings.workspace.editSizeHint")}
         catalog={catalog.data}
         value={editing?.blocks ?? []}
         onSave={saveBlocks}

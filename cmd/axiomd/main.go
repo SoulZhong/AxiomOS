@@ -12,6 +12,7 @@ import (
 
 	"github.com/teemo/axiomos/internal/api"
 	"github.com/teemo/axiomos/internal/app"
+	"github.com/teemo/axiomos/internal/directory"
 	"github.com/teemo/axiomos/internal/mcp"
 	"github.com/teemo/axiomos/internal/store"
 )
@@ -39,6 +40,16 @@ func main() {
 	}
 	a := app.New(st)
 	a.PublicURL = strings.TrimRight(env("PUBLIC_URL", "http://localhost:8080"), "/")
+	// 组织凭据（外部目录的保密字段等）的加密密钥；没配就用确定性的开发密钥，生产必须配置（ADR 0014、0017）
+	if k := os.Getenv(directory.SecretKeyEnv); k != "" {
+		key, err := directory.ParseKey(k)
+		if err != nil {
+			log.Fatalf("%s: %v", directory.SecretKeyEnv, err)
+		}
+		a.SecretKey = key
+	} else {
+		log.Printf("警告：未设置 %s，正在用开发密钥加密组织凭据；生产环境必须设置它（32 字节，base64）", directory.SecretKeyEnv)
+	}
 	if err := a.EnsureGlobals(ctx); err != nil {
 		log.Fatalf("全局默认: %v", err)
 	}
@@ -84,6 +95,14 @@ func main() {
 					log.Printf("待确认操作巡检 %s: %v", id, err)
 				} else if n > 0 {
 					log.Printf("组织 %s：%d 条待确认操作因超过七天没人确认而作废", id, n)
+				}
+			}
+			// 外部目录定时同步（ADR 0017）：每小时 / 每天到点的组织跑一次
+			for _, res := range a.RunScheduledDirectorySyncs(ctx, time.Now()) {
+				if res.Err != nil {
+					log.Printf("外部目录同步 %s: %v", res.OrgID, res.Err)
+				} else if res.Run != nil {
+					log.Printf("组织 %s：外部目录同步%s（新增 %d 团队 / %d 成员，停用 %d 成员）", res.OrgID, res.Run.Status, res.Run.AddedTeams, res.Run.AddedMembers, res.Run.DeactivatedMembers)
 				}
 			}
 		}

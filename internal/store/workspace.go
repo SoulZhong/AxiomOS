@@ -21,9 +21,14 @@ func scanLayout(r interface{ Scan(...any) error }) (*domain.WorkspaceLayout, err
 	if err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal(blocks, &l.Blocks)
+	// 兼容：blocks 先后存过区块键数组（["my_tasks", ...]）、{key, w, h} 对象（补记二）与 {key, x, y, w, h}
+	// 对象（补记三）。三种形状都读：旧行缺省的宽高按目录默认值补齐，缺 x / y 的按顺序致密排布（读时排、不迁移）；
+	// 这里只解析形状、不校验，写入时已经校验过。
+	var raw []any
+	_ = json.Unmarshal(blocks, &raw)
+	l.Blocks, _ = domain.ParseLayout(raw)
 	if l.Blocks == nil {
-		l.Blocks = []string{}
+		l.Blocks = []domain.LayoutBlock{}
 	}
 	return l, nil
 }
@@ -56,17 +61,26 @@ func (s *Store) ListRoleLayouts(ctx context.Context, q Querier) ([]*domain.Works
 	return out, rows.Err()
 }
 
-// PutRoleLayout 写入或覆盖一个角色的布局。preset 为空表示逐块配置。
-func (s *Store) PutRoleLayout(ctx context.Context, q Querier, orgID, role string, blocks []string, preset string) error {
+// marshalLayout 把布局编成 jsonb：总是对象数组，nil 也编成 []。
+func marshalLayout(blocks []domain.LayoutBlock) []byte {
+	if blocks == nil {
+		blocks = []domain.LayoutBlock{}
+	}
 	b, _ := json.Marshal(blocks)
+	return b
+}
+
+// PutRoleLayout 写入或覆盖一个角色的布局。preset 为空表示逐块配置。
+func (s *Store) PutRoleLayout(ctx context.Context, q Querier, orgID, role string, blocks []domain.LayoutBlock, preset string) error {
+	b := marshalLayout(blocks)
 	_, err := q.Exec(ctx, `insert into workspace_layouts(org_id,role_name,blocks,preset,updated_at) values($1,$2,$3,nullif($4,''),now())
 		on conflict (org_id,role_name) where role_name is not null do update set blocks=excluded.blocks, preset=excluded.preset, updated_at=now()`, orgID, role, b, preset)
 	return err
 }
 
 // PutMemberLayout 写入或覆盖一个成员的个人微调。
-func (s *Store) PutMemberLayout(ctx context.Context, q Querier, orgID, memberID string, blocks []string) error {
-	b, _ := json.Marshal(blocks)
+func (s *Store) PutMemberLayout(ctx context.Context, q Querier, orgID, memberID string, blocks []domain.LayoutBlock) error {
+	b := marshalLayout(blocks)
 	_, err := q.Exec(ctx, `insert into workspace_layouts(org_id,member_id,blocks,preset,updated_at) values($1,$2,$3,null,now())
 		on conflict (org_id,member_id) where member_id is not null do update set blocks=excluded.blocks, preset=null, updated_at=now()`, orgID, memberID, b)
 	return err

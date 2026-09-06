@@ -192,24 +192,25 @@ func (s *Store) OrganizationsOfAccount(ctx context.Context, q Querier, accountID
 
 // ---------- 成员 ----------
 
-const memberCols = `id,org_id,account_id,name,roles,active,created_at`
+const memberCols = `id,org_id,account_id,name,roles,active,created_at,coalesce(source,'manual'),coalesce(status,'active')`
 
 func scanMember(r interface{ Scan(...any) error }) (*domain.Member, error) {
 	m := &domain.Member{}
-	err := r.Scan(&m.ID, &m.OrgID, &m.AccountID, &m.Name, &m.Roles, &m.Active, &m.CreatedAt)
+	err := r.Scan(&m.ID, &m.OrgID, &m.AccountID, &m.Name, &m.Roles, &m.Active, &m.CreatedAt, &m.Source, &m.Status)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
-	return m, err
+	if err != nil {
+		return nil, err
+	}
+	// 已停用以 active 为准；status 列只存 active | pending_activation（ADR 0017）
+	m.Status = m.DerivedStatus()
+	return m, nil
 }
 
 func (s *Store) CreateMember(ctx context.Context, q Querier, orgID, accountID, name string, roles []string) (*domain.Member, error) {
-	m := &domain.Member{ID: NewID("mem"), OrgID: orgID, AccountID: accountID, Name: name, Roles: roles, Active: true, CreatedAt: time.Now()}
-	if m.Roles == nil {
-		m.Roles = []string{}
-	}
-	_, err := q.Exec(ctx, `insert into members(`+memberCols+`) values($1,$2,$3,$4,$5,$6,$7)`, m.ID, m.OrgID, m.AccountID, m.Name, m.Roles, m.Active, m.CreatedAt)
-	return m, err
+	m := &domain.Member{OrgID: orgID, AccountID: accountID, Name: name, Roles: roles, Active: true, Source: domain.SourceManual, Status: domain.MemberActive}
+	return m, s.CreateMemberFull(ctx, q, m)
 }
 
 func (s *Store) MemberByID(ctx context.Context, q Querier, id string) (*domain.Member, error) {
@@ -243,7 +244,10 @@ func (s *Store) UpdateMemberRoles(ctx context.Context, q Querier, id string, rol
 }
 
 func (s *Store) UpdateMember(ctx context.Context, q Querier, m *domain.Member) error {
-	_, err := q.Exec(ctx, `update members set name=$2, roles=$3, active=$4 where id=$1`, m.ID, m.Name, m.Roles, m.Active)
+	// status 传 inactive 时不改激活状态（停用只体现在 active 上），这样停用再启用的待激活成员仍是待激活
+	_, err := q.Exec(ctx, `update members set name=$2, roles=$3, active=$4, source=coalesce(nullif($5,''),source),
+		status=case when $6 in ('active','pending_activation') then $6 else status end where id=$1`,
+		m.ID, m.Name, m.Roles, m.Active, m.Source, m.Status)
 	return err
 }
 
@@ -259,7 +263,8 @@ func (s *Store) SetMemberTeam(ctx context.Context, q Querier, orgID, memberID, t
 }
 
 func (s *Store) UpdateTeam(ctx context.Context, q Querier, t *domain.Team) error {
-	_, err := q.Exec(ctx, `update teams set name=$2, parent_id=nullif($3,''), lead_member_id=nullif($4,''), is_boundary=$5 where id=$1`, t.ID, t.Name, t.ParentID, t.LeadMemberID, t.IsBoundary)
+	_, err := q.Exec(ctx, `update teams set name=$2, parent_id=nullif($3,''), lead_member_id=nullif($4,''), is_boundary=$5, source=coalesce(nullif($6,''),source), external_name=$7, active=$8 where id=$1`,
+		t.ID, t.Name, t.ParentID, t.LeadMemberID, t.IsBoundary, t.Source, t.ExternalName, !t.Inactive)
 	return err
 }
 
@@ -307,12 +312,16 @@ func (s *Store) CreateTeam(ctx context.Context, q Querier, t *domain.Team) error
 	if t.ID == "" {
 		t.ID = NewID("team")
 	}
-	_, err := q.Exec(ctx, `insert into teams(id,org_id,parent_id,name,lead_member_id,is_boundary) values($1,$2,nullif($3,''),$4,nullif($5,''),$6)`, t.ID, t.OrgID, t.ParentID, t.Name, t.LeadMemberID, t.IsBoundary)
+	if t.Source == "" {
+		t.Source = domain.SourceManual
+	}
+	_, err := q.Exec(ctx, `insert into teams(id,org_id,parent_id,name,lead_member_id,is_boundary,source,external_name,active) values($1,$2,nullif($3,''),$4,nullif($5,''),$6,$7,$8,$9)`,
+		t.ID, t.OrgID, t.ParentID, t.Name, t.LeadMemberID, t.IsBoundary, t.Source, t.ExternalName, !t.Inactive)
 	return err
 }
 
 func (s *Store) ListTeams(ctx context.Context, q Querier) ([]*domain.Team, error) {
-	rows, err := q.Query(ctx, `select id,org_id,coalesce(parent_id,''),name,coalesce(lead_member_id,''),is_boundary from teams order by name`)
+	rows, err := q.Query(ctx, `select id,org_id,coalesce(parent_id,''),name,coalesce(lead_member_id,''),is_boundary,coalesce(source,'manual'),coalesce(external_name,''),coalesce(active,true) from teams order by name`)
 	if err != nil {
 		return nil, err
 	}
@@ -320,9 +329,11 @@ func (s *Store) ListTeams(ctx context.Context, q Querier) ([]*domain.Team, error
 	var out []*domain.Team
 	for rows.Next() {
 		t := &domain.Team{}
-		if err := rows.Scan(&t.ID, &t.OrgID, &t.ParentID, &t.Name, &t.LeadMemberID, &t.IsBoundary); err != nil {
+		var active bool
+		if err := rows.Scan(&t.ID, &t.OrgID, &t.ParentID, &t.Name, &t.LeadMemberID, &t.IsBoundary, &t.Source, &t.ExternalName, &active); err != nil {
 			return nil, err
 		}
+		t.Inactive = !active
 		out = append(out, t)
 	}
 	return out, rows.Err()

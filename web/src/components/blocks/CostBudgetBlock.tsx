@@ -8,7 +8,7 @@ import { useSession } from "@/components/AppShell";
 import { IconUsage } from "@/components/icons";
 import { ScopeMoney } from "@/components/ScopePicker";
 import { ListSkeleton, ProgressBar, Readout, cx } from "@/components/ui";
-import { BlockPanel, type BlockProps } from "./BlockPanel";
+import { BigFigure, BlockPanel, type BlockProps } from "./BlockPanel";
 
 const TOP = 5;
 
@@ -16,7 +16,7 @@ const TOP = 5;
  * 成本与预算：这一个月当前范围的成本（带环比）、预算与执行率，下面按目标列成本最高的几条。
  * 看不到财务数据的范围里整块只说一句原因（句子按组织的策略选，见 financeHiddenText）。
  */
-export function CostBudgetBlock({ index, title, noLink }: BlockProps) {
+export function CostBudgetBlock({ index, title, noLink, compact, dense }: BlockProps) {
   const { session } = useSession();
   const scope = useScopeState();
   const currency = session?.organization.currency;
@@ -30,6 +30,9 @@ export function CostBudgetBlock({ index, title, noLink }: BlockProps) {
     <BlockPanel
       index={index}
       noLink={noLink}
+      compact={compact}
+      dense={dense}
+      padded={!compact && !dense}
       icon={<IconUsage />}
       title={title ?? t("block.cost_budget")}
       telemetry={t("block.cost_budget.thisMonth")}
@@ -40,7 +43,21 @@ export function CostBudgetBlock({ index, title, noLink }: BlockProps) {
       skeleton={<ListSkeleton rows={4} />}
     >
       {!scope.financial ? (
-        <p className="py-6 text-center text-body text-ink-subtle">{financeHiddenText(scope)}</p>
+        <p className="px-4 py-6 text-center text-body text-ink-subtle">{financeHiddenText(scope)}</p>
+      ) : totals && (compact || dense) ? (
+        // 窄区块 / 1 行高：只给本月成本这一枚大数字，环比与预算执行率压成一行说明（1 行高时连说明也不放）
+        <BigFigure
+          dense={dense}
+          label={`${t("overview.cost")} · ${t("block.cost_budget.thisMonth")}`}
+          value={<ScopeMoney value={totals.cost} currency={currency} />}
+          tone={totals.budget_used_pct !== null && totals.budget_used_pct > 100 ? "danger" : undefined}
+          sub={[
+            delta !== null && delta !== 0 ? `${delta > 0 ? "+" : "−"}${fmtMoney(Math.abs(delta), currency)}` : null,
+            totals.budget_used_pct !== null ? `${t("overview.budgetUsed")} ${Math.round(totals.budget_used_pct)}%` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        />
       ) : totals ? (
         <div>
           <div className="grid grid-cols-3 gap-4">

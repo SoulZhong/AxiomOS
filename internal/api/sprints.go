@@ -34,6 +34,26 @@ func (o *OptInt) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// OptFloat 同 OptInt：区分「没带」「带了 null（清空）」「带了值」。
+type OptFloat struct {
+	Set bool
+	V   *float64
+}
+
+func (o *OptFloat) UnmarshalJSON(b []byte) error {
+	o.Set = true
+	if string(b) == "null" {
+		o.V = nil
+		return nil
+	}
+	var n float64
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	o.V = &n
+	return nil
+}
+
 // ---------- 视图 ----------
 
 type TeamRefV struct {

@@ -204,3 +204,46 @@ func (d Date) Render(l Locale) string {
 	}
 	return fmt.Sprintf("%d年%d月%d日", t.Year(), int(t.Month()), t.Day())
 }
+
+// Money 是作为消息参数的金额：带货币符号与千分位，小数只在有零头时出现（¥5,000 / ¥5,000.50）。
+type Money struct {
+	Amount   float64
+	Currency string
+}
+
+var currencySymbols = map[string]string{"CNY": "¥", "USD": "$", "EUR": "€", "GBP": "£", "JPY": "JP¥", "HKD": "HK$"}
+
+// Render 实现 Renderable。
+func (m Money) Render(l Locale) string {
+	sym, ok := currencySymbols[strings.ToUpper(m.Currency)]
+	if !ok {
+		sym = strings.ToUpper(m.Currency) + " "
+	}
+	return sym + Number(m.Amount)
+}
+
+// Number 把数字渲染成带千分位的形式，小数最多两位且只在有零头时出现。
+func Number(v float64) string {
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	s := fmt.Sprintf("%.2f", v)
+	s = strings.TrimRight(strings.TrimRight(s, "0"), ".")
+	whole, frac, _ := strings.Cut(s, ".")
+	var b strings.Builder
+	for i, c := range whole {
+		if i > 0 && (len(whole)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	out := b.String()
+	if frac != "" {
+		out += "." + frac
+	}
+	if neg {
+		out = "-" + out
+	}
+	return out
+}

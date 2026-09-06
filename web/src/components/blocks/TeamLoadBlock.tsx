@@ -4,16 +4,17 @@ import { useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { IconAgent } from "@/components/icons";
 import { Avatar, ProgressBar, StatusLED, Table, TableSkeleton, Tip, cx } from "@/components/ui";
-import { BlockPanel, type BlockProps } from "./BlockPanel";
+import { BlockPanel, CompactList, type BlockProps } from "./BlockPanel";
 
 /** 人员与 Agent 负荷：当前范围里每个执行者名下的活，按负荷从高到低（GET /stats/load）。 */
-export function TeamLoadBlock({ index, title, noLink }: BlockProps) {
+export function TeamLoadBlock({ index, title, noLink, compact, dense }: BlockProps) {
   const load = useLoad(() => api.stats.load(), []);
   const rows = load.data ?? [];
   return (
     <BlockPanel
       index={index}
       noLink={noLink}
+      compact={compact}
       icon={<IconAgent />}
       title={title ?? t("block.team_load")}
       telemetry={load.data ? t("block.team_load.count", { n: rows.length }) : undefined}
@@ -26,7 +27,29 @@ export function TeamLoadBlock({ index, title, noLink }: BlockProps) {
       emptyText={t("overview.loadEmpty")}
       skeleton={<TableSkeleton rows={5} cols={5} />}
     >
-      <LoadTable rows={rows} />
+      {compact || dense ? (
+        <CompactList
+          dense={dense}
+          count={rows.length}
+          label={t("block.team_load.compact")}
+          rows={rows.map((r) => ({
+            key: r.executor.id,
+            title: (
+              <span className="flex min-w-0 items-center gap-2">
+                <Avatar name={r.executor.name} kind={r.executor.kind === "agent" ? "agent" : "member"} />
+                <span className="truncate text-ink">{r.executor.name}</span>
+              </span>
+            ),
+            meta: (
+              <span className={cx("tabular-nums", r.overdue > 0 && "text-danger")}>
+                {r.active_tasks} / {r.open_tasks}
+              </span>
+            ),
+          }))}
+        />
+      ) : (
+        <LoadTable rows={rows} />
+      )}
     </BlockPanel>
   );
 }

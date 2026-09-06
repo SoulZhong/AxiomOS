@@ -30,7 +30,7 @@ PLATFORM_ADMIN_EMAIL=admin@example.com PLATFORM_ADMIN_PASSWORD=改成你的密�
 ## 文档
 
 - `CONTEXT.md` 词汇表：所有面向用户的名称都以它为准
-- `docs/adr/` 十五条架构决策（多租户隔离、动态骨架、Agent 权限、跨角色流转、状态类型、执行记录、用语原则、技术栈、设计规范、看板与迭代、可见范围、可定制边界、角色工作台）
+- `docs/adr/` 十七条架构决策（多租户隔离、动态骨架、Agent 权限、跨角色流转、状态类型、执行记录、用语原则、技术栈、设计规范、看板与迭代、可见范围、可定制边界、角色工作台、里程碑、IM 集成）
 - `docs/spec/workflow-definition.md` 任务类型与流程定义规格
 - `docs/api.md` HTTP 接口与 MCP 工具契约
 - `web/DESIGN.md` 界面设计规范 v2（以 Linear 为蓝本，叠加 Axiom 母舰科幻层；来源见 `docs/design/sources/`）

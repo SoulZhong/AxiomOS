@@ -81,6 +81,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
+// MigrationSQL 返回一条迁移的原文，供测试把已应用的迁移对新造的旧形状数据再跑一遍。
+func MigrationSQL(name string) (string, error) {
+	body, err := migrationFS.ReadFile("migrations/" + name)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
 // WithOrg 在组织上下文里执行一个事务。
 func (s *Store) WithOrg(ctx context.Context, orgID string, fn func(tx pgx.Tx) error) error {
 	tx, err := s.Pool.Begin(ctx)

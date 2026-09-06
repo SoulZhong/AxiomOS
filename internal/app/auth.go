@@ -282,20 +282,34 @@ func (a *App) RegisterAgent(ctx context.Context, sess *Session, in RegisterAgent
 	return ag, token, err
 }
 
-// ListAgents 列出组织内的 Agent。
+// SeesAllAgents 判断会话能否看到组织内全部 Agent：组织负责人与持「组织设置」权限的成员可以。
+func (s *Session) SeesAllAgents() bool { return s.IsOwner || s.Can("org_settings") }
+
+// CanManageAgent 判断会话能否修改 / 吊销这个 Agent：它的所有者，或能看到全部 Agent 的人。
+func (s *Session) CanManageAgent(ag *domain.Agent) bool {
+	return s.SeesAllAgents() || ag.OwnerMemberID == s.MemberID
+}
+
+// ListAgents 列出 Agent。除组织负责人与持「组织设置」权限的成员外，
+// 每个人只看到自己的 Agent，另加只读地看到公共 Agent（CONTEXT.md「Agent」）。
 func (a *App) ListAgents(ctx context.Context, sess *Session) ([]*domain.Agent, error) {
-	var out []*domain.Agent
-	err := a.tx(ctx, sess, func(tx pgx.Tx) (err error) {
-		out, err = a.Store.ListAgents(ctx, tx)
-		if out == nil {
-			out = []*domain.Agent{}
+	out := []*domain.Agent{}
+	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+		all, err := a.Store.ListAgents(ctx, tx)
+		if err != nil {
+			return err
 		}
-		return
+		for _, ag := range all {
+			if sess.SeesAllAgents() || ag.OwnerMemberID == sess.MemberID || ag.Shared {
+				out = append(out, ag)
+			}
+		}
+		return nil
 	})
 	return out, err
 }
 
-// UpdateAgent 修改授权、能力等；只有所有者或组织负责人可以。
+// UpdateAgent 修改授权、能力等；只有所有者、组织负责人或持「组织设置」权限的成员可以。
 func (a *App) UpdateAgent(ctx context.Context, sess *Session, id string, in RegisterAgentInput) (*domain.Agent, error) {
 	var ag *domain.Agent
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
@@ -303,9 +317,8 @@ func (a *App) UpdateAgent(ctx context.Context, sess *Session, id string, in Regi
 		if err != nil {
 			return err
 		}
-		org, _ := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
-		if cur.OwnerMemberID != sess.MemberID && org.OwnerMemberID != sess.MemberID {
-			return Forbidden("err.agent_edit_forbidden")
+		if !sess.CanManageAgent(cur) {
+			return Forbidden("err.agent_not_yours")
 		}
 		if in.Name != "" {
 			cur.Name = in.Name
@@ -341,9 +354,8 @@ func (a *App) RevokeAgent(ctx context.Context, sess *Session, id string) error {
 		if err != nil {
 			return err
 		}
-		org, _ := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
-		if cur.OwnerMemberID != sess.MemberID && org.OwnerMemberID != sess.MemberID {
-			return Forbidden("err.agent_revoke_forbid")
+		if !sess.CanManageAgent(cur) {
+			return Forbidden("err.agent_not_yours")
 		}
 		if err := a.Store.RevokeAgent(ctx, tx, id); err != nil {
 			return err

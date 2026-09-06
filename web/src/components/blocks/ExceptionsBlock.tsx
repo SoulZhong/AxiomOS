@@ -9,13 +9,13 @@ import { IconOverdue } from "@/components/icons";
 import { ScopeMoney } from "@/components/ScopePicker";
 import { StateBadge } from "@/components/StateBadge";
 import { Button, ListSkeleton } from "@/components/ui";
-import { BlockPanel, type BlockProps } from "./BlockPanel";
+import { BlockPanel, CompactList, type BlockProps } from "./BlockPanel";
 
 /*
  * 要我关注的异常：逾期任务、停滞任务、逾期目标、超预算目标、等我确认的操作，按组分列，每组默认 5 条。
  * 目标"任务都完成了，只差确认达成"时行内直接给确认按钮。数据按当前范围（GET /stats/exceptions）。
  */
-export function ExceptionsBlock({ index, title, noLink }: BlockProps) {
+export function ExceptionsBlock({ index, title, noLink, compact, dense }: BlockProps) {
   const { session } = useSession();
   const currency = session?.organization.currency;
   const exceptions = useLoad(() => api.stats.exceptions(), []);
@@ -25,6 +25,7 @@ export function ExceptionsBlock({ index, title, noLink }: BlockProps) {
     <BlockPanel
       index={index}
       noLink={noLink}
+      compact={compact}
       icon={<IconOverdue />}
       title={title ?? t("block.exceptions")}
       telemetry={d ? t("panel.rows", { n: count }) : undefined}
@@ -37,9 +38,21 @@ export function ExceptionsBlock({ index, title, noLink }: BlockProps) {
       emptyText={t("overview.exceptionsClear")}
       skeleton={<ListSkeleton rows={5} />}
     >
-      {d && <Exceptions data={d} currency={currency} onChanged={exceptions.reload} />}
+      {d && (compact || dense) && <CompactList count={count} label={t("block.exceptions.compact")} rows={compactRows(d)} dense={dense} />}
+      {d && !compact && !dense && <Exceptions data={d} currency={currency} onChanged={exceptions.reload} />}
     </BlockPanel>
   );
+}
+
+/** 窄区块：五组按紧急度拍平，只取前三条（逾期任务 → 停滞 → 逾期目标 → 超预算 → 待确认） */
+function compactRows(d: ExceptionsData) {
+  return [
+    ...d.overdue_tasks.map((x) => ({ key: `t-${x.id}`, title: taskRow(x, t("overview.overdueDays", { n: x.overdue_days ?? x.days_overdue ?? 0 })).title, meta: <span className="text-danger">{t("overview.overdueDays", { n: x.overdue_days ?? x.days_overdue ?? 0 })}</span> })),
+    ...d.stuck_tasks.map((x) => ({ key: `s-${x.task.id}`, title: taskRow(x.task, "").title, meta: t("overview.stuckDays", { n: x.days_in_state }) })),
+    ...d.overdue_goals.map((g) => ({ key: `g-${g.id}`, title: goalRow(g, "").title, meta: t("overview.overdueDays", { n: g.overdue_days ?? 0 }) })),
+    ...d.over_budget_goals.map((g) => ({ key: `b-${g.id}`, title: goalRow(g, "").title, meta: t("overview.overBudgetGoals") })),
+    ...d.pending_proposals.map((p) => ({ key: `p-${p.id}`, title: <span className="truncate text-ink">{p.summary}</span>, meta: p.agent.name })),
+  ];
 }
 
 function Exceptions({ data, currency, onChanged }: { data: ExceptionsData; currency?: string; onChanged: () => void }) {
