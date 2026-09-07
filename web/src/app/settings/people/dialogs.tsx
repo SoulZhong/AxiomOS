@@ -66,7 +66,7 @@ export function MoveTeamDialog({ team, teams, onClose, onMoved }: { team: OrgTea
 }
 
 /** 批量变更团队：移到（离开原团队）或加入（保留原团队），确认前写明影响人数，结束后列出没变更的人和原因。 */
-export function BulkTeamDialog({ open, members, teams, defaultTeam, onClose, onDone }: { open: boolean; members: OrgMember[]; teams: OrgTeam[]; defaultTeam: string | null; onClose: () => void; onDone: () => void }) {
+export function BulkTeamDialog({ open, members, teams, defaultTeam, onClose, onDone, onGoUnbind }: { open: boolean; members: OrgMember[]; teams: OrgTeam[]; defaultTeam: string | null; onClose: () => void; onDone: () => void; onGoUnbind?: () => void }) {
   const toast = useToast();
   const [mode, setMode] = useState<"move_team" | "add_team">("move_team");
   const [target, setTarget] = useState<string | null>(defaultTeam);
@@ -77,12 +77,16 @@ export function BulkTeamDialog({ open, members, teams, defaultTeam, onClose, onD
   const [snapshot] = useState(members);
   const affected = snapshot.filter((m) => m.active !== false);
   const nameOf = (id: string) => snapshot.find((m) => m.id === id)?.name ?? id;
+  // 名单里同步来的那些人是从哪个 IM 来的（说「解绑」时要点名）
+  const syncedName = snapshot.find((m) => isSynced(m))?.source_title ?? snapshot.find((m) => isSynced(m))?.source;
   const submit = async () => {
     setBusy(true); setError(null);
     try {
       const r = await api.org.bulkMembers({ member_ids: affected.map((m) => m.id), action: mode, team_id: target });
       setResult(r);
-      toast.ok(t("settings.people.bulkDone", { n: r.updated }));
+      // 一个都没变更时别报喜：对话框留着，下面列出每个人没变更的原因
+      if (r.updated === 0 && r.skipped.length) toast.fail(t("settings.people.bulkNone", { n: r.skipped.length }));
+      else toast.ok(t("settings.people.bulkDone", { n: r.updated }));
       onDone();
     } catch (err) { setError(errorMessage(err)); } finally { setBusy(false); }
   };
@@ -96,8 +100,10 @@ export function BulkTeamDialog({ open, members, teams, defaultTeam, onClose, onD
             <div className="rounded-md border border-warning-border bg-warning-bg p-3">
               <p className="mb-1.5 text-warning">{t("settings.people.bulkSkipped", { n: result.skipped.length })}</p>
               <ul className="space-y-1 text-caption text-ink-muted">
-                {result.skipped.map((s) => <li key={s.id}><span className="font-medium text-ink">{nameOf(s.id)}</span> · {s.reason}</li>)}
+                {result.skipped.map((s) => <li key={s.id} data-skipped={s.id}><span className="font-medium text-ink">{nameOf(s.id)}</span> · {s.reason}</li>)}
               </ul>
+              {/* 有人是因为「团队由同步决定」没变更：接着给出路，别只留一句理由 */}
+              {result.skipped.some((s) => s.code === "err.member_synced_team") && <UnbindHint name={syncedName} onGoUnbind={onGoUnbind} plain />}
             </div>
           )}
         </div>
@@ -117,7 +123,7 @@ export function BulkTeamDialog({ open, members, teams, defaultTeam, onClose, onD
 }
 
 /** 单人变更直属团队。 */
-export function ChangeTeamDialog({ member, teams, onClose, onSaved }: { member: OrgMember | null; teams: OrgTeam[]; onClose: () => void; onSaved: () => void }) {
+export function ChangeTeamDialog({ member, teams, onClose, onSaved, onGoUnbind }: { member: OrgMember | null; teams: OrgTeam[]; onClose: () => void; onSaved: () => void; onGoUnbind?: () => void }) {
   const toast = useToast();
   const [target, setTarget] = useState<string | null>(member?.team_id ?? null);
   const [busy, setBusy] = useState(false);
@@ -135,8 +141,20 @@ export function ChangeTeamDialog({ member, teams, onClose, onSaved }: { member: 
   return (
     <Dialog open={!!member} onClose={onClose} title={t("settings.people.teamTitle", { name: member?.name })} footer={<><Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button><Button variant="primary" disabled={busy || target === (member?.team_id ?? null)} onClick={() => void submit()}>{t("common.save")}</Button></>}>
       <TeamPickerList teams={teams} value={target} onChange={setTarget} noneLabel={t("settings.members.noTeam")} />
+      {/* 同步来的成员：先说清团队由同步决定，别让人选完了才挨一句红字；服务端拒了也留在这里把话说完 */}
+      {member && isSynced(member) && <UnbindHint name={member.source_title ?? member.source} onGoUnbind={onGoUnbind} />}
       {error && <ErrorBox message={error} />}
     </Dialog>
+  );
+}
+
+/** 「团队由{name}同步决定。想手工管，先到 IM 集成 → 对应关系里解绑。」+「去解绑」。 */
+function UnbindHint({ name, onGoUnbind, plain }: { name?: string; onGoUnbind?: () => void; plain?: boolean }) {
+  return (
+    <p className={plain ? "mt-2 text-caption text-warning" : "rounded-md border border-warning-border bg-warning-bg p-3 text-body text-warning"} role="note" data-unbind-hint>
+      {t("settings.people.syncedTeamUnbind", { name })}
+      {onGoUnbind && <> <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={onGoUnbind} data-go-unbind>{t("settings.people.goUnbind")}</button></>}
+    </p>
   );
 }
 

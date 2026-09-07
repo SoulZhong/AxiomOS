@@ -834,16 +834,21 @@ export function Menu({ items, label, trigger, align = "right", size = "sm", clas
         {trigger ?? <IconMore />}
       </button>
       {open && box && typeof document !== "undefined" && createPortal(
-        <div ref={menu} id={`${id}-menu`} role="menu" aria-label={label} tabIndex={-1} className="inl-menu !fixed min-w-[180px] !overflow-visible p-1 outline-none" style={{ left: box.left ?? "auto", right: box.right ?? "auto", top: box.top ?? "auto", bottom: box.bottom ?? "auto" }} onKeyDown={onKey} onClick={(e) => e.stopPropagation()}>
+        <div ref={menu} id={`${id}-menu`} role="menu" aria-label={label} tabIndex={-1} className="inl-menu !fixed max-w-[280px] min-w-[180px] !overflow-visible p-1 outline-none" style={{ left: box.left ?? "auto", right: box.right ?? "auto", top: box.top ?? "auto", bottom: box.bottom ?? "auto" }} onKeyDown={onKey} onClick={(e) => e.stopPropagation()}>
+          {/* 用不了的那一条：原因就写在它下面。原来是悬停才出的气泡，菜单贴着屏幕右边时气泡整条被裁掉，等于没写 */}
           {items.map((it, i) => {
             const reason = it.disabled || null;
-            const row = (
-              <button key={it.key} type="button" role="menuitem" aria-disabled={!!reason || undefined} data-active={i === active ? "" : undefined} tabIndex={-1} className={cx("inl-opt text-body", reason ? "cursor-default text-ink-tertiary" : it.danger ? "text-danger" : undefined)} onMouseMove={() => !reason && setActive(i)} onClick={() => pick(it)}>
-                {it.icon && <span className="inline-flex shrink-0 text-current opacity-80">{it.icon}</span>}
-                <span className="inl-opt-label">{it.label}</span>
+            return (
+              <button key={it.key} type="button" role="menuitem" aria-disabled={!!reason || undefined} data-active={i === active ? "" : undefined} tabIndex={-1} className={cx("inl-opt text-body", reason ? "cursor-default items-start text-ink-tertiary" : it.danger ? "text-danger" : undefined)} onMouseMove={() => !reason && setActive(i)} onClick={() => pick(it)}>
+                {it.icon && <span className={cx("inline-flex shrink-0 text-current opacity-80", reason && "mt-0.5")}>{it.icon}</span>}
+                {reason ? (
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{it.label}</span>
+                    <span className="mt-0.5 block text-caption whitespace-normal text-ink-subtle">{reason}</span>
+                  </span>
+                ) : <span className="inl-opt-label">{it.label}</span>}
               </button>
             );
-            return reason ? <Tip key={it.key} tip={reason} placement="right" className="flex w-full">{row}</Tip> : row;
           })}
         </div>,
         document.body,

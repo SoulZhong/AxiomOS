@@ -29,8 +29,11 @@ export function DuplicateDot({ member, onOpen }: { member: OrgMember; onOpen: (o
   );
 }
 
-/** 成员详情抽屉：姓名（同步来的只读）、邮箱、角色、直属团队、账号启用；疑似重复时一行提示 +「合并」。 */
-export function EditMemberDrawer({ member, roles, teams, onClose, onSaved, onMerge }: { member: OrgMember | null; roles: Array<[string, string]>; teams: OrgTeam[]; onClose: () => void; onSaved: () => void; onMerge?: (m: OrgMember, otherId: string) => void }) {
+/**
+ * 成员详情抽屉：姓名（同步来的只读）、邮箱、角色、直属团队、账号启用；疑似重复时一行提示 +「合并」。
+ * 同步来的成员：团队那一栏直接写明团队由同步决定，并给出出路 —— 到「IM 集成 → 对应关系」解绑。
+ */
+export function EditMemberDrawer({ member, roles, teams, onClose, onSaved, onMerge, onGoUnbind }: { member: OrgMember | null; roles: Array<[string, string]>; teams: OrgTeam[]; onClose: () => void; onSaved: () => void; onMerge?: (m: OrgMember, otherId: string) => void; onGoUnbind?: () => void }) {
   const toast = useToast();
   const [name, setName] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
@@ -85,7 +88,7 @@ export function EditMemberDrawer({ member, roles, teams, onClose, onSaved, onMer
               ))}
             </div>
           </Field>
-          <Field label={t("settings.members.team")} hint={synced ? t("settings.people.syncedMemberTeam", { name: sourceName }) : undefined}>
+          <Field label={t("settings.members.team")} hint={synced ? <>{t("settings.people.syncedTeamUnbind", { name: sourceName })}{onGoUnbind && <> <button type="button" className="text-accent underline-offset-2 hover:underline" onClick={onGoUnbind} data-go-unbind>{t("settings.people.goUnbind")}</button></>}</> : undefined}>
             <Select value={team} onChange={(e) => setTeam(e.target.value)} disabled={synced}>
               <option value="">{t("settings.members.noTeam")}</option>
               {teamOptions.map(({ team: x, depth }) => <option key={x.id} value={x.id}>{"　".repeat(depth)}{x.name}</option>)}

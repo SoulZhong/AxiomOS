@@ -367,6 +367,10 @@ type DuplicateSide struct {
 	Source      string `json:"source"`
 	SourceTitle string `json:"source_title"`
 	TeamPath    string `json:"team_path,omitempty"`
+	// CanBeMergedAway 说这一边能不能当被并走的那个；不能时 KeepReason 是一句原因（见 memberKeepReason / teamKeepReason）。
+	// 这只是给界面提前挡掉不成立的方向，服务端该拦的照样拦。
+	CanBeMergedAway bool   `json:"can_be_merged_away"`
+	KeepReason      string `json:"keep_reason,omitempty"`
 }
 
 // DuplicateView 是一对疑似重复：A 是手工对象，B 是同步来的对象。
@@ -406,8 +410,8 @@ func (a *App) duplicateState(ctx context.Context, tx pgx.Tx) (domain.DirectorySt
 	return st, err
 }
 
-// duplicateViews 把 domain.FindDuplicates 的结果整理成展示。
-func duplicateViews(st domain.DirectoryState, loc i18n.Locale) []DuplicateView {
+// duplicateViews 把 domain.FindDuplicates 的结果整理成展示。ownerMemberID 用来标出哪一边只能保留。
+func duplicateViews(st domain.DirectoryState, ownerMemberID string, loc i18n.Locale) []DuplicateView {
 	teamByID := teamsByID(st.Teams)
 	parents := teamParents(st.Teams)
 	memberByID := map[string]*domain.Member{}
@@ -418,15 +422,19 @@ func duplicateViews(st domain.DirectoryState, loc i18n.Locale) []DuplicateView {
 		if kind == store.IdentityTeam {
 			t := teamByID[id]
 			if t == nil {
-				return DuplicateSide{ID: id}
+				return DuplicateSide{ID: id, CanBeMergedAway: true}
 			}
-			return DuplicateSide{ID: id, Name: t.Name, Source: t.Source, SourceTitle: SourceTitle(t.Source, loc), TeamPath: teamPath(teamByID, id)}
+			why := teamKeepReason(t, loc)
+			return DuplicateSide{ID: id, Name: t.Name, Source: t.Source, SourceTitle: SourceTitle(t.Source, loc), TeamPath: teamPath(teamByID, id),
+				CanBeMergedAway: why == "", KeepReason: why}
 		}
 		m := memberByID[id]
 		if m == nil {
-			return DuplicateSide{ID: id}
+			return DuplicateSide{ID: id, CanBeMergedAway: true}
 		}
-		return DuplicateSide{ID: id, Name: m.Name, Source: m.Source, SourceTitle: SourceTitle(m.Source, loc), TeamPath: teamPath(teamByID, primaryTeam(parents, st.MemberTeams[id]))}
+		why := memberKeepReason(m, ownerMemberID, loc)
+		return DuplicateSide{ID: id, Name: m.Name, Source: m.Source, SourceTitle: SourceTitle(m.Source, loc), TeamPath: teamPath(teamByID, primaryTeam(parents, st.MemberTeams[id])),
+			CanBeMergedAway: why == "", KeepReason: why}
 	}
 	out := []DuplicateView{}
 	for _, d := range domain.FindDuplicates(st) {
@@ -447,7 +455,11 @@ func (a *App) DirectoryMappings(ctx context.Context, sess *Session) (*MappingsVi
 		if err != nil {
 			return err
 		}
-		out.Duplicates = duplicateViews(st, loc)
+		org, err := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
+		if err != nil {
+			return err
+		}
+		out.Duplicates = duplicateViews(st, org.OwnerMemberID, loc)
 		cfg, err := a.loadDirectoryConfig(ctx, tx, sess.OrgID)
 		if err == store.ErrNotFound {
 			return nil

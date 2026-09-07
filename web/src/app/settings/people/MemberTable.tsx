@@ -2,6 +2,7 @@
 import { useState, type MouseEvent } from "react";
 import { inviteUrlOf, isSynced, teamIdsOf, type OrgMember, type OrgRole, type OrgTeam } from "@/lib/api";
 import { t } from "@/lib/i18n";
+import { IconLink } from "@/components/icons";
 import { Avatar, Button, Menu, StatusLED, Table, Tag, TagList, Tip, cx, type MenuItem } from "@/components/ui";
 import { DuplicateDot, MemberStatusTag } from "./MemberDrawer";
 
@@ -9,6 +10,7 @@ import { DuplicateDot, MemberStatusTag } from "./MemberDrawer";
  * 右栏成员表（DESIGN.md §16）：多选框、姓名（头像 + 名字 + 状态标签）、状态、邮箱、角色（最多两个）、团队、来源、操作（详情 · ⋯）。
  * 点行打开详情抽屉；勾选框与操作列的点击不冒泡。
  * 疑似重复的人名旁有一个小提示点「可能与 X 重复」，点开即合并对话框（ADR 0017 补记四）。
+ * 同步来的成员：团队格里常驻一个小链接点，不用打开菜单就看得见团队为什么改不了，点它直接去「IM 集成 → 对应关系」解绑。
  */
 
 /** 表格里的一行就是一个成员；待激活的成员带 invitation（id 用于「撤回邀请」） */
@@ -25,6 +27,8 @@ export interface RowActions {
   makeOwner: (m: OrgMember) => void;
   /** 「可能与 X 重复」→ 合并对话框 */
   merge: (m: OrgMember, otherId: string) => void;
+  /** 同步来的成员：团队由同步决定，去「IM 集成 → 对应关系」解绑 */
+  goUnbind?: () => void;
 }
 
 /** 操作列钉在右侧；左边一道细线把它和滚动内容分开 */
@@ -81,7 +85,7 @@ export function MemberTable({ members, teams, roles, selected, onToggle, onToggl
           const direct = teamName(m.team_id);
           const checked = selected.has(m.id);
           const items: MenuItem[] = [
-            { key: "team", label: t("settings.people.changeTeam"), onSelect: () => actions.changeTeam(m), disabled: synced && t("settings.people.syncedMemberTeam", { name: sourceName }) },
+            { key: "team", label: t("settings.people.changeTeam"), onSelect: () => actions.changeTeam(m), disabled: synced && t("settings.people.syncedTeamUnbind", { name: sourceName }) },
             { key: "roles", label: t("settings.people.changeRoles"), onSelect: () => actions.changeRoles(m) },
             ...(pending && inviteUrlOf(m) ? [{ key: "invite", label: t("settings.members.copyInvite"), onSelect: () => actions.copyInvite(m) }] : []),
             // 待激活且有邀请记录：可以撤回邀请（连带这条待激活成员）；否则按停用 / 恢复
@@ -115,6 +119,13 @@ export function MemberTable({ members, teams, roles, selected, onToggle, onToggl
                 <span className="inline-flex max-w-full items-center gap-1">
                   <span className="truncate" title={direct ?? undefined}>{direct ?? <span className="text-ink-subtle">—</span>}</span>
                   {extraTeams.length > 0 && <Tip tip={t("settings.people.alsoIn", { teams: extraTeams.join("、") })}><Tag>+{extraTeams.length}</Tag></Tip>}
+                  {synced && actions.goUnbind && (
+                    <Tip tip={t("settings.people.syncedTeamUnbind", { name: sourceName })}>
+                      <button type="button" className="pressable inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-tertiary hover:bg-surface-3 hover:text-ink-muted" aria-label={t("settings.people.syncedTeamUnbind", { name: sourceName })} onClick={(e) => { e.stopPropagation(); actions.goUnbind?.(); }} data-synced-team={m.id}>
+                        <IconLink size={12} />
+                      </button>
+                    </Tip>
+                  )}
                 </span>
               </td>
               <td className="whitespace-nowrap">{synced ? <Tag title={t("settings.members.nameSynced", { name: sourceName })}>{t("settings.directory.from", { name: sourceName })}</Tag> : <span className="text-ink-subtle">{m.source_title ?? t("mock.source.manual")}</span>}</td>

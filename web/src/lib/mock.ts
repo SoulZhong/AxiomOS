@@ -968,7 +968,7 @@ const viewOrgMember = (m: MemberRow, dups?: DirectoryDuplicate[]): OrgMember => 
   // 所在的全部团队：直属团队排第一，其余是被「加入」的团队
   const team_ids = [...(m.team_id ? [m.team_id] : []), ...TEAMS.filter((tm) => tm.member_ids.includes(m.id) && tm.id !== m.team_id).map((tm) => tm.id)];
   // 「可能与 X 重复」：一次列表调用算一遍（ADR 0017 补记四）
-  const hints = (dups ?? []).filter((d) => d.kind === "member" && (d.a.id === m.id || d.b.id === m.id)).map((d) => { const o = d.a.id === m.id ? d.b : d.a; return { id: o.id, name: o.name, reason: d.reason, reason_text: d.reason_text }; });
+  const hints = (dups ?? []).filter((d) => d.kind === "member" && (d.a.id === m.id || d.b.id === m.id)).map((d) => { const o = d.a.id === m.id ? d.b : d.a; return { id: o.id, name: o.name, reason: d.reason, reason_text: d.reason_text, can_be_merged_away: o.can_be_merged_away !== false, ...(o.keep_reason ? { keep_reason: o.keep_reason } : {}) }; });
   return { ...viewMember(m), active: m.active, is_owner: ORG.owner_id === m.id, status_title: memberStatusTitle(st), invitation: inv, invitation_url: inv?.url ?? null, team_ids, ...(hints.length ? { possible_duplicate_of: hints } : {}) };
 };
 const viewTeam = (tm: OrgTeam): Team => ({ id: tm.id, name: tm.name, lead_id: tm.lead_id, parent_id: tm.parent_id, is_boundary: !!tm.is_boundary });
@@ -2701,7 +2701,9 @@ const candidateOf = (kind: DirectoryKind, id: ID, reason: DirectoryMatchReason, 
 /** 同步之后，用同一套认法（第二至四级）在手工对象（a）与同步对象（b）之间找疑似重复；停用的不算 */
 function findDuplicates(): DirectoryDuplicate[] {
   const out: DirectoryDuplicate[] = [];
-  const side = (kind: DirectoryKind, id: ID): DirectoryDuplicateSide => { const c = candidateOf(kind, id, "email", ""); return { id, name: c.name, source: c.source, source_title: c.source_title, team_path: c.team_path }; };
+  // can_be_merged_away：合并时只看被并走那一方的规矩（组织负责人不能被并走；已停用的团队没有可以并入的内容），与后端一致
+  const keepReason = (kind: DirectoryKind, id: ID): string => (kind === "member" ? (ORG.owner_id === id ? t("mock.merge.keep.owner") : "") : TEAMS.find((x) => x.id === id)?.active === false ? t("mock.merge.keep.teamInactive") : "");
+  const side = (kind: DirectoryKind, id: ID): DirectoryDuplicateSide => { const c = candidateOf(kind, id, "email", ""); const why = keepReason(kind, id); return { id, name: c.name, source: c.source, source_title: c.source_title, team_path: c.team_path, can_be_merged_away: why === "", ...(why ? { keep_reason: why } : {}) }; };
   const members = Object.values(MEMBERS).filter((m) => m.active);
   const countNames = (rows: typeof members) => rows.reduce<Record<string, number>>((acc, m) => { acc[m.name] = (acc[m.name] ?? 0) + 1; return acc; }, {});
   const manualNames = countNames(members.filter((m) => !isSyncedRow(m)));
@@ -3205,7 +3207,7 @@ on("POST", "/org/members/bulk", (_m, body) => {
   const b = (body ?? {}) as { member_ids?: ID[]; action?: string; team_id?: ID | null; roles?: string[] };
   const ids = [...new Set(b.member_ids ?? [])];
   if (!ids.length) throw new ApiError(400, t("mock.people.needMembers"));
-  const skipped: Array<{ id: ID; reason: string }> = [];
+  const skipped: Array<{ id: ID; reason: string; code?: string }> = [];
   let updated = 0;
   const target = b.team_id ? getTeam(b.team_id) : null;
   for (const id of ids) {
@@ -3213,7 +3215,7 @@ on("POST", "/org/members/bulk", (_m, body) => {
     if (!mem) { skipped.push({ id, reason: t("mock.org.memberNotFound") }); continue; }
     switch (b.action) {
       case "move_team":
-        if (isSyncedRow(mem)) { skipped.push({ id, reason: t("mock.people.syncedMemberTeam", { name: sourceTitle(mem.source) }) }); continue; }
+        if (isSyncedRow(mem)) { skipped.push({ id, reason: t("mock.people.syncedMemberTeam", { name: sourceTitle(mem.source) }), code: "err.member_synced_team" }); continue; }
         moveMember(mem, target?.id ?? null); break;
       case "add_team":
         if (!target) throw new ApiError(400, t("mock.org.teamNotFound"));

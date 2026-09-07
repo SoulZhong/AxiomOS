@@ -202,7 +202,7 @@ export interface OrgMember extends Member {
   /** 「可能与 X 重复」（ADR 0017 补记四）：用同步同一套认法在手工成员与同步成员之间找到的疑似重复，两边都带 */
   possible_duplicate_of?: DirectoryDuplicateHint[];
 }
-export interface DirectoryDuplicateHint { id: ID; name: string; reason: DirectoryMatchReason; reason_text: string }
+export interface DirectoryDuplicateHint { id: ID; name: string; reason: DirectoryMatchReason; reason_text: string; can_be_merged_away?: boolean; keep_reason?: string }
 /** 待激活成员的邀请链接：两种字段形态都认 */
 export const inviteUrlOf = (m: OrgMember | null | undefined): string | null => m?.invitation?.url || m?.invitation_url || null;
 /** 成员所在的全部团队 id（没有 team_ids 时退回直属团队） */
@@ -212,7 +212,8 @@ export const teamIdsOf = (m: OrgMember): ID[] => (m.team_ids && m.team_ids.lengt
 export type BulkMemberAction = "move_team" | "add_team" | "set_roles" | "deactivate" | "reactivate";
 export interface BulkMembersResult {
   updated: number;
-  skipped: Array<{ id: ID; reason: string }>;
+  /** code 是理由的词条键（如 err.member_synced_team），界面据此给出对应的下一步 */
+  skipped: Array<{ id: ID; reason: string; code?: string }>;
 }
 /** CSV 导入预览：每行一个动作 */
 export interface MemberImportRow {
@@ -461,7 +462,8 @@ export interface DirectoryDecisionInput { kind: DirectoryKind; external_id: stri
 export interface DirectoryDecisionRecord { kind: DirectoryKind; external_id: string; external_name: string; decision: DirectoryDecision; decision_title: string; local_id?: ID | null; local_name?: string | null; decided_at: ISODateTime }
 /** 「对应关系」面板：已绑定 / 可能重复 / 已跳过 */
 export interface DirectoryBinding { kind: DirectoryKind; external_id: string; external_name?: string; local_id: ID; local_name: string; local_active: boolean; since: ISODateTime }
-export interface DirectoryDuplicateSide { id: ID; name: string; source: MemberSource; source_title: string; team_path: string }
+/** can_be_merged_away = 这一边能不能当被并走的那个；false 时 keep_reason 是一句原因（组织负责人、已停用的团队），合并对话框据此挡掉不成立的方向 */
+export interface DirectoryDuplicateSide { id: ID; name: string; source: MemberSource; source_title: string; team_path: string; can_be_merged_away?: boolean; keep_reason?: string }
 /** 同步之后在手工对象（a）与同步对象（b）之间找到的疑似重复 */
 export interface DirectoryDuplicate { kind: DirectoryKind; a: DirectoryDuplicateSide; b: DirectoryDuplicateSide; reason: DirectoryMatchReason; reason_text: string }
 export interface DirectoryMappings { provider?: string | null; provider_title?: string; bound: DirectoryBinding[]; duplicates: DirectoryDuplicate[]; skipped: DirectorySkipped[] }

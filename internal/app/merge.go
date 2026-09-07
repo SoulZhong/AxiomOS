@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/teemo/axiomos/internal/domain"
+	"github.com/teemo/axiomos/internal/i18n"
 	"github.com/teemo/axiomos/internal/store"
 )
 
@@ -89,6 +90,36 @@ func (a *App) mergeMemberTx(ctx context.Context, tx pgx.Tx, sess *Session, owner
 	}
 	return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "MemberMerged", ActorID: sess.Actor.ID, At: time.Now(),
 		Data: map[string]any{"member_id": loser.ID, "name": loser.Name, "into_id": target.ID, "into_name": target.Name}}})
+}
+
+// ---------- 哪一边不能被并走 ----------
+//
+// 界面上要先知道哪个方向根本不成立，才不会让人选了再挨一个红字。下面两个函数是上面那些拦截里
+// 「只看被并走的那一个」的部分，一条对一条；服务端的拦截照旧，这里只是同一套规矩的另一种说法。
+// 只看被并走的那一个的规矩：成员是 mergeMemberTx 里的 err.member_merge_owner（组织负责人）；
+// 团队是 MergeTeams 里的 err.team_merge_inactive_source（已停用的团队没有可以并入的内容）。
+// 其余拦截（并入自己、目标已停用）看的是另一边或两边，不属于这里。
+
+// memberKeepReason 说这个成员为什么不能被并进别人，能被并走时返回空串。
+func memberKeepReason(m *domain.Member, ownerMemberID string, loc i18n.Locale) string {
+	if m == nil {
+		return ""
+	}
+	if m.ID == ownerMemberID {
+		return i18n.Tr(loc, "merge.keep.owner")
+	}
+	return ""
+}
+
+// teamKeepReason 说这个团队为什么不能被并进别的团队，能被并走时返回空串。
+func teamKeepReason(t *domain.Team, loc i18n.Locale) string {
+	if t == nil {
+		return ""
+	}
+	if t.Inactive {
+		return i18n.Tr(loc, "merge.keep.team_inactive")
+	}
+	return ""
 }
 
 // MergeTeams 把团队 id 并入 into（POST /org/teams/{id}/merge）。返回合并后的目标团队。

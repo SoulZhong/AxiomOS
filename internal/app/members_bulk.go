@@ -22,11 +22,12 @@ type BulkMembersInput struct {
 	Roles  []string `json:"roles"`
 }
 
-// BulkSkip 是被跳过的成员与理由。
+// BulkSkip 是被跳过的成员与理由。Code 是理由的词条键（如 err.member_synced_team），界面据此给出对应的下一步。
 type BulkSkip struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Reason string `json:"reason"`
+	Code   string `json:"code,omitempty"`
 }
 
 // BulkResult 是批量操作的结果。
@@ -90,7 +91,7 @@ func (a *App) BulkMembers(ctx context.Context, sess *Session, in BulkMembersInpu
 			if m != nil {
 				name = m.Name
 			}
-			out.Skipped = append(out.Skipped, BulkSkip{ID: id, Name: name, Reason: renderReason(err, loc)})
+			out.Skipped = append(out.Skipped, BulkSkip{ID: id, Name: name, Reason: renderReason(err, loc), Code: reasonCode(err)})
 		}
 		seen := map[string]bool{}
 		for _, id := range in.MemberIDs {
@@ -177,6 +178,14 @@ func (a *App) BulkMembers(ctx context.Context, sess *Session, in BulkMembersInpu
 }
 
 // renderReason 把用户错误渲染成读者语言的一句话（非用户错误照原样）。
+// reasonCode 取理由的词条键（拿不到就空），界面用它认出「团队由同步决定」这类要给出路的情况。
+func reasonCode(err error) string {
+	if ue, ok := err.(*UserError); ok && len(ue.Reasons) > 0 {
+		return ue.Reasons[0].Key
+	}
+	return ""
+}
+
 func renderReason(err error, loc i18n.Locale) string {
 	if ue, ok := err.(*UserError); ok {
 		return ue.Render(loc)

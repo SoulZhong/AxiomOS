@@ -442,7 +442,63 @@ func TestMemberDuplicateHints(t *testing.T) {
 	if mp.Provider != "" || len(mp.Bound) != 0 || len(mp.Duplicates) != 2 {
 		t.Fatalf("未配置时只应有可能重复，实际 %+v", mp)
 	}
+	// 两个都不是负责人：哪一边都能被并走
+	if !yiM.PossibleDuplicateOf[0].CanBeMergedAway || yiM.PossibleDuplicateOf[0].KeepReason != "" {
+		t.Fatalf("丙不是负责人，应该能被并走，实际 %+v", yiM.PossibleDuplicateOf[0])
+	}
+	pair := memberDuplicate(mp.Duplicates)
+	if pair == nil || pair.A.ID != yi.MemberID || pair.B.ID != f.bing.ID {
+		t.Fatalf("成员那一对应是乙（手工）↔ 丙（同步），实际 %+v", mp.Duplicates)
+	}
+	if !pair.A.CanBeMergedAway || !pair.B.CanBeMergedAway || pair.A.KeepReason != "" || pair.B.KeepReason != "" {
+		t.Fatalf("两边都不是负责人时应都能被并走，实际 %+v", pair)
+	}
+
+	// 乙成为组织负责人：只有他这一边不能被并走，并给出原因；同步来的那一边照旧可以
+	if err := a.MakeOwner(ctx, jia, yi.MemberID); err != nil {
+		t.Fatal(err)
+	}
+	mp, err = a.DirectoryMappings(ctx, jia)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair = memberDuplicate(mp.Duplicates)
+	if pair == nil {
+		t.Fatalf("换负责人后仍应有这一对，实际 %+v", mp.Duplicates)
+	}
+	if pair.A.CanBeMergedAway || pair.A.KeepReason != "他是组织负责人" {
+		t.Fatalf("负责人那一边只能保留并说明原因，实际 %+v", pair.A)
+	}
+	if !pair.B.CanBeMergedAway || pair.B.KeepReason != "" {
+		t.Fatalf("同步来的那一边应仍能被并走，实际 %+v", pair.B)
+	}
+	// 「可能与 X 重复」提示里也是同一套说法
+	ms, err = a.OrgMembers(ctx, jia)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yiM, bing = findMemberByID(ms, yi.MemberID), findMemberByID(ms, f.bing.ID)
+	if !yiM.PossibleDuplicateOf[0].CanBeMergedAway || yiM.PossibleDuplicateOf[0].KeepReason != "" {
+		t.Fatalf("乙看到的丙应仍能被并走，实际 %+v", yiM.PossibleDuplicateOf[0])
+	}
+	if bing.PossibleDuplicateOf[0].CanBeMergedAway || bing.PossibleDuplicateOf[0].KeepReason != "他是组织负责人" {
+		t.Fatalf("丙看到的乙是负责人，只能保留，实际 %+v", bing.PossibleDuplicateOf[0])
+	}
+	// 服务端的拦截照旧
+	if _, err := a.MergeMembers(ctx, jia, yi.MemberID, f.bing.ID); err == nil || !strings.Contains(err.Error(), "组织负责人") {
+		t.Fatalf("负责人仍不能被并走，实际 %v", err)
+	}
 	_ = context.Background
+}
+
+// memberDuplicate 取疑似重复里成员的那一对。
+func memberDuplicate(ds []DuplicateView) *DuplicateView {
+	for i := range ds {
+		if ds[i].Kind == store.IdentityMember {
+			return &ds[i]
+		}
+	}
+	return nil
 }
 
 func findMemberByID(ms []MemberDetail, id string) *MemberDetail {

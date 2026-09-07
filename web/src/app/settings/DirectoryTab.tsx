@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, isSynced, type DirectoryBinding, type DirectoryChecklist, type DirectoryConfig, type DirectoryConfirmation, type DirectoryDecided, type DirectoryDuplicate, type DirectoryInput, type DirectoryKind, type DirectoryPreview, type DirectoryProviderInfo, type DirectoryRun, type DirectorySchedule, type DirectorySkipped } from "@/lib/api";
 import { fmtDate, fmtDateTime, parseDate } from "@/lib/format";
-import { errorMessage, useLoad } from "@/lib/hooks";
+import { errorMessage, setQueryParams, useLoad, useQueryParam } from "@/lib/hooks";
 import { t, type Key } from "@/lib/i18n";
 import { IconCopy, IconMember, IconPlay, IconSearch, IconTeam } from "@/components/icons";
 import { useToast } from "@/components/toast";
@@ -809,7 +809,10 @@ type MappingTab = "bound" | "duplicates" | "skipped";
 function MappingsPanel({ providerTitle, onChanged, className }: { providerTitle: string; onChanged: () => void; className?: string }) {
   const toast = useToast();
   const data = useLoad(() => api.org.directory.mappings(), []);
-  const [tab, setTab] = useState<MappingTab>("bound");
+  // ?mappings=bound|duplicates|skipped：从成员页的「去解绑」过来时直接停在那一页（参数看过就清掉，不粘在地址栏上）
+  const wanted = useQueryParam("mappings");
+  const [tab, setTab] = useState<MappingTab>(() => (wanted === "duplicates" || wanted === "skipped" ? wanted : "bound"));
+  useEffect(() => { if (wanted) setQueryParams({ mappings: null }); }, [wanted]);
   const [filter, setFilter] = useState("");
   const [unbinding, setUnbinding] = useState<DirectoryBinding | null>(null);
   const [merging, setMerging] = useState<DirectoryDuplicate | null>(null);

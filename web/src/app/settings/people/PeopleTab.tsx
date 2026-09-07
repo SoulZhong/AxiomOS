@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useMemo, useState } from "react";
-import { api, inviteUrlOf, isSynced, type OrgMember, type OrgTeam } from "@/lib/api";
+import { api, inviteUrlOf, isSynced, type DirectoryDuplicateHint, type OrgMember, type OrgTeam } from "@/lib/api";
 import { errorMessage, setQueryParams, useLoad, useQueryParam } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { usePersisted } from "@/lib/usePersisted";
@@ -27,7 +27,7 @@ type Status = "all" | "active" | "pending_activation" | "inactive";
 const STATUS_RANK: Record<string, number> = { active: 0, pending_activation: 1, inactive: 2 };
 const statusOf = (m: OrgMember): Exclude<Status, "all"> => (!m.active || m.status === "inactive" ? "inactive" : m.status === "pending_activation" ? "pending_activation" : "active");
 
-export function PeopleTab() {
+export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}) {
   const { session, refresh } = useSession();
   const toast = useToast();
   const members = useLoad(() => api.org.members(), []);
@@ -145,11 +145,14 @@ export function PeopleTab() {
     reactivate: (m: OrgMember) => void act(() => api.org.updateMember(m.id, { active: true }), t("settings.people.reactivated", { name: m.name })),
     makeOwner: (m: OrgMember) => setOwning(m),
     revokeInvite: (m: PersonRow) => setRevoking(m),
+    goUnbind: onGoDirectory,
     merge: (m: OrgMember, otherId: string) => {
       const other = allMembers.find((x) => x.id === otherId);
+      // 提示里说的是对面那个人，所以「他能不能被并走」要各自从对面的提示里取：hint 说的是 other，back 说的是 m
       const hint = m.possible_duplicate_of?.find((d) => d.id === otherId);
-      const side = (x: OrgMember): MergeSide => ({ id: x.id, name: x.name, team_path: pathOf(allTeams, x.team_id).map((p) => p.name).join(" / "), source: x.source, source_title: x.source_title, active: x.active });
-      setMerging({ kind: "member", a: side(m), b: other ? side(other) : { id: otherId, name: hint?.name ?? otherId }, reason: hint?.reason_text });
+      const back = other?.possible_duplicate_of?.find((d) => d.id === m.id);
+      const side = (x: OrgMember, ref?: DirectoryDuplicateHint): MergeSide => ({ id: x.id, name: x.name, team_path: pathOf(allTeams, x.team_id).map((p) => p.name).join(" / "), source: x.source, source_title: x.source_title, active: x.active, can_be_merged_away: ref?.can_be_merged_away, keep_reason: ref?.keep_reason });
+      setMerging({ kind: "member", a: side(m, back), b: other ? side(other, hint) : { id: otherId, name: hint?.name ?? otherId, can_be_merged_away: hint?.can_be_merged_away, keep_reason: hint?.keep_reason }, reason: hint?.reason_text });
     },
   };
   const revoke = async (m: PersonRow) => { const id = m.invitation?.id; if (id && (await act(() => api.org.deleteInvitation(id), t("toast.deleted")))) setRevoking(null); };
@@ -283,12 +286,12 @@ export function PeopleTab() {
         </div>
       )}
 
-      <EditMemberDrawer member={editing} roles={roleList.map((r) => [r.name, r.title])} teams={allTeams} onClose={() => setEditing(null)} onSaved={reloadAll} onMerge={(m, other) => { setEditing(null); rowActions.merge(m, other); }} />
+      <EditMemberDrawer member={editing} roles={roleList.map((r) => [r.name, r.title])} teams={allTeams} onClose={() => setEditing(null)} onSaved={reloadAll} onMerge={(m, other) => { setEditing(null); rowActions.merge(m, other); }} onGoUnbind={onGoDirectory} />
       {merging && <MergeDialog key={`${merging.a.id}:${merging.b.id}`} kind="member" a={merging.a} b={merging.b} reason={merging.reason} onClose={() => setMerging(null)} onMerged={reloadAll} />}
-      {teamFor && <ChangeTeamDialog key={teamFor.id} member={teamFor} teams={allTeams} onClose={() => setTeamFor(null)} onSaved={reloadAll} />}
+      {teamFor && <ChangeTeamDialog key={teamFor.id} member={teamFor} teams={allTeams} onClose={() => setTeamFor(null)} onSaved={reloadAll} onGoUnbind={onGoDirectory} />}
       {rolesFor && <ChangeRolesDialog key={rolesFor.id} member={rolesFor} roles={roleList} onClose={() => setRolesFor(null)} onSaved={reloadAll} />}
       {movingTeam && <MoveTeamDialog key={movingTeam.id} team={movingTeam} teams={allTeams} onClose={() => setMovingTeam(null)} onMoved={reloadAll} />}
-      {dialog?.kind === "bulk" && <BulkTeamDialog key={dialog.key} open members={selectedVisible} teams={allTeams} defaultTeam={selectedTeam} onClose={() => setDialog(null)} onDone={() => { setSelected(new Set()); reloadAll(); }} />}
+      {dialog?.kind === "bulk" && <BulkTeamDialog key={dialog.key} open members={selectedVisible} teams={allTeams} defaultTeam={selectedTeam} onClose={() => setDialog(null)} onDone={() => { setSelected(new Set()); reloadAll(); }} onGoUnbind={onGoDirectory} />}
       {dialog?.kind === "invite" && <InviteDialog key={dialog.key} open roles={roleList} teams={allTeams} defaultTeam={selectedTeam} onClose={() => setDialog(null)} onInvited={() => { reloadAll(); }} />}
       {dialog?.kind === "import" && <ImportDialog key={dialog.key} open roles={roleList} teams={allTeams} onClose={() => setDialog(null)} onImported={reloadAll} />}
       <ConsequenceDialog

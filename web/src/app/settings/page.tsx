@@ -52,7 +52,7 @@ export default function SettingsPage() {
           {current === "me" && <MeTab />}
           {current === "visibility" && <VisibilityTab onGoTeams={() => { setTab("people"); window.history.replaceState(null, "", "?tab=people"); }} />}
           {current === "workspace" && <WorkspaceTab />}
-          {current === "people" && <PeopleTab />}
+          {current === "people" && <PeopleTab onGoDirectory={() => { setTab("directory"); window.history.replaceState(null, "", "?tab=directory&mappings=bound"); }} />}
           {current === "roles" && <RolesTab />}
           {current === "directory" && <DirectoryTab />}
           {current === "notifications" && <NotificationsTab />}

@@ -192,6 +192,9 @@ type DuplicateRef struct {
 	Name       string `json:"name"`
 	Reason     string `json:"reason"`
 	ReasonText string `json:"reason_text"`
+	// CanBeMergedAway 说 X 能不能当被并走的那个；不能时 KeepReason 是一句原因（见 memberKeepReason）。合并对话框据此挡掉不成立的方向。
+	CanBeMergedAway bool   `json:"can_be_merged_away"`
+	KeepReason      string `json:"keep_reason,omitempty"`
 }
 
 // OrgMembers 列出成员（含停用）。
@@ -254,16 +257,21 @@ func (a *App) OrgMembers(ctx context.Context, sess *Session) ([]MemberDetail, er
 				idx[out[i].ID] = i
 			}
 			loc := sess.Loc()
+			// ref 是对面那个人在提示里的样子，带上「他能不能被并走」（规矩见 memberKeepReason），合并对话框据此挡掉不成立的方向
+			ref := func(other MemberDetail, reason, text string) DuplicateRef {
+				why := memberKeepReason(other.Member, org.OwnerMemberID, loc)
+				return DuplicateRef{ID: other.ID, Name: other.Name, Reason: reason, ReasonText: text, CanBeMergedAway: why == "", KeepReason: why}
+			}
 			for _, dp := range dups {
 				if dp.Kind != store.IdentityMember {
 					continue
 				}
 				text := reasonText(domain.MatchCandidate{Reason: dp.Reason, Via: dp.Via}, loc)
 				if i, ok := idx[dp.A]; ok {
-					out[i].PossibleDuplicateOf = append(out[i].PossibleDuplicateOf, DuplicateRef{ID: dp.B, Name: out[idx[dp.B]].Name, Reason: dp.Reason, ReasonText: text})
+					out[i].PossibleDuplicateOf = append(out[i].PossibleDuplicateOf, ref(out[idx[dp.B]], dp.Reason, text))
 				}
 				if i, ok := idx[dp.B]; ok {
-					out[i].PossibleDuplicateOf = append(out[i].PossibleDuplicateOf, DuplicateRef{ID: dp.A, Name: out[idx[dp.A]].Name, Reason: dp.Reason, ReasonText: text})
+					out[i].PossibleDuplicateOf = append(out[i].PossibleDuplicateOf, ref(out[idx[dp.A]], dp.Reason, text))
 				}
 			}
 		}
