@@ -19,6 +19,7 @@ import (
 
 	"github.com/teemo/axiomos/internal/api"
 	"github.com/teemo/axiomos/internal/app"
+	"github.com/teemo/axiomos/internal/domain"
 	"github.com/teemo/axiomos/internal/i18n"
 )
 
@@ -159,9 +160,66 @@ func TestEveryMCPWriteToolDryRunWritesNothing(t *testing.T) {
 	if _, err := a.Transition(ctx, w.jia, running.ID, "start", app.TransitionPayload{}); err != nil {
 		t.Fatal(err)
 	}
+	// 第一批补齐的工具各要一份现成的对象：第二个目标（重排）、已达成 / 已放弃的目标（撤销 / 重新开始）、
+	// 已达到的里程碑（撤销）、一条外部链接（摘掉）、一个等验收的任务（验收）
+	g2, err := a.CreateGoal(ctx, w.jia, app.CreateGoalInput{Title: "第二个目标"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	achieved, err := a.CreateGoal(ctx, w.jia, app.CreateGoalInput{Title: "已达成的目标"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ChangeGoalStatus(ctx, w.jia, achieved.ID, "achieved", nil); err != nil {
+		t.Fatal(err)
+	}
+	abandoned, err := a.CreateGoal(ctx, w.jia, app.CreateGoalInput{Title: "已放弃的目标"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ChangeGoalStatus(ctx, w.jia, abandoned.ID, "abandoned", nil); err != nil {
+		t.Fatal(err)
+	}
+	reached, err := a.CreateMilestone(ctx, w.jia, app.CreateMilestoneInput{GoalID: goal.ID, Title: "已经达到的里程碑", DueOn: dayFrom(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ReachMilestone(ctx, w.jia, reached.ID); err != nil {
+		t.Fatal(err)
+	}
+	link, err := a.AddTaskLink(ctx, w.jia, mine.ID, app.LinkInput{Kind: "doc", URL: "https://example.com/doc/1", Title: "设计稿"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	submitted := w.task(t, w.jia, "等验收的任务", w.jia.MemberID)
+	if _, err := a.Transition(ctx, w.jia, submitted.ID, "start", app.TransitionPayload{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.AddArtifact(ctx, w.jia, submitted.ID, domain.Artifact{Type: "result", Title: "结果"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Transition(ctx, w.jia, submitted.ID, "submit", app.TransitionPayload{}); err != nil {
+		t.Fatal(err)
+	}
 
 	// 每个写类工具一份能真正走到写回那一步的参数
 	args := map[string]map[string]any{
+		"update_goal":             {"goal_id": goal.ID, "title": "改过的目标"},
+		"achieve_goal":            {"goal_id": goal.ID},
+		"unachieve_goal":          {"goal_id": achieved.ID},
+		"abandon_goal":            {"goal_id": goal.ID},
+		"restart_goal":            {"goal_id": abandoned.ID},
+		"set_goal_horizon":        {"goal_ids": []any{goal.ID, g2.ID}, "horizon": "now"},
+		"rank_goals":              {"goal_ids": []any{g2.ID, goal.ID}},
+		"add_goal_note":           {"goal_id": goal.ID, "text": "一句进展"},
+		"update_task":             {"task_id": mine.ID, "title": "改过的任务"},
+		"review_task":             {"task_id": submitted.ID, "decision": "accept", "checked_deliverables": []any{"result"}},
+		"create_subtask":          {"parent_id": mine.ID, "title": "不该出现的子任务"},
+		"add_external_link":       {"task_id": mine.ID, "url": "https://example.com/pr/1", "kind": "pr"},
+		"remove_external_link":    {"task_id": mine.ID, "link_id": link.ID},
+		"update_milestone":        {"milestone_id": ms.ID, "title": "改过的里程碑"},
+		"delete_milestone":        {"milestone_id": ms.ID},
+		"unreach_milestone":       {"milestone_id": reached.ID},
 		"claim_task":              {"task_id": free.ID},
 		"begin_task":              {"task_id": beginnable.ID},
 		"transition_task":         {"task_id": mine.ID, "name": "start"},
@@ -289,8 +347,6 @@ var notDryRunnable = map[string]string{
 	"POST /api/v1/proposals/{id}/approve":                         "人裁决待确认操作，本身就是确认动作",
 	"POST /api/v1/proposals/{id}/reject":                          "人裁决待确认操作，本身就是确认动作",
 	"POST /api/v1/notifications/read":                             "把通知标成已读，读状态不记动态",
-	"POST /api/v1/tasks/{id}/links":                               "外部链接（ADR 0020），网页表单",
-	"DELETE /api/v1/tasks/{id}/links/{link_id}":                   "外部链接，网页有确认框",
 	"PUT /api/v1/me/code-identity":                                "绑定自己的代码平台账号，网页表单",
 	"PUT /api/v1/me/notifications":                                "个人通知设置，网页表单",
 	"DELETE /api/v1/me/notifications":                             "个人通知设置，网页表单",
@@ -391,6 +447,11 @@ func TestEveryHTTPWriteEndpointDryRunWritesNothing(t *testing.T) {
 	if _, err := a.ReachMilestone(ctx, w.jia, reached.ID); err != nil {
 		t.Fatal(err)
 	}
+	// 一条外部链接，DELETE 才有东西可摘
+	link, err := a.AddTaskLink(ctx, w.jia, mine.ID, app.LinkInput{Kind: "doc", URL: "https://example.com/doc/1", Title: "设计稿"})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	covered := map[string]struct {
 		path string
@@ -416,6 +477,8 @@ func TestEveryHTTPWriteEndpointDryRunWritesNothing(t *testing.T) {
 		"POST /api/v1/tasks/{id}/heartbeat":           {"/tasks/" + running.ID + "/heartbeat", map[string]any{}},
 		"POST /api/v1/tasks/{id}/comments":            {"/tasks/" + mine.ID + "/comments", map[string]any{"text": "一句话"}},
 		"POST /api/v1/tasks/{id}/relations":           {"/tasks/" + mine.ID + "/relations", map[string]any{"type": "blocks", "other_id": other.ID}},
+		"POST /api/v1/tasks/{id}/links":               {"/tasks/" + mine.ID + "/links", map[string]any{"kind": "pr", "url": "https://example.com/pr/1"}},
+		"DELETE /api/v1/tasks/{id}/links/{link_id}":   {"/tasks/" + mine.ID + "/links/" + link.ID, nil},
 		"POST /api/v1/sprints":                        {"/sprints", map[string]any{"name": "不该出现的迭代", "starts_on": dayFrom(30).Format("2006-01-02"), "ends_on": dayFrom(43).Format("2006-01-02")}},
 		"PATCH /api/v1/sprints/{id}":                  {"/sprints/" + sp.ID, map[string]any{"name": "改过的迭代"}},
 		"POST /api/v1/sprints/{id}/start":             {"/sprints/" + sp.ID + "/start", nil},

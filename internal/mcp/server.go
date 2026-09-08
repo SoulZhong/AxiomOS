@@ -339,6 +339,8 @@ func newServer(a *app.App, sess *app.Session) *sdk.Server {
 
 	addPrompts(s, sess)        // 斜杠命令（ADR 0025 第 1 条）
 	addNextActions(s, a, sess) // next_actions：带编号的可执行动作清单（ADR 0025 第 4 条）
+	k := &kit{a: a, sess: sess, loc: loc, tool: tool, f: f, tid: tid, gid: gid, mid: mid, sid: sid, ws: ws}
+	addBatch1Tools(s, k) // 目标的读与改、任务编辑、外部链接、里程碑、验收、创建子任务
 
 	sdk.AddTool(s, tool("whoami"), func(ctx context.Context, req *sdk.CallToolRequest, in struct{}) (*sdk.CallToolResult, any, error) {
 		me, err := a.Me(ctx, sess)
@@ -570,7 +572,7 @@ func newServer(a *app.App, sess *app.Session) *sdk.Server {
 		return jsonResult(t)
 	})
 	sdk.AddTool(s, tool("list_goals"), func(ctx context.Context, req *sdk.CallToolRequest, in struct{}) (*sdk.CallToolResult, any, error) {
-		tree, err := a.GoalTree(ctx, sess)
+		tree, err := a.GoalBriefTree(ctx, sess)
 		if err != nil {
 			return f(err)
 		}
@@ -738,7 +740,8 @@ var instructionsText = i18n.T(`你是 AxiomOS 里的执行者「%s」。%s
 8. 有些授权是「需要人确认」：这类操作调用后不会立刻生效，而是记成一条待确认操作，返回里会告诉你等谁确认、待确认操作 ID。别重试，用 list_my_proposals 看进展。
 9. 人的话说得不清楚、你拿不准他指的是哪个任务或要做哪件事时，先调 next_actions，把带编号的动作清单念给人听让人报编号，不要自己猜着做。
 10. 常用操作在客户端里是斜杠命令，人可以直接用：领一个任务（claim_task）、开始做任务（start_task）、提交交付（submit_task）、提问等待（ask_question）、看我的任务（my_tasks）、看某个任务（task_detail）、写进展（add_note）、汇报用量（report_usage）。
-11. 写操作都接受两个可选参数：dry_run=true 只回一句「会……」而不做任何改动（念给人听、人点头再真做）；idempotency_key 是你自己生成的键，同一个键 24 小时内只生效一次，返回里带 repeated=true 就说明这次没有重复创建。指代对象用确切写法：任务写 #编号，人写 @名字或邮箱，目标与迭代写编号或名称里的一段；名字对上不止一个时系统会列出候选让你问人，不要自己挑。`,
+11. 写操作都接受两个可选参数：dry_run=true 只回一句「会……」而不做任何改动（念给人听、人点头再真做）；idempotency_key 是你自己生成的键，同一个键 24 小时内只生效一次，返回里带 repeated=true 就说明这次没有重复创建。指代对象用确切写法：任务写 #编号，人写 @名字或邮箱，目标与迭代写编号或名称里的一段；名字对上不止一个时系统会列出候选让你问人，不要自己挑。
+12. 维护目标先 get_goal 看清楚再动手：update_goal 改字段，add_goal_note 写一句进展，achieve_goal / abandon_goal 是闭环动作；改负责人、上级与闭环动作对你一律先经人确认。做验收用 review_task，先看 get_workflow 的 is_reviewer。`,
 	`You are the executor "%s" in AxiomOS.%s
 How to work:
 1. Use list_my_tasks for tasks assigned to you and list_backlog for claimable tasks.
@@ -751,7 +754,8 @@ How to work:
 8. Some grants require human confirmation: such a call does not take effect immediately but is recorded as a pending action, and the reply tells you who must confirm it and its ID. Do not retry; check progress with list_my_proposals.
 9. When the human's request is ambiguous and you are not sure which task or which action they mean, call next_actions first, read the numbered list back to them and let them pick a number; never guess.
 10. The common operations are slash commands in the client, and the human can use them directly: claim_task, start_task, submit_task, ask_question, my_tasks, task_detail, add_note, report_usage.
-11. Every write tool accepts two optional arguments: dry_run=true answers with one sentence describing what would happen and changes nothing (read it out and act only after the person agrees); idempotency_key is a key you generate, and the same key takes effect only once within 24 hours — repeated=true in the reply means nothing was created again. Refer to objects precisely: #number for a task, @name or an email for a person, the ID or part of the name for goals and sprints; when a name matches more than one, the system lists the candidates for you to ask about instead of guessing.`)
+11. Every write tool accepts two optional arguments: dry_run=true answers with one sentence describing what would happen and changes nothing (read it out and act only after the person agrees); idempotency_key is a key you generate, and the same key takes effect only once within 24 hours — repeated=true in the reply means nothing was created again. Refer to objects precisely: #number for a task, @name or an email for a person, the ID or part of the name for goals and sprints; when a name matches more than one, the system lists the candidates for you to ask about instead of guessing.
+12. To maintain a goal, read it with get_goal first: update_goal edits fields, add_goal_note writes one progress note, achieve_goal / abandon_goal close it out; changing the owner or parent and the close-out actions always need human confirmation for you. To review a task use review_task, after checking is_reviewer in get_workflow.`)
 
 var agentNote = i18n.T("你替你的所有者工作，能做的事不超过所有者本人，并受授权限制。", " You work on behalf of your owner; you can never do more than the owner, and grants limit you further.")
 

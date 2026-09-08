@@ -769,3 +769,41 @@ func WouldCycle(fromID, toID string, blocksOf func(id string) []string) bool {
 	}
 	return false
 }
+
+// ReviewStep 挑出当前状态下的验收步骤（Agent 的 review_task 用）：accept 为真时找需要「验收」授权、
+// 去向是已完成类型状态的那一步；为假时找需要「验收」授权、去向不是已完成的那一步（打回）。
+// 只看步骤自己的声明（授权、去向状态的类型），不认步骤名（ADR 0005）。找不到返回空。
+func ReviewStep(c *Context, accept bool) string {
+	t, wf := c.Task, &c.Type.Workflow
+	cur := wf.State(t.State)
+	for _, tr := range wf.Transitions {
+		applies := false
+		for _, f := range tr.From {
+			if f == "*" {
+				applies = cur != nil && !cur.Label.IsTerminal()
+			} else if f == t.State {
+				applies = true
+			}
+		}
+		if !applies || grantOf(tr) != GrantReview {
+			continue
+		}
+		to := tr.To
+		if to == "$previous" {
+			to = t.PreviousState
+		}
+		done := false
+		if st := wf.State(to); st != nil {
+			done = st.Label == LabelTerminalSuccess
+		}
+		if done == accept {
+			return tr.Name
+		}
+	}
+	return ""
+}
+
+// IsReviewer 判断触发者是不是这个任务的验收人（Agent 按所有者算）。
+func IsReviewer(t *Task, actor *Executor) bool {
+	return isPrincipal(actor, t.ReviewerID)
+}

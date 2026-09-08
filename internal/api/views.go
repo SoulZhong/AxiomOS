@@ -1406,6 +1406,8 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 		return i18n.Trf(loc, "ev.GoalUpdated", who)
 	case "GoalFieldChanged":
 		return fieldChangeSummary(e, r, loc, who, "goal", i18n.Trf(loc, "ev.obj.goal", s("title")))
+	case "GoalNoteAdded":
+		return i18n.Trf(loc, "ev.GoalNoteAdded", who, s("title"), s("text"))
 	case "TaskFieldChanged":
 		return fieldChangeSummary(e, r, loc, who, "task", i18n.Trf(loc, "ev.obj.task", task))
 	case "MilestoneCreated", "MilestoneUpdated", "MilestoneReached", "MilestoneUnreached", "MilestoneDeleted":

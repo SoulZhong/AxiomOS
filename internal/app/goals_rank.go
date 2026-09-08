@@ -40,8 +40,17 @@ type GoalRankResult struct {
 // SetGoalRanks 按给定顺序给一串目标发等间距的排序权重。
 // Updated 只数真的变了的；Goals 列出全部改得动的目标（含权重本来就对的），前端照它更新本地次序。
 func (a *App) SetGoalRanks(ctx context.Context, sess *Session, in GoalRankInput) (*GoalRankResult, error) {
+	return idempotent(ctx, a, sess, "rank_goals", in, func() (*GoalRankResult, error) {
+		return a.setGoalRanks(ctx, sess, in)
+	})
+}
+
+func (a *App) setGoalRanks(ctx context.Context, sess *Session, in GoalRankInput) (*GoalRankResult, error) {
 	if len(in.IDs) == 0 {
 		return nil, Bad("err.bulk_empty")
+	}
+	if err := a.goalBatchGate(ctx, sess, ActionGoalRank, in.IDs, in, func(n int) i18n.Msg { return i18n.M("proposal.summary.goal.rank", n) }); err != nil {
+		return nil, err
 	}
 	loc := sess.Loc()
 	out := &GoalRankResult{Skipped: []BulkSkip{}, Goals: []RankedGoal{}}

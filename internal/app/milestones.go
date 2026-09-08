@@ -83,7 +83,7 @@ func (a *App) createMilestone(ctx context.Context, sess *Session, in CreateMiles
 	if err := a.validMilestone(sess, m); err != nil {
 		return nil, err
 	}
-	if err := a.milestoneGate(ctx, sess, func(tx pgx.Tx) (proposalDraft, error) {
+	if err := a.milestoneGate(ctx, sess, false, func(tx pgx.Tx) (proposalDraft, error) {
 		g, err := a.Store.GoalByID(ctx, tx, in.GoalID)
 		if err != nil {
 			return proposalDraft{}, NotFound("err.goal_missing")
@@ -119,7 +119,13 @@ func (a *App) createMilestone(ctx context.Context, sess *Session, in CreateMiles
 
 // UpdateMilestone 修改名称、日期或说明。
 func (a *App) UpdateMilestone(ctx context.Context, sess *Session, id string, in UpdateMilestoneInput) (*MilestoneView, error) {
-	if err := a.milestoneGate(ctx, sess, func(tx pgx.Tx) (proposalDraft, error) {
+	return idempotent(ctx, a, sess, "update_milestone", milestonePayload{MilestoneID: id, Input: &in}, func() (*MilestoneView, error) {
+		return a.updateMilestone(ctx, sess, id, in)
+	})
+}
+
+func (a *App) updateMilestone(ctx context.Context, sess *Session, id string, in UpdateMilestoneInput) (*MilestoneView, error) {
+	if err := a.milestoneGate(ctx, sess, false, func(tx pgx.Tx) (proposalDraft, error) {
 		m, g, err := a.loadMilestone(ctx, tx, id)
 		if err != nil {
 			return proposalDraft{}, err
@@ -166,8 +172,19 @@ func (a *App) UpdateMilestone(ctx context.Context, sess *Session, id string, in 
 }
 
 // DeleteMilestone 删除一条里程碑（留下动态）。
+// 删除是不可逆的，Agent 一律先经人确认，不看授权模式。
 func (a *App) DeleteMilestone(ctx context.Context, sess *Session, id string) error {
-	if err := a.milestoneGate(ctx, sess, func(tx pgx.Tx) (proposalDraft, error) {
+	_, err := idempotent(ctx, a, sess, "delete_milestone", map[string]any{"milestone_id": id}, func() (map[string]any, error) {
+		if err := a.deleteMilestone(ctx, sess, id); err != nil {
+			return nil, err
+		}
+		return map[string]any{"deleted": id}, nil
+	})
+	return err
+}
+
+func (a *App) deleteMilestone(ctx context.Context, sess *Session, id string) error {
+	if err := a.milestoneGate(ctx, sess, true, func(tx pgx.Tx) (proposalDraft, error) {
 		m, g, err := a.loadMilestone(ctx, tx, id)
 		if err != nil {
 			return proposalDraft{}, err
@@ -214,7 +231,8 @@ func (a *App) setReached(ctx context.Context, sess *Session, id string, reached 
 	if !reached {
 		action, summaryKey, eventType = ActionMilestoneUnreach, "proposal.summary.milestone.unreach", "MilestoneUnreached"
 	}
-	if err := a.milestoneGate(ctx, sess, func(tx pgx.Tx) (proposalDraft, error) {
+	// 撤销「已达到」是在推翻一个人已经下过的结论，Agent 一律先经人确认，不看授权模式。
+	if err := a.milestoneGate(ctx, sess, !reached, func(tx pgx.Tx) (proposalDraft, error) {
 		m, g, err := a.loadMilestone(ctx, tx, id)
 		if err != nil {
 			return proposalDraft{}, err
@@ -279,14 +297,15 @@ func checkReachable(m *domain.Milestone, reached bool) error {
 
 // milestoneGate 对 Agent 做授权检查：没有「创建目标」授权直接拒绝；授权是「需要人确认」时，
 // 用 build 构造一条待确认操作记下来并返回 ProposalPending，什么都不改。成员直接放行（权限在 canEditGoal 里判）。
-func (a *App) milestoneGate(ctx context.Context, sess *Session, build func(tx pgx.Tx) (proposalDraft, error)) error {
+// always 为真的动作（删除、撤销达到）不看授权模式，Agent 一律先经人确认；正在重放一条已确认的待确认操作时不再拦。
+func (a *App) milestoneGate(ctx context.Context, sess *Session, always bool, build func(tx pgx.Tx) (proposalDraft, error)) error {
 	if !sess.IsAgent() {
 		return nil
 	}
 	if !sess.Actor.HasGrant(domain.GrantCreateGoal) {
 		return Forbidden("err.agent_no_grant", i18n.Key("grant.create_goal"))
 	}
-	if domain.NeedsApproval(sess.Actor, domain.GrantCreateGoal) {
+	if (always && sess.ApprovedByID == "") || domain.NeedsApproval(sess.Actor, domain.GrantCreateGoal) {
 		return a.proposeOrFail(ctx, sess, build)
 	}
 	return nil

@@ -138,6 +138,8 @@ Windows 暂无 PowerShell 版脚本：用 WSL 执行上面的命令，或走下�
 
 连上 `/mcp` 之后，客户端里会自动多出八条斜杠命令，**不需要安装任何东西**，也不需要你写提示词。接入的最后一步，请 Agent 把它们念给你听。
 
+> **斜杠命令名不是 MCP 工具名。** 下表的八个名字是 MCP 提示（prompts）：人选一条、填参数，Agent 收到的是一段点名了要调哪些**真实工具**的指令。`/start_task` 对应 `get_task_brief` → `get_workflow` → `begin_task`，`/submit_task` 对应 `attach_artifact` → `transition_task`，`/ask_question` 是 `transition_task` 的 `ask_for_input` 步骤，`/my_tasks` 是 `list_my_tasks`，`/task_detail` 是 `get_task_brief`，`/report_usage` 是 `heartbeat`；只有 `/claim_task` 与 `/add_note` 和同名工具重名。自己写客户端时不要拿提示名去 `tools/call`——工具清单以 `tools/list` 返回的为准。
+
 | 斜杠命令 | 做什么 | 要填什么 |
 |---|---|---|
 | `/claim_task` 领一个任务 | 从待领取任务里领一个 | 任务（可选；不填就先把清单念给你听让你挑） |
@@ -215,7 +217,26 @@ Agent 和人看到的是同一份数据（ADR 0012、0016）。
 | `add_tasks_to_sprint` / `remove_task_from_sprint` | 进出迭代待办；已结束的迭代会拒绝 |
 | `get_board` | 看板：每张卡片的 `can_move_to` / `moves` 由内核按你的身份与授权算出，拖动就是调用 `transition_task` |
 | `start_sprint` / `close_sprint` | 需要「管理流程」权限；对 Agent 必须经人确认，会生成待确认操作 |
-| `list_milestones` / `create_milestone` / `reach_milestone` | 目标上的里程碑；受「创建目标」授权约束；`ready_hint` 为真表示日期前的任务都已完成 |
+| `list_milestones` / `create_milestone` / `reach_milestone` / `update_milestone` | 目标上的里程碑；受「创建目标」授权约束；`ready_hint` 为真表示日期前的任务都已完成 |
+| `delete_milestone` / `unreach_milestone` | 删除、撤销「已达到」：对 Agent **一律**先经人确认，不看授权模式 |
+
+## 9a. 目标、任务编辑、外部链接与验收
+
+Agent 不只是执行任务，也能维护目标、修正自己的任务、挂链接、做验收。规则都是 ADR 0003 那一条：所有者权限 ∩ 授权，高风险动作先经人确认。
+
+| 工具 | 作用 | 授权 |
+|---|---|---|
+| `list_goals` / `get_goal` | 目标树的精简视图；单个目标的完整详情（上级链、直接任务、里程碑、成本与预算、进展说明）。规划任务前先读它 | 只读 |
+| `update_goal` | 改标题、说明、日期、时间粒度、时间桶、信心度、成果指标、类型 | 「创建目标」；改**负责人、上级**一律待确认 |
+| `achieve_goal` / `unachieve_goal` / `abandon_goal` / `restart_goal` | 目标的四个闭环动作 | 「创建目标」，对 Agent **一律**待确认 |
+| `set_goal_horizon` / `rank_goals` | 批量改时间桶、重排次序；整批记成一条待确认操作 | 「创建目标」 |
+| `add_goal_note` | 在目标上写一句进展说明（记成动态，不改字段、不通知） | 「评论」 |
+| `update_task` | 改自己负责或自己创建的任务的标题、说明、预估、计划起止、工作量、自定义字段。验收人、优先级、归属目标、上级、迭代、参与角色、所需能力、「仅限人工」由人定，Agent 改不了 | 「执行任务」 |
+| `create_subtask` | 在某个任务下建子任务（与 `create_task` 填 `parent_id` 同一件事） | 「创建子任务」 |
+| `list_task_links` / `add_external_link` / `remove_external_link` | 任务上的外部链接（PR、Issue、文档、设计稿） | 与评论同一套：「执行任务」 |
+| `review_task` | 作为验收人通过（`accept`）或打回（`reject`）。先看 `get_workflow` 的 `is_reviewer` 与 `review_accept_step` / `review_reject_step`；打回要写说明；`checked_deliverables` 里列你核对过的交付物，必须真的挂在任务上 | 「验收」 |
+
+Agent 不能做的（故意不给工具）：删除目标与任务；成员、团队、角色、授权、能力标签、目标类型、价格表的配置；流程定义与任务类型的修改；Agent 的注册与吊销；通知策略、IM 集成、代码平台的配置；待确认操作的裁决。这些改的是组织边界、问责链与系统规则，不是"干活"。
 
 ## 10. 待确认操作（需要人确认的授权）
 

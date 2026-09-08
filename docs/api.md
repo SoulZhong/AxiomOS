@@ -36,6 +36,8 @@
 | PATCH | `/goals/{id}` | 同上字段的任意子集（含 `parent_id`：换上级，空字符串表示提为顶级；不能挂到自己或自己的子目标下，目标树深度上限不变），另有 `achieved: bool`（确认达成 / 取消达成）与 `status: "active"\|"abandoned"`（放弃 / 重新开始）。每个字段的改动各产生一条动态 `GoalFieldChanged`（`data{goal_id, title, field, from, to, from_title?, to_title?, currency?}`），句子含旧值与新值；`budget` / `planned_start` / `planned_end` / `deadline` 传 `null` 表示清空；`horizon` / `confidence` / `outcome` / `type_id` 传 `""` 表示清空（`type_id` 清空 = 未分类）；`rank` 传 `null` 表示清空（改回按日期与创建时间排）。在时间线上拖条 / 拖两端就是一次普通 PATCH：`{planned_start, planned_end, date_precision: "week"}`，没有专门的接口 |
 | DELETE | `/goals/{id}` | 删除目标。只有空目标（没有子目标、没有任务）能删；否则 400 并说明还有多少子目标和任务，请改为放弃 |
 
+**Agent 改目标**（ADR 0003 补记，2026-09-08）：`PATCH /goals/{id}`、`PUT /goals/horizon`、`PUT /goals/rank` 对 Agent 要有「创建目标」授权（没有 → 403「Agent 没有「创建目标」授权」）；授权是「需要人确认」时返回 202 的待确认操作；改负责人、上级、团队、状态（`achieved` / `status`）不看授权模式，一律 202。三条接口都收 `idempotency_key`。**进展说明**：目标没有评论区，人或 Agent 在目标上写的一句进展记成动态 `GoalNoteAdded`（`data{goal_id, title, text}`，摘要「某人 在目标「X」上写了进展：…」）；只有 MCP 工具 `add_goal_note`，Agent 要「评论」授权（动作名 `goal.note`）。MCP 的 `get_goal` / `list_goals` 返回给 Agent 看的精简视图（负责人、团队、类型都是名字，日期是 `YYYY-MM-DD`，详情另带上级链、直接任务与最近 20 条进展说明，不带 `org_id` 等内部字段）。
+
 目标类型（ADR 0023）：`type_id` 指向组织自己维护的一张词表（`/org/goal-types`），可空——空表示「未分类」。目标对象上另给 `type: {id,name,color,icon} | null`，是这个类型**当前**的显示信息。类型**只做分类与显示**：不决定流程（目标本来就没有流程）、不决定权限、成本归口与可见范围。已停用的类型新建时选不到、也不能被指到别的目标上，但已经挂着它的目标照常显示，改这些目标的别的字段不受影响。改动记一条 `GoalFieldChanged`（`field: "type_id"`，`from_title` / `to_title` 是当时的类型名）：「把目标「X」的类型从「项目」改成了「产品」」「把目标「X」的类型设为「产品」」「清空了目标「X」的类型」。类型改名只改显示，不动历史。
 
 **默认时间粒度的预填**：类型上可以带一个 `default_precision`。`POST /goals` 时如果给了 `type_id`、该类型的 `default_precision` 非空、且这次**没有**显式带 `date_precision`，服务端就把它作为这个目标的时间粒度预填进去。这件事在**应用层**（`app.CreateGoal`）做，不是数据库默认值，也不是校验规则：它只是「预填」，建完之后可以逐个目标改；`PATCH /goals/{id}` 换类型时**不会**动已有目标的时间粒度。
@@ -64,7 +66,7 @@
 | POST | `/milestones/{id}/reach` | 确认已达到 → 里程碑 |
 | POST | `/milestones/{id}/unreach` | 撤销确认 |
 
-动态种类：`MilestoneCreated`、`MilestoneUpdated`、`MilestoneReached`、`MilestoneUnreached`、`MilestoneDeleted`，摘要按语言渲染并带目标标题与日期。Agent 走待确认操作时的动作名：`milestone.create / update / delete / reach / unreach`。MCP 新增 `list_milestones`、`create_milestone`、`reach_milestone`。目标删除会连带删除其里程碑（里程碑是目标的一部分）；"有子目标或任务不能删"的规则不变。
+动态种类：`MilestoneCreated`、`MilestoneUpdated`、`MilestoneReached`、`MilestoneUnreached`、`MilestoneDeleted`，摘要按语言渲染并带目标标题与日期。Agent 走待确认操作时的动作名：`milestone.create / update / delete / reach / unreach`。MCP：`list_milestones`、`create_milestone`、`reach_milestone`、`update_milestone`、`delete_milestone`、`unreach_milestone`（后两个对 Agent 一律待确认）。目标删除会连带删除其里程碑（里程碑是目标的一部分）；"有子目标或任务不能删"的规则不变。
 
 ## 任务
 
@@ -90,10 +92,10 @@
 | GET | `/tasks/{id}` | 任务详情；`{id}` 为纯数字时按序号查（`/tasks/123`） |
 | GET | `/task-by-number/{n}` | 按序号查任务详情（`123` 或 `#123`）。原计划的 `/tasks/by-number/{n}` 与 `/tasks/{id}/workflow` 在路由上冲突，改用这条 |
 | GET | `/tasks/{id}/links` | 任务上的外部链接（ADR 0020）→ `[外部链接]` |
-| POST | `/tasks/{id}/links` | `{kind: pr\|issue\|doc\|design\|other（默认 other）, url, title?}` → 外部链接。`url` 必须是 http / https；同一任务同一地址只有一条（重复即更新）。Agent 与发评论同一套规则：要有「执行任务」授权，是「需要人确认」时返回 202 的待确认操作。动态 `ExternalLinkAdded` / `ExternalLinkUpdated` |
+| POST | `/tasks/{id}/links` | `{kind: pr\|issue\|doc\|design\|other（默认 other）, url, title?}` → 外部链接。`url` 必须是 http / https；同一任务同一地址只有一条（重复即更新）。Agent 与发评论同一套规则：要有「执行任务」授权，是「需要人确认」时返回 202 的待确认操作（挂 `task.external_link`，摘 `task.external_link_remove`）。挂与摘都收 `dry_run` 与 `idempotency_key`。动态 `ExternalLinkAdded` / `ExternalLinkUpdated` / `ExternalLinkRemoved`。MCP：`list_task_links`、`add_external_link`、`remove_external_link` |
 | DELETE | `/tasks/{id}/links/{link_id}` | 204。动态 `ExternalLinkRemoved`；没有 → 404「没有这条外部链接。」 |
 | PATCH | `/tasks/{id}` | 同上字段的子集（含 `parent_id`：换上级任务，空字符串表示提为顶级；`required_capabilities`；`estimate` 与 `estimate_hours` 等价）。已结束的任务只能改 `description` 与 `fields`（`err.task_closed_edit`）。每个字段的改动各产生一条动态 `TaskFieldChanged`（`data{title, goal_id?, field, from, to, from_title?, to_title?, label?, slot?, key?}`；工作量与迭代沿用 `PointsChanged` / `TaskAddedToSprint` / `TaskRemovedFromSprint`），句子含旧值与新值；`estimate` / `planned_start` / `planned_end` 传 `null` 表示清空。人只能改与自己有关的任务（负责人、创建者、验收人、参与人、所属目标的负责人链）或是组织负责人（`err.task_edit_forbidden`）。Agent 只能改自己负责或自己创建的任务，需要「执行任务」授权；`reviewer_id` / `priority` / `goal_id` / `parent_id` / `sprint_id` / `participants` / `required_capabilities` / `human_only` 对 Agent 一律拒绝（ADR 0003 实现补记） |
-| GET | `/tasks/{id}/workflow` | `{task_id, state, active_run{id,executor_id}, transitions[{name,title,to,available,needs_approval?,reasons[],requires[comment|result],label_to}], can_begin, begin_reasons[], can_claim, claim_reasons[], progress}`。`needs_approval` 为真表示这一步可以走，但触发者（Agent）的授权是「需要人确认」，走它会先生成一条待确认操作 |
+| GET | `/tasks/{id}/workflow` | `{task_id, state, active_run{id,executor_id}, transitions[{name,title,to,available,needs_approval?,reasons[],requires[comment|result],label_to}], can_begin, begin_reasons[], can_claim, claim_reasons[], progress, is_reviewer, review_accept_step?, review_reject_step?}`。`is_reviewer` 是「我（或我的所有者）是不是验收人」，两个 `review_*_step` 是现在能走的验收通过 / 打回那一步的名字（按步骤自己的声明挑：要「验收」授权、去向是不是已完成类型的状态），没有就不给；MCP 的 `review_task(decision: accept\|reject, comment, checked_deliverables[])` 就按它们走，内部是同一段 `Transition`。`needs_approval` 为真表示这一步可以走，但触发者（Agent）的授权是「需要人确认」，走它会先生成一条待确认操作 |
 | GET | `/tasks/{id}/brief` | 任务说明（给执行者的完整背景） |
 | POST | `/tasks/{id}/transitions/{name}` | `{comment?, result?}` → 任务 |
 | POST | `/tasks/{id}/claim` | → 任务 |
@@ -323,7 +325,7 @@ Agent 侧：任何写操作若命中「需要人确认」的授权，HTTP 返回
 
 动态种类新增：`ProposalCreated`、`ProposalApproved`、`ProposalRejected`、`ProposalExpired`（七天没人确认自动作废，由后台巡检产生）。确认后执行产生的动态照常记在 Agent 名下，并在摘要里带上「经<确认人>确认」。
 
-会走待确认操作的动作（`action` 取值）：`task.transition`、`task.claim`、`task.begin`、`task.assign`、`task.comment`、`task.note`、`task.artifact`、`task.link`、`task.create`、`task.create_subtask`、`goal.create`、`milestone.create`、`milestone.update`、`milestone.delete`、`milestone.reach`、`milestone.unreach`（里程碑动作的 `target` 是所属目标，`payload.milestone_id` 指向那条里程碑）、`task_type.save`、`sprint.start`、`sprint.close`。每条另有 `action_title`（当前语言的动作名）、`status_title`、`can_decide`（当前登录者能否确认）。`task_type.save`、`sprint.start`、`sprint.close` 需要「管理流程」权限才能确认，其余只有 Agent 的所有者与组织负责人能确认。
+会走待确认操作的动作（`action` 取值）：`task.transition`、`task.claim`、`task.begin`、`task.assign`、`task.comment`、`task.note`、`task.artifact`、`task.link`、`task.external_link`、`task.external_link_remove`、`task.update`、`task.create`、`task.create_subtask`、`goal.create`、`goal.update`、`goal.achieve`、`goal.unachieve`、`goal.abandon`、`goal.restart`（`payload{goal_id, input}`；负责人、上级、团队与状态的改动对 Agent 一律待确认，不看授权模式）、`goal.horizon`、`goal.rank`（整批一条，`payload` 是整批输入，没有单个 `target`）、`goal.note`、`milestone.create`、`milestone.update`、`milestone.delete`、`milestone.reach`、`milestone.unreach`（里程碑动作的 `target` 是所属目标，`payload.milestone_id` 指向那条里程碑；删除与撤销达到对 Agent 一律待确认）、`task_type.save`、`sprint.start`、`sprint.close`。每条另有 `action_title`（当前语言的动作名）、`status_title`、`can_decide`（当前登录者能否确认）。`task_type.save`、`sprint.start`、`sprint.close` 需要「管理流程」权限才能确认，其余只有 Agent 的所有者与组织负责人能确认。
 
 ## Agent 与成员
 

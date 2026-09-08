@@ -852,6 +852,10 @@ type WorkflowView struct {
 	CanClaim    bool             `json:"can_claim"`
 	ClaimWhyNot []string         `json:"claim_reasons,omitempty"`
 	Progress    int              `json:"progress"`
+	// 验收契约（Agent 能力补齐）：我是不是验收人；现在能走的验收通过 / 打回两步的名字（没有就空）。
+	IsReviewer   bool   `json:"is_reviewer"`
+	ReviewAccept string `json:"review_accept_step,omitempty"`
+	ReviewReject string `json:"review_reject_step,omitempty"`
 }
 
 // StateView 是状态的展示形式（已按请求者语言渲染）。
@@ -913,5 +917,7 @@ func (a *App) workflowView(c *domain.Context, sess *Session) *WorkflowView {
 	v.CanBegin = len(v.BeginWhyNot) == 0
 	v.ClaimWhyNot = domain.RenderReasons(loc, domain.CanClaim(c, actor))
 	v.CanClaim = len(v.ClaimWhyNot) == 0
+	v.IsReviewer = domain.IsReviewer(c.Task, actor)
+	v.ReviewAccept, v.ReviewReject = domain.ReviewStep(c, true), domain.ReviewStep(c, false)
 	return v
 }

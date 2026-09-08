@@ -21,11 +21,60 @@ type BulkGoalHorizonInput struct {
 
 // BulkGoalHorizon 把一批目标放进同一个时间桶。
 func (a *App) BulkGoalHorizon(ctx context.Context, sess *Session, in BulkGoalHorizonInput) (*BulkResult, error) {
+	return idempotent(ctx, a, sess, "set_goal_horizon", in, func() (*BulkResult, error) {
+		return a.bulkGoalHorizon(ctx, sess, in)
+	})
+}
+
+// goalBatchGate 是批量改目标（时间桶、次序）对 Agent 的闸：要有「创建目标」授权，授权是「需要人确认」时
+// 整批记成一条待确认操作（人一次确认一整批，而不是逐个目标确认）。挂之前先数一遍这批里有几个是
+// 改得动的：一个都改不动就不挂（直接往下走，结果里逐个写明跳过的理由），说明句子里写的也是改得动的个数。
+func (a *App) goalBatchGate(ctx context.Context, sess *Session, action string, ids []string, payload any, summary func(n int) i18n.Msg) error {
+	if !sess.IsAgent() {
+		return nil
+	}
+	if !sess.Actor.HasGrant(domain.GrantCreateGoal) {
+		return Forbidden("err.agent_no_grant", i18n.Key("grant.create_goal"))
+	}
+	if !domain.NeedsApproval(sess.Actor, domain.GrantCreateGoal) {
+		return nil
+	}
+	editable := 0
+	if err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+		seen := map[string]bool{}
+		for _, id := range ids {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			g, err := a.Store.GoalByID(ctx, tx, id)
+			if err == nil && a.canEditGoal(ctx, tx, sess, g) {
+				editable++
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if editable == 0 {
+		return nil
+	}
+	return a.proposeOrFail(ctx, sess, func(tx pgx.Tx) (proposalDraft, error) {
+		return proposalDraft{Action: action, Grant: domain.GrantCreateGoal, TargetKind: "goal", Payload: payload, Summary: summary(editable)}, nil
+	})
+}
+
+func (a *App) bulkGoalHorizon(ctx context.Context, sess *Session, in BulkGoalHorizonInput) (*BulkResult, error) {
 	if !domain.ValidHorizon(in.Horizon) {
 		return nil, goalPlanErr(domain.ValidateGoalPlan(in.Horizon, "", "", ""))
 	}
 	if len(in.IDs) == 0 {
 		return nil, Bad("err.bulk_empty")
+	}
+	if err := a.goalBatchGate(ctx, sess, ActionGoalHorizon, in.IDs, in, func(n int) i18n.Msg {
+		return i18n.M("proposal.summary.goal.horizon", n, i18n.Key(horizonKey(in.Horizon)))
+	}); err != nil {
+		return nil, err
 	}
 	loc := sess.Loc()
 	out := &BulkResult{Skipped: []BulkSkip{}}

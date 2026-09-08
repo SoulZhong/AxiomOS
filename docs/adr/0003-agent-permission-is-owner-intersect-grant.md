@@ -33,3 +33,13 @@ status: accepted
 - 外部操作者绑定成员时（`external_identities`，`kind = git_user`），动态显示成那个人，但那只是署名：他的角色与权限不参与这次迁移的判定。
 
 **Agent 挂外部链接**与发评论同一套规则：要有「执行任务」授权，授权是「需要人确认」时先记一条待确认操作（动作 `task.external_link`），人确认后由系统以 Agent 名义执行。链接只能挂在 Agent 看得见的任务上（可见范围照 ADR 0013 判）。
+
+## 补记（2026-09-08，Agent 能力补齐第一批）
+
+MCP 给 Agent 补齐了目标的读与改、任务编辑、外部链接、里程碑完整生命周期与验收（清单见 `docs/plans/2026-09-agent-capabilities.md`）。新工具沿用本决策，另定三条边界：
+
+- **目标的问责链与结论一律待确认。** `update_goal` 改标题、说明、日期、时间粒度、时间桶、信心度、成果指标、类型按「创建目标」授权的模式走；改**负责人、上级、团队**，以及**达成 / 撤销达成 / 放弃 / 重新开始**（`achieve_goal` 等四个工具），不看授权模式，Agent 一律先记一条待确认操作（动作名 `goal.update / goal.achieve / goal.unachieve / goal.abandon / goal.restart`）。批量改时间桶与重排（`goal.horizon / goal.rank`）整批记成一条，人一次确认一整批。目标的删除不给 Agent。
+- **不可逆与推翻人的结论的动作一律待确认。** 删除里程碑、撤销里程碑的「已达到」（`milestone.delete / milestone.unreach`）对 Agent 不看授权模式。摘外部链接与挂外部链接同一套规则（`task.external_link_remove`）。
+- **验收是一等能力。** `review_task(decision, comment, checked_deliverables)` 按步骤自己的声明（需要「验收」授权、去向状态的类型）挑出验收通过 / 打回那一步，走的是与人完全相同的内核路径；`get_workflow` 给出 `is_reviewer` 与两步的名字。目标的进展说明（`add_goal_note`）与任务上的工作日志同一套规则：要「评论」授权。
+
+「一律待确认」在重放一条已确认的待确认操作时不再拦（会话带着确认人），否则确认会绕成圈。

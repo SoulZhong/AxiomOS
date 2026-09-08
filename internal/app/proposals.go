@@ -32,9 +32,20 @@ const (
 	ActionTaskCreateSubtask = "task.create_subtask"
 	ActionTaskUpdate        = "task.update"
 	ActionGoalCreate        = "goal.create"
-	ActionTaskTypeSave      = "task_type.save"
-	ActionSprintStart       = "sprint.start"
-	ActionSprintClose       = "sprint.close"
+	// 目标的维护（Agent 能力补齐，2026-09-08）：改字段、四个闭环动作、批量改时间桶与重排、写进展说明
+	ActionGoalUpdate    = "goal.update"
+	ActionGoalAchieve   = "goal.achieve"
+	ActionGoalUnachieve = "goal.unachieve"
+	ActionGoalAbandon   = "goal.abandon"
+	ActionGoalRestart   = "goal.restart"
+	ActionGoalHorizon   = "goal.horizon"
+	ActionGoalRank      = "goal.rank"
+	ActionGoalNote      = "goal.note"
+	// 摘外部链接与挂外部链接同一套规则（ADR 0003 第 35 条）
+	ActionTaskExternalLinkRemove = "task.external_link_remove"
+	ActionTaskTypeSave           = "task_type.save"
+	ActionSprintStart            = "sprint.start"
+	ActionSprintClose            = "sprint.close"
 	// 里程碑（ADR 0016）：受「创建目标」授权约束
 	ActionMilestoneCreate  = "milestone.create"
 	ActionMilestoneUpdate  = "milestone.update"
@@ -494,6 +505,31 @@ func (a *App) runProposal(ctx context.Context, sess *Session, p *domain.Proposal
 		return a.Link(ctx, sess, p.TargetID, domain.RelationType(payloadStr(p.Payload, "type")), payloadStr(p.Payload, "other_id"))
 	case ActionTaskExternalLink:
 		return a.AddTaskLink(ctx, sess, p.TargetID, LinkInput{Kind: payloadStr(p.Payload, "kind"), URL: payloadStr(p.Payload, "url"), Title: payloadStr(p.Payload, "title")})
+	case ActionTaskExternalLinkRemove:
+		if err := a.RemoveTaskLink(ctx, sess, p.TargetID, payloadStr(p.Payload, "link_id")); err != nil {
+			return nil, err
+		}
+		return map[string]any{"removed": payloadStr(p.Payload, "link_id")}, nil
+	case ActionGoalUpdate, ActionGoalAchieve, ActionGoalUnachieve, ActionGoalAbandon, ActionGoalRestart:
+		var gp goalPatchPayload
+		if err := fromPayload(p.Payload, &gp); err != nil || gp.GoalID == "" {
+			return nil, Bad("err.proposal_action", p.Action)
+		}
+		return a.UpdateGoal(ctx, sess, gp.GoalID, gp.Input)
+	case ActionGoalHorizon:
+		var in BulkGoalHorizonInput
+		if err := fromPayload(p.Payload, &in); err != nil {
+			return nil, Bad("err.proposal_action", p.Action)
+		}
+		return a.BulkGoalHorizon(ctx, sess, in)
+	case ActionGoalRank:
+		var in GoalRankInput
+		if err := fromPayload(p.Payload, &in); err != nil {
+			return nil, Bad("err.proposal_action", p.Action)
+		}
+		return a.SetGoalRanks(ctx, sess, in)
+	case ActionGoalNote:
+		return a.AddGoalNote(ctx, sess, payloadStr(p.Payload, "goal_id"), payloadStr(p.Payload, "text"))
 	case ActionTaskUpdate:
 		var in UpdateTaskInput
 		if err := fromPayload(p.Payload, &in); err != nil {

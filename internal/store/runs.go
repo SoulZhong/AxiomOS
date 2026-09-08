@@ -190,6 +190,31 @@ func (s *Store) ListEvents(ctx context.Context, q Querier, taskID string, limit 
 	return out, rows.Err()
 }
 
+// ListEventsByGoal 取挂在某个目标上的动态（目标创建、字段修改、里程碑、进展说明），按时间倒序。
+// 目标类动态没有 task_id，目标在 data.goal_id 里。
+func (s *Store) ListEventsByGoal(ctx context.Context, q Querier, goalID string, limit int) ([]*EventRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := q.Query(ctx, `select id,type,coalesce(task_id,''),coalesce(actor_id,''),at,data from events where data->>'goal_id'=$1 order by id desc limit $2`, goalID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*EventRow
+	for rows.Next() {
+		e := &EventRow{}
+		var data []byte
+		if err := rows.Scan(&e.ID, &e.Type, &e.TaskID, &e.ActorID, &e.At, &data); err != nil {
+			return nil, err
+		}
+		e.Data = map[string]any{}
+		_ = json.Unmarshal(data, &e.Data)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // ---------- 通知 ----------
 
 func (s *Store) InsertNotification(ctx context.Context, q Querier, orgID string, n domain.Notification) error {
