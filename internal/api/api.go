@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	auth("POST /api/v1/tasks/{id}/artifacts", s.artifact)
 	auth("POST /api/v1/tasks/{id}/comments", s.comment)
 	auth("POST /api/v1/tasks/{id}/relations", s.relation)
+	auth("DELETE /api/v1/tasks/{id}/relations/{type}/{other_id}", s.unlink)
 	auth("POST /api/v1/tasks/{id}/heartbeat", s.heartbeat)
 
 	auth("GET /api/v1/backlog", s.backlog)
@@ -775,6 +776,27 @@ func (s *Server) comment(w http.ResponseWriter, r *http.Request) {
 		kind = "note"
 	}
 	writeJSON(w, 200, CommentV{ID: c.ID, Kind: kind, Author: rf.must(c.ByID), Body: c.Text, CreatedAt: c.CreatedAt})
+}
+
+// unlink 解除本任务指向另一个任务的一条关联（DELETE /tasks/{id}/relations/{type}/{other_id}）。
+func (s *Server) unlink(w http.ResponseWriter, r *http.Request) {
+	sess := sessionOf(r)
+	id, err := s.App.ResolveTaskRef(r.Context(), sess, r.PathValue("id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	other, err := s.App.ResolveTaskRef(r.Context(), sess, r.PathValue("other_id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if _, err := s.App.Unlink(r.Context(), sess, id, relationTypeIn(r.PathValue("type")), other); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	v, err := s.taskDetail(r, id)
+	respond(w, r, v, err)
 }
 
 func (s *Server) relation(w http.ResponseWriter, r *http.Request) {

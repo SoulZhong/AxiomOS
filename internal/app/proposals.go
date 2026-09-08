@@ -43,9 +43,13 @@ const (
 	ActionGoalNote      = "goal.note"
 	// 摘外部链接与挂外部链接同一套规则（ADR 0003 第 35 条）
 	ActionTaskExternalLinkRemove = "task.external_link_remove"
-	ActionTaskTypeSave           = "task_type.save"
-	ActionSprintStart            = "sprint.start"
-	ActionSprintClose            = "sprint.close"
+	// 解除关联（前置关系对 Agent 一律待确认）；迭代的创建与修改按「创建任务」授权
+	ActionTaskUnlink   = "task.unlink"
+	ActionSprintCreate = "sprint.create"
+	ActionSprintUpdate = "sprint.update"
+	ActionTaskTypeSave = "task_type.save"
+	ActionSprintStart  = "sprint.start"
+	ActionSprintClose  = "sprint.close"
 	// 里程碑（ADR 0016）：受「创建目标」授权约束
 	ActionMilestoneCreate  = "milestone.create"
 	ActionMilestoneUpdate  = "milestone.update"
@@ -505,6 +509,20 @@ func (a *App) runProposal(ctx context.Context, sess *Session, p *domain.Proposal
 		return a.Link(ctx, sess, p.TargetID, domain.RelationType(payloadStr(p.Payload, "type")), payloadStr(p.Payload, "other_id"))
 	case ActionTaskExternalLink:
 		return a.AddTaskLink(ctx, sess, p.TargetID, LinkInput{Kind: payloadStr(p.Payload, "kind"), URL: payloadStr(p.Payload, "url"), Title: payloadStr(p.Payload, "title")})
+	case ActionTaskUnlink:
+		return a.Unlink(ctx, sess, p.TargetID, domain.RelationType(payloadStr(p.Payload, "type")), payloadStr(p.Payload, "other_id"))
+	case ActionSprintCreate:
+		var in CreateSprintInput
+		if err := fromPayload(p.Payload, &in); err != nil {
+			return nil, Bad("err.proposal_action", p.Action)
+		}
+		return a.CreateSprint(ctx, sess, in)
+	case ActionSprintUpdate:
+		var sp sprintPatchPayload
+		if err := fromPayload(p.Payload, &sp); err != nil || sp.SprintID == "" {
+			return nil, Bad("err.proposal_action", p.Action)
+		}
+		return a.UpdateSprint(ctx, sess, sp.SprintID, sp.Input)
 	case ActionTaskExternalLinkRemove:
 		if err := a.RemoveTaskLink(ctx, sess, p.TargetID, payloadStr(p.Payload, "link_id")); err != nil {
 			return nil, err

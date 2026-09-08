@@ -40,19 +40,40 @@ type VelocityView struct {
 
 // CreateSprintInput 是创建迭代的输入。
 type CreateSprintInput struct {
-	Name     string
-	Goal     string
-	TeamID   string
-	StartsOn *time.Time
-	EndsOn   *time.Time
+	Name     string     `json:"name"`
+	Goal     string     `json:"goal"`
+	TeamID   string     `json:"team_id"`
+	StartsOn *time.Time `json:"starts_on"`
+	EndsOn   *time.Time `json:"ends_on"`
 }
 
 // UpdateSprintInput 是可修改字段。
 type UpdateSprintInput struct {
-	Name     *string
-	Goal     *string
-	StartsOn *time.Time
-	EndsOn   *time.Time
+	Name     *string    `json:"name"`
+	Goal     *string    `json:"goal"`
+	StartsOn *time.Time `json:"starts_on"`
+	EndsOn   *time.Time `json:"ends_on"`
+}
+
+// sprintPatchPayload 是待确认操作里记下的「改哪个迭代、改什么」。
+type sprintPatchPayload struct {
+	SprintID string            `json:"sprint_id"`
+	Input    UpdateSprintInput `json:"input"`
+}
+
+// sprintPlanGate 是创建 / 修改迭代对 Agent 的闸：迭代是任务的时间盒，按「创建任务」授权走，
+// 授权是「需要人确认」时记一条待确认操作。开始与结束仍按「管理流程」（见 StartSprint / CloseSprint）。
+func (a *App) sprintPlanGate(ctx context.Context, sess *Session, build func(tx pgx.Tx) (proposalDraft, error)) error {
+	if !sess.IsAgent() {
+		return nil
+	}
+	if !sess.Actor.HasGrant(domain.GrantCreateTask) {
+		return Forbidden("err.agent_no_grant", i18n.Key("grant.create_task"))
+	}
+	if domain.NeedsApproval(sess.Actor, domain.GrantCreateTask) {
+		return a.proposeOrFail(ctx, sess, build)
+	}
+	return nil
 }
 
 func sprintErr(errs []error, loc i18n.Locale) error {
@@ -123,6 +144,17 @@ func (a *App) createSprint(ctx context.Context, sess *Session, in CreateSprintIn
 	if err := sprintErr(domain.ValidateSprint(sp), sess.Loc()); err != nil {
 		return nil, err
 	}
+	if err := a.sprintPlanGate(ctx, sess, func(tx pgx.Tx) (proposalDraft, error) {
+		if sp.TeamID != "" {
+			if _, err := teamByID(ctx, tx, a, sp.TeamID); err != nil {
+				return proposalDraft{}, Bad("err.team_missing")
+			}
+		}
+		return proposalDraft{Action: ActionSprintCreate, Grant: domain.GrantCreateTask, TargetKind: "sprint", TargetTitle: sp.Name,
+			Payload: in, Summary: i18n.M("proposal.summary.sprint.create", sp.Name)}, nil
+	}); err != nil {
+		return nil, err
+	}
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
 		if sp.TeamID != "" {
 			if _, err := teamByID(ctx, tx, a, sp.TeamID); err != nil {
@@ -142,6 +174,25 @@ func (a *App) createSprint(ctx context.Context, sess *Session, in CreateSprintIn
 
 // UpdateSprint 修改名称、迭代目标、日期；已结束的不可改。
 func (a *App) UpdateSprint(ctx context.Context, sess *Session, id string, in UpdateSprintInput) (*domain.Sprint, error) {
+	return idempotent(ctx, a, sess, "update_sprint", sprintPatchPayload{SprintID: id, Input: in}, func() (*domain.Sprint, error) {
+		return a.updateSprint(ctx, sess, id, in)
+	})
+}
+
+func (a *App) updateSprint(ctx context.Context, sess *Session, id string, in UpdateSprintInput) (*domain.Sprint, error) {
+	if err := a.sprintPlanGate(ctx, sess, func(tx pgx.Tx) (proposalDraft, error) {
+		sp, err := a.Store.SprintByID(ctx, tx, id)
+		if err != nil {
+			return proposalDraft{}, NotFound("err.sprint_missing")
+		}
+		if sp.Status == domain.SprintClosed {
+			return proposalDraft{}, Bad("err.sprint_closed")
+		}
+		return proposalDraft{Action: ActionSprintUpdate, Grant: domain.GrantCreateTask, TargetKind: "sprint", TargetID: sp.ID, TargetTitle: sp.Name,
+			Payload: sprintPatchPayload{SprintID: sp.ID, Input: in}, Summary: i18n.M("proposal.summary.sprint.update", sp.Name)}, nil
+	}); err != nil {
+		return nil, err
+	}
 	var sp *domain.Sprint
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
 		var err error

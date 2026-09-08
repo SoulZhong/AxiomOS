@@ -191,6 +191,10 @@ func TestEveryMCPWriteToolDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	linked := w.task(t, w.jia, "有关联的任务", w.jia.MemberID)
+	if _, err := a.Link(ctx, w.jia, linked.ID, domain.RelationBlocks, other.ID); err != nil {
+		t.Fatal(err)
+	}
 	submitted := w.task(t, w.jia, "等验收的任务", w.jia.MemberID)
 	if _, err := a.Transition(ctx, w.jia, submitted.ID, "start", app.TransitionPayload{}); err != nil {
 		t.Fatal(err)
@@ -218,6 +222,9 @@ func TestEveryMCPWriteToolDryRunWritesNothing(t *testing.T) {
 		"add_external_link":       {"task_id": mine.ID, "url": "https://example.com/pr/1", "kind": "pr"},
 		"remove_external_link":    {"task_id": mine.ID, "link_id": link.ID},
 		"update_milestone":        {"milestone_id": ms.ID, "title": "改过的里程碑"},
+		"create_sprint":           {"name": "不该出现的迭代", "starts_on": dayFrom(30).Format("2006-01-02"), "ends_on": dayFrom(43).Format("2006-01-02")},
+		"update_sprint":           {"sprint_id": sp.ID, "name": "改过的迭代"},
+		"unlink_tasks":            {"task_id": linked.ID, "type": "blocks", "other_id": other.ID},
 		"delete_milestone":        {"milestone_id": ms.ID},
 		"unreach_milestone":       {"milestone_id": reached.ID},
 		"claim_task":              {"task_id": free.ID},
@@ -240,7 +247,7 @@ func TestEveryMCPWriteToolDryRunWritesNothing(t *testing.T) {
 	// 唯一不收 dry_run 的写类工具：心跳是 Agent 每 60 秒自动打的，"先念给人听再做"这件事
 	// 对它没有意义。它写的那点东西（执行记录的最后心跳、累计用量）走的是 persist，真要
 	// 从 HTTP 那侧带着 dry_run 过来也一行不落。
-	noDryRunTool := map[string]string{"heartbeat": "Agent 自动打的心跳，不需要预演"}
+	noDryRunTool := map[string]string{"heartbeat": "Agent 自动打的心跳，不需要预演", "mark_notifications_read": "把通知标成已读，读状态不记动态（与 HTTP 同一条例外）"}
 
 	tools := dryRunTools(t, w, w.jia)
 	if len(tools) == 0 {
@@ -452,39 +459,45 @@ func TestEveryHTTPWriteEndpointDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 一条任务关联，解除才有东西可解
+	linked := w.task(t, w.jia, "接口层有关联的任务", w.jia.MemberID)
+	if _, err := a.Link(ctx, w.jia, linked.ID, domain.RelationBlocks, other.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	covered := map[string]struct {
 		path string
 		body any
 	}{
-		"POST /api/v1/goals":                          {"/goals", map[string]any{"title": "不该出现的目标"}},
-		"PUT /api/v1/goals/horizon":                   {"/goals/horizon", map[string]any{"ids": []string{goal.ID, g2.ID}, "horizon": "now"}},
-		"PUT /api/v1/goals/rank":                      {"/goals/rank", map[string]any{"ids": []string{goal.ID, g2.ID}}},
-		"PATCH /api/v1/goals/{id}":                    {"/goals/" + goal.ID, map[string]any{"title": "改过的目标"}},
-		"DELETE /api/v1/goals/{id}":                   {"/goals/" + g2.ID, nil},
-		"POST /api/v1/goals/{id}/milestones":          {"/goals/" + goal.ID + "/milestones", map[string]any{"title": "不该出现的里程碑", "due_on": dayFrom(25).Format("2006-01-02")}},
-		"PATCH /api/v1/milestones/{id}":               {"/milestones/" + ms.ID, map[string]any{"title": "改过的里程碑"}},
-		"DELETE /api/v1/milestones/{id}":              {"/milestones/" + ms.ID, nil},
-		"POST /api/v1/milestones/{id}/reach":          {"/milestones/" + ms.ID + "/reach", nil},
-		"POST /api/v1/milestones/{id}/unreach":        {"/milestones/" + reached.ID + "/unreach", nil},
-		"POST /api/v1/tasks":                          {"/tasks", map[string]any{"title": "不该出现的任务", "goal_id": goal.ID}},
-		"PATCH /api/v1/tasks/{id}":                    {"/tasks/" + mine.ID, map[string]any{"title": "改过的任务"}},
-		"POST /api/v1/tasks/{id}/transitions/{name}":  {"/tasks/" + mine.ID + "/transitions/start", nil},
-		"POST /api/v1/tasks/{id}/claim":               {"/tasks/" + free.ID + "/claim", nil},
-		"POST /api/v1/tasks/{id}/begin":               {"/tasks/" + beginnable.ID + "/begin", nil},
-		"POST /api/v1/tasks/{id}/assign":              {"/tasks/" + free.ID + "/assign", map[string]any{"executor_id": w.yi.MemberID}},
-		"POST /api/v1/tasks/{id}/artifacts":           {"/tasks/" + running.ID + "/artifacts", map[string]any{"type": "result", "title": "结果说明", "ref": "https://example.com/r"}},
-		"POST /api/v1/tasks/{id}/heartbeat":           {"/tasks/" + running.ID + "/heartbeat", map[string]any{}},
-		"POST /api/v1/tasks/{id}/comments":            {"/tasks/" + mine.ID + "/comments", map[string]any{"text": "一句话"}},
-		"POST /api/v1/tasks/{id}/relations":           {"/tasks/" + mine.ID + "/relations", map[string]any{"type": "blocks", "other_id": other.ID}},
-		"POST /api/v1/tasks/{id}/links":               {"/tasks/" + mine.ID + "/links", map[string]any{"kind": "pr", "url": "https://example.com/pr/1"}},
-		"DELETE /api/v1/tasks/{id}/links/{link_id}":   {"/tasks/" + mine.ID + "/links/" + link.ID, nil},
-		"POST /api/v1/sprints":                        {"/sprints", map[string]any{"name": "不该出现的迭代", "starts_on": dayFrom(30).Format("2006-01-02"), "ends_on": dayFrom(43).Format("2006-01-02")}},
-		"PATCH /api/v1/sprints/{id}":                  {"/sprints/" + sp.ID, map[string]any{"name": "改过的迭代"}},
-		"POST /api/v1/sprints/{id}/start":             {"/sprints/" + sp.ID + "/start", nil},
-		"POST /api/v1/sprints/{id}/close":             {"/sprints/" + sp.ID + "/close", map[string]any{"unfinished": "backlog"}},
-		"POST /api/v1/sprints/{id}/tasks":             {"/sprints/" + sp.ID + "/tasks", map[string]any{"task_ids": []string{mine.ID}}},
-		"DELETE /api/v1/sprints/{id}/tasks/{task_id}": {"/sprints/" + sp.ID + "/tasks/" + other.ID, nil},
+		"POST /api/v1/goals":                                    {"/goals", map[string]any{"title": "不该出现的目标"}},
+		"PUT /api/v1/goals/horizon":                             {"/goals/horizon", map[string]any{"ids": []string{goal.ID, g2.ID}, "horizon": "now"}},
+		"PUT /api/v1/goals/rank":                                {"/goals/rank", map[string]any{"ids": []string{goal.ID, g2.ID}}},
+		"PATCH /api/v1/goals/{id}":                              {"/goals/" + goal.ID, map[string]any{"title": "改过的目标"}},
+		"DELETE /api/v1/goals/{id}":                             {"/goals/" + g2.ID, nil},
+		"POST /api/v1/goals/{id}/milestones":                    {"/goals/" + goal.ID + "/milestones", map[string]any{"title": "不该出现的里程碑", "due_on": dayFrom(25).Format("2006-01-02")}},
+		"PATCH /api/v1/milestones/{id}":                         {"/milestones/" + ms.ID, map[string]any{"title": "改过的里程碑"}},
+		"DELETE /api/v1/milestones/{id}":                        {"/milestones/" + ms.ID, nil},
+		"POST /api/v1/milestones/{id}/reach":                    {"/milestones/" + ms.ID + "/reach", nil},
+		"POST /api/v1/milestones/{id}/unreach":                  {"/milestones/" + reached.ID + "/unreach", nil},
+		"POST /api/v1/tasks":                                    {"/tasks", map[string]any{"title": "不该出现的任务", "goal_id": goal.ID}},
+		"PATCH /api/v1/tasks/{id}":                              {"/tasks/" + mine.ID, map[string]any{"title": "改过的任务"}},
+		"POST /api/v1/tasks/{id}/transitions/{name}":            {"/tasks/" + mine.ID + "/transitions/start", nil},
+		"POST /api/v1/tasks/{id}/claim":                         {"/tasks/" + free.ID + "/claim", nil},
+		"POST /api/v1/tasks/{id}/begin":                         {"/tasks/" + beginnable.ID + "/begin", nil},
+		"POST /api/v1/tasks/{id}/assign":                        {"/tasks/" + free.ID + "/assign", map[string]any{"executor_id": w.yi.MemberID}},
+		"POST /api/v1/tasks/{id}/artifacts":                     {"/tasks/" + running.ID + "/artifacts", map[string]any{"type": "result", "title": "结果说明", "ref": "https://example.com/r"}},
+		"POST /api/v1/tasks/{id}/heartbeat":                     {"/tasks/" + running.ID + "/heartbeat", map[string]any{}},
+		"POST /api/v1/tasks/{id}/comments":                      {"/tasks/" + mine.ID + "/comments", map[string]any{"text": "一句话"}},
+		"POST /api/v1/tasks/{id}/relations":                     {"/tasks/" + mine.ID + "/relations", map[string]any{"type": "blocks", "other_id": other.ID}},
+		"DELETE /api/v1/tasks/{id}/relations/{type}/{other_id}": {"/tasks/" + linked.ID + "/relations/blocks/" + other.ID, nil},
+		"POST /api/v1/tasks/{id}/links":                         {"/tasks/" + mine.ID + "/links", map[string]any{"kind": "pr", "url": "https://example.com/pr/1"}},
+		"DELETE /api/v1/tasks/{id}/links/{link_id}":             {"/tasks/" + mine.ID + "/links/" + link.ID, nil},
+		"POST /api/v1/sprints":                                  {"/sprints", map[string]any{"name": "不该出现的迭代", "starts_on": dayFrom(30).Format("2006-01-02"), "ends_on": dayFrom(43).Format("2006-01-02")}},
+		"PATCH /api/v1/sprints/{id}":                            {"/sprints/" + sp.ID, map[string]any{"name": "改过的迭代"}},
+		"POST /api/v1/sprints/{id}/start":                       {"/sprints/" + sp.ID + "/start", nil},
+		"POST /api/v1/sprints/{id}/close":                       {"/sprints/" + sp.ID + "/close", map[string]any{"unfinished": "backlog"}},
+		"POST /api/v1/sprints/{id}/tasks":                       {"/sprints/" + sp.ID + "/tasks", map[string]any{"task_ids": []string{mine.ID}}},
+		"DELETE /api/v1/sprints/{id}/tasks/{task_id}":           {"/sprints/" + sp.ID + "/tasks/" + other.ID, nil},
 	}
 
 	// 名单要齐：路由表里每一条写路由，要么在这里走一遍，要么在 notDryRunnable 里写明为什么不走。

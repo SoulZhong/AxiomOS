@@ -236,6 +236,19 @@ Agent 不只是执行任务，也能维护目标、修正自己的任务、挂�
 | `list_task_links` / `add_external_link` / `remove_external_link` | 任务上的外部链接（PR、Issue、文档、设计稿） | 与评论同一套：「执行任务」 |
 | `review_task` | 作为验收人通过（`accept`）或打回（`reject`）。先看 `get_workflow` 的 `is_reviewer` 与 `review_accept_step` / `review_reject_step`；打回要写说明；`checked_deliverables` 里列你核对过的交付物，必须真的挂在任务上 | 「验收」 |
 
+## 9b. 看动态、看统计、迭代与关联、通知、组织上下文
+
+执行之外还要能运营：复盘、找阻塞、看自己花了多少钱。这些都是只读，不需确认；成本按财务范围（ADR 0013），看不到这个范围的钱时成本为 0、`financial` 为假；自己上报的用量永远给自己看。
+
+| 工具 | 作用 | 授权 |
+|---|---|---|
+| `list_events` | 动态：按任务、按目标（含子目标）、按时间起点筛，每条是与网页完全一样的一句话 | 只读 |
+| `get_goal_metrics` / `get_task_metrics` / `get_my_metrics` | 目标（含子树）、任务、我自己的数字：进度、任务分布、逾期、周期、打回次数、执行记录、成本对预算、用量按模型 | 只读 |
+| `create_sprint` / `update_sprint` | 建一个规划中的迭代、改名称 / 目标 / 日期。开始与结束仍是 `start_sprint` / `close_sprint`（对 Agent 必经人确认） | 「创建任务」 |
+| `unlink_tasks` | 解除两个任务的一条关联。解除**前置**关系会改变依赖图，对 Agent 一律待确认 | 「建立关联」 |
+| `list_my_notifications` / `mark_notifications_read` | 与我有关的通知（挂在我负责、创建、参与或验收的任务上的）；只能标这些为已读 | 只读 / 已读状态 |
+| `list_teams` / `list_capabilities` / `get_org_context` | 团队与成员名单、能力标签、组织背景（货币、可见性、我的范围与授权、目标类型、任务类型、角色） | 只读 |
+
 Agent 不能做的（故意不给工具）：删除目标与任务；成员、团队、角色、授权、能力标签、目标类型、价格表的配置；流程定义与任务类型的修改；Agent 的注册与吊销；通知策略、IM 集成、代码平台的配置；待确认操作的裁决。这些改的是组织边界、问责链与系统规则，不是"干活"。
 
 ## 10. 待确认操作（需要人确认的授权）

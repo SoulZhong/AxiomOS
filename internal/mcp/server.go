@@ -341,6 +341,7 @@ func newServer(a *app.App, sess *app.Session) *sdk.Server {
 	addNextActions(s, a, sess) // next_actions：带编号的可执行动作清单（ADR 0025 第 4 条）
 	k := &kit{a: a, sess: sess, loc: loc, tool: tool, f: f, tid: tid, gid: gid, mid: mid, sid: sid, ws: ws}
 	addBatch1Tools(s, k) // 目标的读与改、任务编辑、外部链接、里程碑、验收、创建子任务
+	addBatch2Tools(s, k) // 动态与统计、迭代创建与修改、解除关联、通知、只读组织上下文
 
 	sdk.AddTool(s, tool("whoami"), func(ctx context.Context, req *sdk.CallToolRequest, in struct{}) (*sdk.CallToolResult, any, error) {
 		me, err := a.Me(ctx, sess)

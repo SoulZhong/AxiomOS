@@ -107,6 +107,7 @@ var catalog = map[string]Text{
 	"reject.self_link":          T("任务不能和自己关联", "A task cannot be linked to itself"),
 	"reject.cycle":              T("前置关系会绕成圈，拒绝", "This predecessor relation would create a cycle"),
 	"reject.dup_relation":       T("这条关联已经存在", "This relation already exists"),
+	"reject.no_relation":        T("这两个任务之间没有这条关联", "There is no such relation between these two tasks"),
 	"reject.needs_approval":     T("「%s」这项授权是「需要人确认」，要等人确认后才会执行", "The \"%s\" grant is set to require human confirmation, so this runs only after someone confirms it"),
 	"reject.task_closed":        T("任务已经结束，不能再领取、开始或推进。", "The task is finished; it can no longer be claimed, started or advanced."),
 	"err.task_hidden":           T("这个任务不在你能看到的范围里。", "This task is outside what you can see."),
@@ -715,6 +716,9 @@ var catalog = map[string]Text{
 	"proposal.action.goal.rank":                 T("重排目标次序", "Reorder goals"),
 	"proposal.action.goal.note":                 T("写目标进展", "Write a goal progress note"),
 	"proposal.action.task.external_link_remove": T("摘掉外部链接", "Remove an external link"),
+	"proposal.action.task.unlink":               T("解除关联", "Unlink tasks"),
+	"proposal.action.sprint.create":             T("创建迭代", "Create a sprint"),
+	"proposal.action.sprint.update":             T("修改迭代", "Edit a sprint"),
 
 	"proposal.summary.task.transition":           T("确认后会把任务「%s」从「%s」推进到「%s」。", "Once confirmed, task \"%s\" will move from \"%s\" to \"%s\"."),
 	"proposal.summary.task.claim":                T("确认后 %s 会领取任务「%s」并成为它的负责人。", "Once confirmed, %s will claim task \"%s\" and become its assignee."),
@@ -747,6 +751,9 @@ var catalog = map[string]Text{
 	"proposal.summary.goal.rank":                 T("确认后会重新排 %d 个目标的次序。", "Once confirmed, %d goals will be reordered."),
 	"proposal.summary.goal.note":                 T("确认后会以 %s 的名义在目标「%s」上写一条进展说明。", "Once confirmed, %s will write a progress note on goal \"%s\"."),
 	"proposal.summary.task.external_link_remove": T("确认后会摘掉任务「%[1]s」上的外部链接「%[2]s」。", "Once confirmed, the external link \"%[2]s\" will be removed from task \"%[1]s\"."),
+	"proposal.summary.task.unlink":               T("确认后会解除任务「%[1]s」指向任务「%[3]s」的「%[2]s」关联。", "Once confirmed, the \"%[2]s\" relation from task \"%[1]s\" to task \"%[3]s\" will be removed."),
+	"proposal.summary.sprint.create":             T("确认后会创建迭代「%s」。", "Once confirmed, sprint \"%s\" will be created."),
+	"proposal.summary.sprint.update":             T("确认后会修改迭代「%s」。", "Once confirmed, sprint \"%s\" will be edited."),
 
 	// 就地编辑：每个字段的改动各一条动态（GoalFieldChanged / TaskFieldChanged）
 	"err.goal_parent_cycle":       T("不能把目标挂到它自己或它的子目标下面。", "A goal cannot be placed under itself or one of its sub-goals."),
@@ -844,6 +851,7 @@ var catalog = map[string]Text{
 	"will.task.note":                 T("在任务「%s」上写一条工作日志（不通知人）", "write a work note on task \"%s\" (nobody is notified)"),
 	"will.task.link":                 T("给任务「%s」建立关联", "link task \"%s\""),
 	"will.task.link_to":              T("把任务「%s」和任务「%s」建立「%s」关联", "link task \"%s\" and task \"%s\" as \"%s\""),
+	"will.task.unlink_from":          T("解除任务「%s」和任务「%s」的「%s」关联", "remove the \"%[3]s\" relation between task \"%[1]s\" and task \"%[2]s\""),
 	"will.task.unlink":               T("解除任务「%s」作为前置的关联", "release the predecessor relations of task \"%s\""),
 	"will.task.backlog":              T("把任务「%s」退回待领取任务", "send task \"%s\" back to the unclaimed tasks"),
 	"will.task.points":               T("改掉任务「%s」的工作量", "change the points of task \"%s\""),

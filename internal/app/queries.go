@@ -945,6 +945,16 @@ func (a *App) Events(ctx context.Context, sess *Session, taskID string, limit in
 		if err != nil {
 			return err
 		}
+		// 指名一个任务时先判它在不在可见域里（ADR 0013）：拿着 ID 不能绕过范围
+		if taskID != "" {
+			t, err := a.Store.TaskByID(ctx, tx, taskID)
+			if err != nil {
+				return err
+			}
+			if err := a.requireTaskVisible(ctx, tx, sess, t); err != nil {
+				return err
+			}
+		}
 		rows, err := a.Store.ListEvents(ctx, tx, taskID, limit)
 		if err != nil {
 			return err

@@ -252,6 +252,8 @@ func TestRejectionsSayTheSameThingOnBothSurfaces(t *testing.T) {
 			httpCode: 409, method: "POST", path: "/tasks/" + tGrant.ID + "/comments", body: map[string]any{"body": "你好"}, tool: "add_comment", args: map[string]any{"task_id": tGrant.ID, "text": "你好"}},
 		{name: "范围不可见", token: tokExec, expect: func(l i18n.Locale) string { return i18n.Tr(l, "err.task_hidden") },
 			httpCode: 403, method: "GET", path: "/tasks/" + tHidden.ID, tool: "get_task", args: map[string]any{"task_id": tHidden.ID}},
+		{name: "范围不可见·动态", token: tokExec, expect: func(l i18n.Locale) string { return i18n.Tr(l, "err.task_hidden") },
+			httpCode: 403, method: "GET", path: "/events?task=" + tHidden.ID, tool: "list_events", args: map[string]any{"task_id": tHidden.ID}},
 		{name: "不存在", token: tokExec, expect: func(l i18n.Locale) string { return i18n.Tr(l, "err.not_found") },
 			httpCode: 404, method: "GET", path: "/tasks/tsk_nope", tool: "get_task_brief", args: map[string]any{"task_id": "tsk_nope"}},
 		{name: "需要确认", token: tokApproval, expect: func(l i18n.Locale) string { return i18n.Trf(l, "proposal.pending_msg", "乙") }, prefix: true,

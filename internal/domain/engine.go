@@ -807,3 +807,27 @@ func ReviewStep(c *Context, accept bool) string {
 func IsReviewer(t *Task, actor *Executor) bool {
 	return isPrincipal(actor, t.ReviewerID)
 }
+
+// Unlink 解除一条关联（与 Link 同一项「建立关联」授权）。关联不存在是一句完整的拒绝理由。
+func Unlink(c *Context, actor *Executor, typ RelationType, otherID string) (*Outcome, error) {
+	if actor.Kind == ExecutorAgent && !actor.HasGrant(GrantLink) {
+		return nil, reject("reject.agent_no_grant", i18n.Key("grant.link"))
+	}
+	idx := -1
+	for i, r := range c.Task.Relations {
+		if r.Type == typ && r.OtherID == otherID {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return nil, reject("reject.no_relation")
+	}
+	if NeedsApproval(actor, GrantLink) {
+		return nil, needsApproval(GrantLink)
+	}
+	c.Task.Relations = append(c.Task.Relations[:idx:idx], c.Task.Relations[idx+1:]...)
+	c.Task.UpdatedAt = c.now()
+	o := &Outcome{Task: c.Task}
+	o.emit(c, "RelationRemoved", actor.ID, map[string]any{"type": string(typ), "other_id": otherID})
+	return o, nil
+}

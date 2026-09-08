@@ -103,6 +103,7 @@
 | POST | `/tasks/{id}/assign` | `{executor_id}` → 任务 |
 | POST | `/tasks/{id}/artifacts` | `{type, title, url}` → 交付物 |
 | POST | `/tasks/{id}/comments` | `{body, kind?: comment|note}` → 评论 |
+| DELETE | `/tasks/{id}/relations/{type}/{other_id}` | 解除本任务指向另一个任务的一条关联 → 任务详情。人要与任务有关；Agent 要「建立关联」授权，解除 `blocks` 一律 202 待确认（`task.unlink`）；没有这条关联 → 409「这两个任务之间没有这条关联」。收 `dry_run` 与 `idempotency_key`。动态 `RelationRemoved`。MCP：`unlink_tasks` |
 | POST | `/tasks/{id}/relations` | `{type, from_task_id, to_task_id}`（一端必须是本任务）→ 关联 |
 | POST | `/tasks/{id}/heartbeat` | `{usage[]}` 累计用量（Agent 用） |
 
@@ -132,7 +133,9 @@
 
 流程定义的状态新增可选字段 `wip_limit`（整数）。动态种类新增：`SprintCreated`、`SprintStarted`、`SprintClosed`、`TaskAddedToSprint`、`TaskRemovedFromSprint`、`PointsChanged`，摘要按语言渲染。
 
-MCP 工具新增：`list_sprints`、`get_sprint`（含燃尽）、`add_tasks_to_sprint`、`remove_task_from_sprint`、`get_board`；`start_sprint` / `close_sprint` 对 Agent 走需确认（返回待确认操作）。
+MCP 工具新增：`list_sprints`、`get_sprint`（含燃尽）、`add_tasks_to_sprint`、`remove_task_from_sprint`、`get_board`；`start_sprint` / `close_sprint` 对 Agent 走需确认（返回待确认操作）。`create_sprint` / `update_sprint`（2026-09-08）：Agent 要「创建任务」授权，授权是需要人确认时走待确认操作（`sprint.create` / `sprint.update`）；`PATCH /sprints/{id}` 也收 `idempotency_key`。
+
+**观测类 MCP 工具（2026-09-08，只读）**：`list_events(task_id?, goal_id?, since?, limit?)` 返回 `[{id, kind, at, actor, task_id, task_number, task_title, goal_id, summary}]`，句子由 `app.EventSummary` 渲染（`/events` 用的同一个函数，从接口层挪到了应用层）；`get_goal_metrics(goal_id)`、`get_task_metrics(task_id)`、`get_my_metrics()` 各自返回一组数字（进度、任务按状态类型的分布、逾期与无人认领、周期、打回次数、执行记录分布、成本与按模型的用量、预算对照）。成本按财务范围：看不到时成本为 0 且 `financial: false`；自己上报的用量永远给自己。`list_my_notifications` / `mark_notifications_read`：Agent 没有收件箱，看的是所有者通知里挂在自己负责、创建、参与或验收的任务上的那些，也只能标这些为已读。`list_teams`、`list_capabilities`、`get_org_context`：组织背景，不开写入。
 
 ## MCP 与界面同一套解释（功能规划第 9 项）
 
@@ -325,7 +328,7 @@ Agent 侧：任何写操作若命中「需要人确认」的授权，HTTP 返回
 
 动态种类新增：`ProposalCreated`、`ProposalApproved`、`ProposalRejected`、`ProposalExpired`（七天没人确认自动作废，由后台巡检产生）。确认后执行产生的动态照常记在 Agent 名下，并在摘要里带上「经<确认人>确认」。
 
-会走待确认操作的动作（`action` 取值）：`task.transition`、`task.claim`、`task.begin`、`task.assign`、`task.comment`、`task.note`、`task.artifact`、`task.link`、`task.external_link`、`task.external_link_remove`、`task.update`、`task.create`、`task.create_subtask`、`goal.create`、`goal.update`、`goal.achieve`、`goal.unachieve`、`goal.abandon`、`goal.restart`（`payload{goal_id, input}`；负责人、上级、团队与状态的改动对 Agent 一律待确认，不看授权模式）、`goal.horizon`、`goal.rank`（整批一条，`payload` 是整批输入，没有单个 `target`）、`goal.note`、`milestone.create`、`milestone.update`、`milestone.delete`、`milestone.reach`、`milestone.unreach`（里程碑动作的 `target` 是所属目标，`payload.milestone_id` 指向那条里程碑；删除与撤销达到对 Agent 一律待确认）、`task_type.save`、`sprint.start`、`sprint.close`。每条另有 `action_title`（当前语言的动作名）、`status_title`、`can_decide`（当前登录者能否确认）。`task_type.save`、`sprint.start`、`sprint.close` 需要「管理流程」权限才能确认，其余只有 Agent 的所有者与组织负责人能确认。
+会走待确认操作的动作（`action` 取值）：`task.transition`、`task.claim`、`task.begin`、`task.assign`、`task.comment`、`task.note`、`task.artifact`、`task.link`、`task.external_link`、`task.external_link_remove`、`task.unlink`（解除前置关系对 Agent 一律待确认）、`task.update`、`task.create`、`task.create_subtask`、`sprint.create`、`sprint.update`（按「创建任务」授权）、`goal.create`、`goal.update`、`goal.achieve`、`goal.unachieve`、`goal.abandon`、`goal.restart`（`payload{goal_id, input}`；负责人、上级、团队与状态的改动对 Agent 一律待确认，不看授权模式）、`goal.horizon`、`goal.rank`（整批一条，`payload` 是整批输入，没有单个 `target`）、`goal.note`、`milestone.create`、`milestone.update`、`milestone.delete`、`milestone.reach`、`milestone.unreach`（里程碑动作的 `target` 是所属目标，`payload.milestone_id` 指向那条里程碑；删除与撤销达到对 Agent 一律待确认）、`task_type.save`、`sprint.start`、`sprint.close`。每条另有 `action_title`（当前语言的动作名）、`status_title`、`can_decide`（当前登录者能否确认）。`task_type.save`、`sprint.start`、`sprint.close` 需要「管理流程」权限才能确认，其余只有 Agent 的所有者与组织负责人能确认。
 
 ## Agent 与成员
 
