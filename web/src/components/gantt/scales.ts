@@ -27,11 +27,14 @@ export const scaleTitle = (s: Scale) => t(`gantt.zoom.${s}`);
 /** 季 / 年：任务收敛为汇总条 + 密度热度 */
 export const isMacro = (s: Scale) => s === "quarter" || s === "year";
 
-/** 由连续的 dayW 推出档位：对数空间里取最近的标准值 */
-export function scaleFor(dayW: number): Scale {
-  let best: Scale = "day";
+/**
+ * 由连续的 dayW 推出档位：对数空间里取最近的标准值。
+ * allowed 只在调用方限档时传（路线图只开周 / 月 / 季度 / 年，最细到周，ADR 0022）。
+ */
+export function scaleFor(dayW: number, allowed: readonly Scale[] = SCALES): Scale {
+  let best: Scale = allowed[0] ?? "day";
   let bestD = Infinity;
-  for (const s of SCALES) {
+  for (const s of allowed) {
     const d = Math.abs(Math.log(dayW) - Math.log(SCALE_DAY_W[s]));
     if (d < bestD) {
       bestD = d;
@@ -72,8 +75,12 @@ export interface Header {
 const HOUR = 3600_000;
 const DAY = 86400_000;
 
-/** 生成两层表头 + 刻度尺 + 图区竖线。from 是范围起点（当天 0 点），days 是范围天数。 */
-export function buildHeader(scale: Scale, from: Date, days: number, dayW: number, now: Date): Header {
+/**
+ * 生成两层表头 + 刻度尺 + 图区竖线。from 是范围起点（当天 0 点），days 是范围天数。
+ * minUnit 是最小格：默认 "day"（甘特图）；路线图传 "week"，周档的下层换成周而不是天——
+ * 路线图上永远不出现某一天（ADR 0022），下层画日号就等于把日期写在了表头上。
+ */
+export function buildHeader(scale: Scale, from: Date, days: number, dayW: number, now: Date, minUnit: "day" | "week" = "day"): Header {
   const top: Cell[] = [];
   const bottom: Cell[] = [];
   const ruler: Tick[] = [];
@@ -141,6 +148,25 @@ export function buildHeader(scale: Scale, from: Date, days: number, dayW: number
       const d = addDays(from, i);
       ruler.push({ x: xOfDay(i), major: d.getDay() === 1 });
       columns.push({ x: xOfDay(i), major: d.getDate() === 1 });
+    }
+  } else if (scale === "week" && minUnit === "week") {
+    // 路线图的周档：上层月、下层周，一格都不到天。周的写法与月 / 季度档一致：
+    // 含月初的那一周写月份名，其余写周一的日号——路线图上不出现"某月某日"（ADR 0022）
+    top.push(...months());
+    bottom.push(
+      ...weeks((m) => {
+        const end = addDays(m, 6);
+        if (m.getDate() === 1) return monthName(m.getMonth() + 1);
+        if (end.getMonth() !== m.getMonth()) return monthName(end.getMonth() + 1);
+        return String(m.getDate());
+      }),
+    );
+    for (let i = 0; i < days; i++) {
+      const d = addDays(from, i);
+      if (d.getDay() === 1 || d.getDate() === 1) {
+        ruler.push({ x: xOfDay(i), major: d.getDate() === 1 });
+        columns.push({ x: xOfDay(i), major: d.getDate() === 1 });
+      }
     }
   } else if (scale === "week") {
     top.push(...weeks((m) => t("gantt.hdr.week", { start: `${m.getMonth() + 1}/${m.getDate()}`, end: `${addDays(m, 6).getMonth() + 1}/${addDays(m, 6).getDate()}` })));

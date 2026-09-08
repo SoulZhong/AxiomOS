@@ -16,11 +16,12 @@ import { Avatar, Button, ConsequenceDialog, Empty, ErrorBox, ListSkeleton, Panel
 
 /**
  * 「目标 · 树」（DESIGN.md §9）：树形行，缩进 20px/层带引导线；每行给任务完成数、状态摘要句、计划区间、预算与已花，右侧弧形仪表。
- * 甘特图页签（§11、ADR 0016）另由 GoalsGantt 提供；两者读同一批目标与范围。
+ * 路线图页签（§25、ADR 0022）另由 roadmap/RoadmapView 提供；两者读同一批目标、同一个范围与同一个类型筛选。
+ * type = 地址栏的 ?type=<id>（或 none）：直接交给 GET /goals?type=，命中的目标各自做顶级，子树照旧。
  */
-export function TreeView({ reloadKey, highlight, onAddChild, onNew }: { reloadKey: number; highlight: string | null; onAddChild: (parentId: string) => void; onNew: () => void }) {
+export function TreeView({ reloadKey, highlight, type, onAddChild, onNew, onClearType }: { reloadKey: number; highlight: string | null; type: string | null; onAddChild: (parentId: string) => void; onNew: () => void; onClearType: () => void }) {
   const { session } = useSession();
-  const goals = useLoad(() => api.goals.list(), [reloadKey]);
+  const goals = useLoad(() => api.goals.list(type ? { type } : {}), [reloadKey, type]);
   // 目标行要说清"下一步做什么"，需要它名下任务的分布：一次拉全量任务在前端按目标树汇总
   const tasks = useLoad(() => api.tasks.list({ limit: 500 }), [reloadKey]);
   const types = useTaskTypeIndex();
@@ -82,7 +83,12 @@ export function TreeView({ reloadKey, highlight, onAddChild, onNew }: { reloadKe
         ) : goals.error ? (
           <div className="p-4"><ErrorBox message={goals.error} onRetry={goals.reload} /></div>
         ) : flat.length === 0 ? (
-          <Empty text={t("goals.empty")} action={<Button variant="primary" icon={<IconPlus />} onClick={onNew}>{t("goals.new")}</Button>} />
+          // 「一个目标都没有」与「这个类型下没有」是两回事：后者请他去掉类型筛选
+          type ? (
+            <Empty text={t("roadmap.emptyFiltered")} action={<Button onClick={onClearType}>{t("roadmap.clearFilters")}</Button>} />
+          ) : (
+            <Empty text={t("goals.empty")} action={<Button variant="primary" icon={<IconPlus />} onClick={onNew}>{t("goals.new")}</Button>} />
+          )
         ) : (
           <ul>
             {(goals.data ?? []).map((g) => (

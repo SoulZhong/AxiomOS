@@ -3,7 +3,7 @@ import { t } from "@/lib/i18n";
 import { cx } from "@/components/ui";
 
 /** 接入向导的五步（DESIGN.md §21）：选运行环境 → 执行命令 → 批准授权 → 连接检查 → 试领任务。 */
-export const CONNECT_STEPS = ["client", "command", "approve", "check", "try"] as const;
+export const CONNECT_STEPS = ["link", "approve", "check", "try"] as const;
 export type ConnectStep = (typeof CONNECT_STEPS)[number];
 
 /** 步骤条：已完成的实心、当前的 accent、之后的灰；等宽两位序号。 */

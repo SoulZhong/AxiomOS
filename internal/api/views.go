@@ -328,28 +328,36 @@ type GrantV struct {
 }
 
 type AgentV struct {
-	ID             string      `json:"id"`
-	Name           string      `json:"name"`
-	Owner          ExecutorRef `json:"owner"`
-	Shared         bool        `json:"shared"`
-	Capabilities   []string    `json:"capabilities"`
-	Grants         []GrantV    `json:"grants"`
-	Online         bool        `json:"online"`
-	LastSeenAt     *string     `json:"last_seen_at"`
-	MaxConcurrency int         `json:"max_concurrency"`
-	Runtime        string      `json:"runtime"`
-	CreatedAt      time.Time   `json:"created_at"`
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	Owner        ExecutorRef `json:"owner"`
+	Shared       bool        `json:"shared"`
+	Capabilities []string    `json:"capabilities"`
+	Grants       []GrantV    `json:"grants"`
+	// State / StateTitle 是对外的状态：执行中 / 可用 / 已停用（CONTEXT.md「Agent 状态」）。
+	State      domain.AgentState `json:"state"`
+	StateTitle string            `json:"state_title"`
+	// Online 是旧口径（最近有没有心跳），只为兼容旧客户端保留，界面不再用它。
+	Online bool `json:"online"`
+	// LastActiveAt 是最近一次活动：心跳与最近一次工具调用里更晚的那个。
+	LastSeenAt     *string   `json:"last_seen_at"`
+	LastActiveAt   *string   `json:"last_active_at"`
+	MaxConcurrency int       `json:"max_concurrency"`
+	Runtime        string    `json:"runtime"`
+	CreatedAt      time.Time `json:"created_at"`
 	// CanManage：当前用户能否修改 / 吊销它（所有者、组织负责人或持「组织设置」权限的成员）
 	CanManage bool `json:"can_manage"`
 }
 
-func agentView(a *domain.Agent, r refs, now time.Time, canManage bool) AgentV {
+func agentView(a *domain.Agent, r refs, now time.Time, canManage bool, st app.AgentStatus) AgentV {
 	grants := []GrantV{}
 	for g, m := range a.Grants {
 		grants = append(grants, GrantV{Name: g, Mode: m})
 	}
 	sort.Slice(grants, func(i, j int) bool { return grants[i].Name < grants[j].Name })
-	return AgentV{ID: a.ID, Name: a.Name, Owner: r.must(a.OwnerMemberID), Shared: a.Shared, Capabilities: a.Capabilities, Grants: grants, Online: a.Online(now), LastSeenAt: timeStr(a.LastSeenAt), MaxConcurrency: a.MaxConcurrent, Runtime: a.Runtime, CreatedAt: a.CreatedAt, CanManage: canManage}
+	return AgentV{ID: a.ID, Name: a.Name, Owner: r.must(a.OwnerMemberID), Shared: a.Shared, Capabilities: a.Capabilities, Grants: grants,
+		State: st.State, StateTitle: st.Title, Online: a.Online(now), LastSeenAt: timeStr(a.LastSeenAt), LastActiveAt: timeStr(st.LastActiveAt),
+		MaxConcurrency: a.MaxConcurrent, Runtime: a.Runtime, CreatedAt: a.CreatedAt, CanManage: canManage}
 }
 
 type AgentInputV struct {
@@ -400,17 +408,78 @@ type GoalV struct {
 	DoneTaskCount int         `json:"done_task_count"`
 	Children      []GoalV     `json:"children"`
 	CreatedAt     time.Time   `json:"created_at"`
+	// 路线图三字段（ADR 0021）：取值原样给，标题按当前语言渲染，没填时两个都是空串
+	Horizon         string `json:"horizon"`
+	HorizonTitle    string `json:"horizon_title"`
+	Confidence      string `json:"confidence"`
+	ConfidenceTitle string `json:"confidence_title"`
+	Outcome         string `json:"outcome"`
+	// 时间线两字段（ADR 0022）。date_precision 给的是有效值：落库的空一律读作 week，界面上不用再判空。
+	DatePrecision      string   `json:"date_precision"`
+	DatePrecisionTitle string   `json:"date_precision_title"`
+	Rank               *float64 `json:"rank"`
+	// 条画在刻度边界上：这两个字段是按粒度吸附之后的起止（每一档都吸，到周吸到周一与周日），
+	// 服务端算好免得两边算不一样。有日期就有值，画条只看它们；planned_start / planned_end 仍是原值。
+	PlannedStartSnapped *string `json:"planned_start_snapped,omitempty"`
+	PlannedEndSnapped   *string `json:"planned_end_snapped,omitempty"`
+	// 汇总（ADR 0022 第 6 条，只在读时算、不落库）：目标自己没填计划起止时从子目标与任务推出来的日期，
+	// 以及「这一端是推出来的吗」——为真的那一端画斜纹 / 渐隐。
+	DerivedStart *string  `json:"derived_start,omitempty"`
+	DerivedEnd   *string  `json:"derived_end,omitempty"`
+	Derived      DerivedV `json:"derived"`
 	// 里程碑（ADR 0016）：目标自己的，按日期升序
 	Milestones       []MilestoneV      `json:"milestones"`
 	MilestoneSummary MilestoneSummaryV `json:"milestone_summary"`
+	// 目标类型（ADR 0023）：未分类时为 null。只带显示要用的四个字段——类型不带流程，也没有别的行为。
+	Type *GoalTypeRefV `json:"type"`
 }
 
-// goalView 递归转换；actual 从任务实际时间聚合。
-func goalView(g *app.GoalView, r refs, actual map[string][2]*time.Time) GoalV {
+// GoalTypeRefV 是目标身上带的那枚类型标签：只有显示要用的字段。
+type GoalTypeRefV struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+	Icon  string `json:"icon"`
+}
+
+// DerivedV 说的是条的两端各自是不是推算出来的（目标自己没填那一端的日期）。
+type DerivedV struct {
+	Start bool `json:"start"`
+	End   bool `json:"end"`
+}
+
+// goalView 递归转换；actual 从任务实际时间聚合。loc 用来渲染时间桶与信心度的名字（它们只存取值，不存名字）。
+func goalView(g *app.GoalView, r refs, actual map[string][2]*time.Time, loc i18n.Locale) GoalV {
 	v := GoalV{ID: g.ID, Title: g.Title, Description: g.Description, Owner: r.must(g.OwnerMemberID), ParentID: nullable(g.ParentID), TeamID: nullable(g.TeamID),
 		Progress: g.Progress, Achieved: g.Status == domain.GoalAchieved, Status: string(g.Status), Budget: g.Budget, Cost: g.Cost, OverBudget: g.OverBudget,
 		PlannedStart: dateStr(g.Start), PlannedEnd: dateStr(g.End), Deadline: dateStr(g.Deadline), TaskCount: g.TaskCount, DoneTaskCount: g.DoneCount, Children: []GoalV{}, CreatedAt: g.CreatedAt,
-		Milestones: milestoneViews(g.Milestones, r), MilestoneSummary: milestoneSummaryView(g)}
+		Milestones: milestoneViews(g.Milestones, r), MilestoneSummary: milestoneSummaryView(g),
+		Horizon: string(g.Horizon), HorizonTitle: enumTitle(loc, "horizon", string(g.Horizon)),
+		Confidence: string(g.Confidence), ConfidenceTitle: enumTitle(loc, "confidence", string(g.Confidence)), Outcome: g.Outcome,
+		Rank: g.Rank}
+	// 时间线（ADR 0022）：粒度的空值一律读作「到周」
+	p := domain.EffectiveDatePrecision(g.DatePrecision)
+	v.DatePrecision, v.DatePrecisionTitle = string(p), enumTitle(loc, "date_precision", string(p))
+	// 条画在哪：自己填了就用自己的，没填才用推算值，并把「这一端是推出来的」告诉界面
+	start, end := g.PlannedStart, g.PlannedEnd
+	if start == nil && g.DerivedStart != nil {
+		start = g.DerivedStart
+		v.DerivedStart, v.Derived.Start = dateStr(g.DerivedStart), true
+	}
+	if end == nil && g.DerivedEnd != nil {
+		end = g.DerivedEnd
+		v.DerivedEnd, v.Derived.End = dateStr(g.DerivedEnd), true
+	}
+	if start != nil || end != nil {
+		s, e := zeroTime(start), zeroTime(end)
+		s, e = domain.SnapRange(s, e, p)
+		if start != nil {
+			v.PlannedStartSnapped = dateStr(&s)
+		}
+		if end != nil {
+			v.PlannedEndSnapped = dateStr(&e)
+		}
+	}
 	if g.PlannedStart != nil {
 		v.PlannedStart = dateStr(g.PlannedStart)
 	}
@@ -420,10 +489,29 @@ func goalView(g *app.GoalView, r refs, actual map[string][2]*time.Time) GoalV {
 	if a, ok := actual[g.ID]; ok {
 		v.ActualStart, v.ActualEnd = dateStr(a[0]), dateStr(a[1])
 	}
+	if g.Type != nil {
+		v.Type = &GoalTypeRefV{ID: g.Type.ID, Name: g.Type.Name, Color: g.Type.Color, Icon: g.Type.Icon}
+	}
 	for _, c := range g.Children {
-		v.Children = append(v.Children, goalView(c, r, actual))
+		v.Children = append(v.Children, goalView(c, r, actual, loc))
 	}
 	return v
+}
+
+// zeroTime 把「可能没有的日期」摊平成零值，交给 domain.SnapRange 判断这一端要不要算。
+func zeroTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// enumTitle 渲染写死词表（时间桶、信心度、时间粒度）的名字；空值没有名字。
+func enumTitle(loc i18n.Locale, kind, v string) string {
+	if v == "" {
+		return ""
+	}
+	return i18n.Tr(loc, kind+"."+v)
 }
 
 // actualSpans 计算每个目标（含子树）任务的实际起止。
@@ -487,12 +575,22 @@ type GoalInputV struct {
 	Achieved     *bool    `json:"achieved"`
 	// "active" | "abandoned"：放弃目标 / 重新开始（"achieved" 请用 achieved 字段）
 	Status *string `json:"status"`
+	// 目标类型（ADR 0023）："" 表示清空（未分类）
+	TypeID *string `json:"type_id"`
+	// 路线图三字段（ADR 0021）："" 表示清空（未排期 / 没填 / 去掉成果指标）
+	Horizon    *string `json:"horizon"`
+	Confidence *string `json:"confidence"`
+	Outcome    *string `json:"outcome"`
+	// 时间线两字段（ADR 0022）：时间粒度 "" 与 "week" 等价（在时间线上拖条就是送 "week"）；
+	// 排序权重传 null 表示清空，改回按日期与创建时间排
+	DatePrecision *string  `json:"date_precision"`
+	Rank          OptFloat `json:"rank"`
 }
 
 // toUpdate 把接口层的目标输入换成应用层的修改输入：null / "" 的日期与 null 的预算表示清空；
 // 计划结束同时也是截止日（与创建时一致），显式带了 deadline 时以 deadline 为准。
 func (in GoalInputV) toUpdate() (app.UpdateGoalInput, error) {
-	ui := app.UpdateGoalInput{Title: in.Title, Description: in.Description, OwnerMemberID: in.OwnerID, TeamID: in.TeamID, ParentID: in.ParentID}
+	ui := app.UpdateGoalInput{Title: in.Title, Description: in.Description, OwnerMemberID: in.OwnerID, TeamID: in.TeamID, TypeID: in.TypeID, ParentID: in.ParentID}
 	if in.Budget.Set {
 		if in.Budget.V == nil {
 			ui.Clear = append(ui.Clear, "budget")
@@ -527,6 +625,26 @@ func (in GoalInputV) toUpdate() (app.UpdateGoalInput, error) {
 		}
 		ui.Status = &st
 	}
+	if in.Horizon != nil {
+		h := domain.GoalHorizon(*in.Horizon)
+		ui.Horizon = &h
+	}
+	if in.Confidence != nil {
+		c := domain.GoalConfidence(*in.Confidence)
+		ui.Confidence = &c
+	}
+	if in.DatePrecision != nil {
+		p := domain.DatePrecision(*in.DatePrecision)
+		ui.DatePrecision = &p
+	}
+	if in.Rank.Set {
+		if in.Rank.V == nil {
+			ui.Clear = append(ui.Clear, "rank")
+		} else {
+			ui.Rank = in.Rank.V
+		}
+	}
+	ui.Outcome = in.Outcome
 	if in.Status != nil {
 		// 只开放「放弃」与「重新开始」；达成走 achieved 字段，草稿不从这里改
 		switch *in.Status {
@@ -1357,6 +1475,11 @@ func eventSummary(e *store.EventRow, r refs, taskTitle map[string]string, roles 
 			}
 		}
 		return i18n.Trf(loc, "ev.WorkspaceRoleBlocks", who, role, titles)
+	case "GoalTypeCreated", "GoalTypeUpdated", "GoalTypeDeactivated", "GoalTypeReactivated", "GoalTypeDeleted":
+		// 目标类型（ADR 0023）：句子里念的是动态里记下的那个名字，之后改名不影响历史
+		return i18n.Trf(loc, "ev."+e.Type, who, s("name"))
+	case "GoalTypeRenamed":
+		return i18n.Trf(loc, "ev.GoalTypeRenamed", who, s("from"), s("name"))
 	case "TeamCreated":
 		return i18n.Trf(loc, "ev.TeamCreated", who, s("name"))
 	case "TeamUpdated":
@@ -1617,7 +1740,7 @@ func fieldChangeSummary(e *store.EventRow, r refs, loc i18n.Locale, who, kind, o
 			return i18n.Trf(loc, "ev.fc.status.unachieved", who, object)
 		}
 		fromS, toS = i18n.Tr(loc, "goal.status."+str(from)), i18n.Tr(loc, "goal.status."+str(to))
-	case "owner_member_id", "team_id", "reviewer_id", "goal_id", "required_capabilities", "participants":
+	case "owner_member_id", "team_id", "type_id", "reviewer_id", "goal_id", "required_capabilities", "participants":
 		fromS, toS = name("from", "from_title"), name("to", "to_title")
 		if field == "participants" {
 			label = textOf(d["label"], loc)
@@ -1627,6 +1750,22 @@ func fieldChangeSummary(e *store.EventRow, r refs, loc i18n.Locale, who, kind, o
 		fromS, toS = str(from), str(to)
 	case "priority":
 		fromS, toS = i18n.Tr(loc, "priority."+str(from)), i18n.Tr(loc, "priority."+str(to))
+	case "horizon", "confidence":
+		// 时间桶与信心度只存取值，名字按当前语言现渲染（ADR 0021）
+		fromS, toS = enumTitle(loc, field, str(from)), enumTitle(loc, field, str(to))
+	case "date_precision":
+		// 时间粒度的空值是「到周」而不是「没有」（ADR 0022）：从没填过或改回最细时也要念出粒度，
+		// 不能说成「清空了时间粒度」
+		prec := func(v any) string {
+			return enumTitle(loc, field, string(domain.EffectiveDatePrecision(domain.DatePrecision(str(v)))))
+		}
+		fromS, toS = prec(from), prec(to)
+	case "outcome":
+		// 成果指标是一句话，写全新的那句就够了，不用把旧句子也念一遍
+		if to == nil || str(to) == "" {
+			return i18n.Trf(loc, "ev.fc.cleared", who, object, label)
+		}
+		return i18n.Trf(loc, "ev.fc.rewrote_q", who, object, label, str(to))
 	case "deadline", "planned_start", "planned_end":
 		quoted = false
 		fromS, toS = i18n.Arg(loc, date(from)).(string), i18n.Arg(loc, date(to)).(string)
@@ -1861,13 +2000,17 @@ type LoadV struct {
 	CapacityHint         string      `json:"capacity_hint"`
 	ActiveRuns           int         `json:"active_runs"`
 	MaxConcurrent        *int        `json:"max_concurrent"`
-	Online               *bool       `json:"online"`
+	// Online 是旧口径，只为兼容保留；对外的状态看 State（CONTEXT.md「Agent 状态」）。
+	Online     *bool  `json:"online"`
+	State      string `json:"state,omitempty"`
+	StateTitle string `json:"state_title,omitempty"`
 }
 
 func loadView(x app.LoadRow) LoadV {
 	return LoadV{Executor: ExecutorRef{ID: x.ExecutorID, Kind: x.Kind, Name: x.Name}, Team: x.Team, TeamID: nullable(x.TeamID),
 		OpenTasks: x.OpenTasks, ActiveTasks: x.ActiveTasks, PointsOpen: x.PointsOpen, PlannedHoursThisWeek: x.PlannedHoursThisWeek,
-		Overdue: x.Overdue, CapacityHint: x.CapacityHint, ActiveRuns: x.ActiveRuns, MaxConcurrent: x.MaxConcurrent, Online: x.Online}
+		Overdue: x.Overdue, CapacityHint: x.CapacityHint, ActiveRuns: x.ActiveRuns, MaxConcurrent: x.MaxConcurrent, Online: x.Online,
+		State: x.State, StateTitle: x.StateTitle}
 }
 
 // proposalSummary 去掉待确认操作摘要句末的句号：摘要本身是一句完整的话，嵌进动态句子里时由模板负责标点，避免出现「。。」。

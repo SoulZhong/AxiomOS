@@ -96,6 +96,12 @@ func main() {
 				} else if n > 0 {
 					log.Printf("组织 %s：%d 条待确认操作因超过七天没人确认而作废", id, n)
 				}
+				// 幂等键（ADR 0025）：过了 24 小时的键清掉，同一个键之后可以重新使用
+				if n, err := a.SweepIdempotencyKeys(ctx, id); err != nil {
+					log.Printf("幂等键巡检 %s: %v", id, err)
+				} else if n > 0 {
+					log.Printf("组织 %s：清掉 %d 个过期的幂等键", id, n)
+				}
 			}
 			// 通知外发（ADR 0019）：刚逾期的任务、刚到期的里程碑排一次提醒（同一事项只一次）
 			for _, id := range orgs {
@@ -138,9 +144,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiSrv.Handler())
 	mux.Handle("/mcp", mcp.Handler(a, apiSrv.Authenticate))
+	// 接入链接的短地址（ADR 0024）：贴给 Agent 的就是它；浏览器打开会跳到前端的 /connect/ 页
+	mux.Handle("GET /connect", apiSrv.ConnectAlias())
 	mux.Handle("/", staticHandler(webDir))
 
-	log.Printf("axiomd 监听 %s；API /api/v1，MCP /mcp，前端目录 %s", addr, webDir)
+	log.Printf("axiomd 监听 %s；API /api/v1，MCP /mcp，接入链接 /connect，前端目录 %s", addr, webDir)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 

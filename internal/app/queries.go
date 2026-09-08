@@ -547,7 +547,8 @@ type StatBucket struct {
 	Tokens int64   `json:"tokens"`
 }
 
-// CostStats 成本按 goal|team|executor|model 分组，按本次请求的范围裁剪。
+// CostStats 成本按 goal|goal_type|team|executor|model 分组，按本次请求的范围裁剪。
+// goal_type 是目标类型（ADR 0023）：没挂目标、或目标没有类型的，都归到「未分类」一档。
 // 这是财务数据：范围越权直接 403（ADR 0013，具体规则看组织的 finance_visibility 策略）。
 func (a *App) CostStats(ctx context.Context, sess *Session, group string) ([]StatBucket, error) {
 	out := []StatBucket{}
@@ -576,8 +577,20 @@ func (a *App) CostStats(ctx context.Context, sess *Session, group string) ([]Sta
 		names, _ := a.Store.ExecutorNames(ctx, tx)
 		goals, _ := a.Store.ListGoals(ctx, tx)
 		goalTitle := map[string]string{}
+		goalType := map[string]string{}
 		for _, g := range goals {
 			goalTitle[g.ID] = g.Title
+			goalType[g.ID] = g.TypeID
+		}
+		typeName := map[string]string{}
+		if group == "goal_type" {
+			types, err := a.Store.ListGoalTypes(ctx, tx)
+			if err != nil {
+				return err
+			}
+			for _, t := range types {
+				typeName[t.ID] = t.Name
+			}
 		}
 		buckets := map[string]*StatBucket{}
 		add := func(key, title string, cost float64, tokens int64) {
@@ -611,6 +624,17 @@ func (a *App) CostStats(ctx context.Context, sess *Session, group string) ([]Sta
 				add(tid, title, r.Cost, tokens)
 			case "executor":
 				add(r.ExecutorID, names[r.ExecutorID], r.Cost, tokens)
+			case "goal_type":
+				// 目标类型只做分类：没挂目标、目标没有类型、类型已被删掉，都算「未分类」
+				tid := ""
+				if t != nil {
+					tid = goalType[t.GoalID]
+				}
+				title := typeName[tid]
+				if title == "" {
+					tid, title = "", i18n.Tr(sess.Loc(), "group.no_goal_type")
+				}
+				add(tid, title, r.Cost, tokens)
 			default:
 				gid := ""
 				if t != nil {

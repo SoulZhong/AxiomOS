@@ -6,7 +6,7 @@ import { api, type AgentCheck, type DeviceApproveInput, type DeviceGrantChoice, 
 import { fmtRelative } from "@/lib/format";
 import { errorMessage, useCapabilityTitles, useLoad, useQueryParam } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
-import { capabilityTitle, GRANT_ORDER, grantTitle } from "@/lib/terms";
+import { agentStateTitle, capabilityTitle, GRANT_ORDER, grantTitle } from "@/lib/terms";
 import { useSession } from "@/components/AppShell";
 import { clientTitle } from "@/components/agents/ConnectWizard";
 import { WizardSteps } from "@/components/agents/WizardSteps";
@@ -21,7 +21,7 @@ const CHOICES: DeviceGrantChoice[] = ["allow", "with_approval", "deny"];
 /**
  * `/agents/connect/?code=ABCD-1234`（DESIGN.md §21，ADR 0018）：人在网页里批准 Agent 接入。
  * 没有 code 就让人输入；有 code 先 GET /agent-auth/device/{code}：待批准 → 表单（名称、能力标签、每项授权三选一、最多同时任务数、是否公共）；
- * 批准后进「连接检查」：每 3 秒问一次 GET /agents/{id}/check，最多 2 分钟，在线后给「试领一个任务」。已拒绝 / 已过期 / 找不到都是一句完整的话。
+ * 批准后进「连接检查」：每 3 秒问一次 GET /agents/{id}/check，最多 2 分钟，收到它的第一次请求后给「试领一个任务」。已拒绝 / 已过期 / 找不到都是一句完整的话。
  */
 export default function ConnectPage() {
   const router = useRouter();
@@ -184,14 +184,15 @@ function ApproveForm({ request, onDecided }: { request: DeviceRequest; onDecided
   );
 }
 
-/** 第四步：连接检查。每 3 秒问一次，最多 2 分钟；在线（或收到过请求）就停下来给第五步。 */
+/** 第四步：连接检查。每 3 秒问一次，最多 2 分钟；收到过它的请求（且没有被停用）就停下来给第五步。
+    MCP 的 Agent 平时不说话，所以判断的是「有没有说过话」，不是「此刻在不在线」（CONTEXT.md「Agent 状态」）。 */
 function CheckStep({ request, agentId, justNow }: { request: DeviceRequest; agentId: string | null; justNow: boolean }) {
   const [check, setCheck] = useState<AgentCheck | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 超时记的是"第几轮"超时了：再检查一次（tick+1）自然清掉
   const [timedOut, setTimedOut] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
-  const done = !!check?.online;
+  const done = !!check?.connected && check.state !== "inactive";
   const isTimedOut = timedOut === tick;
   useEffect(() => {
     if (!agentId || done) return;
@@ -203,7 +204,7 @@ function CheckStep({ request, agentId, justNow }: { request: DeviceRequest; agen
         if (!alive) return;
         setCheck(c);
         setError(null);
-        if (c.online) return;
+        if (c.connected && c.state !== "inactive") return;
       } catch (e) {
         if (alive) setError(errorMessage(e));
       }
@@ -214,18 +215,18 @@ function CheckStep({ request, agentId, justNow }: { request: DeviceRequest; agen
     let timer = window.setTimeout(ask, 0);
     return () => { alive = false; window.clearTimeout(timer); };
   }, [agentId, done, tick]);
-  const tone = done ? "online" : check?.connected ? "warning" : "neutral";
+  const tone = !check?.connected ? "neutral" : check.state === "running" ? "accent" : check.state === "ready" ? "online" : "dark";
   return (
     <Panel index={1} title={done ? t("connect.step.try") : t("connect.step.check")} telemetry={request.agent?.name ?? undefined}>
       <WizardSteps current={done ? "try" : "check"} className="mb-4" />
-      <div data-connect-state={done ? "online" : "checking"} className="space-y-3">
+      <div data-connect-state={done ? "connected" : "checking"} className="space-y-3">
         {justNow && <p className="text-body text-ink">{t("connect.approvedText", { name: request.agent?.name ?? "" })}</p>}
         {!justNow && <p className="text-caption text-ink-subtle">{t("connect.alreadyApproved", { who: request.approved_by?.name ?? "", name: request.agent?.name ?? "" })}</p>}
         <div className="flex items-start gap-2 rounded-md border border-hairline bg-surface-1 px-3 py-2.5">
           <StatusLED tone={tone} className="mt-1.5" />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 text-body text-ink">
-              <span>{done ? t("agents.online") : check?.connected ? t("connect.seenOffline") : t("connect.waitingFirst")}</span>
+              <span>{check?.connected ? agentStateTitle(check.state) : t("connect.waitingFirst")}</span>
               {check?.last_tool && <Tag>{t("connect.lastTool", { tool: check.last_tool })}</Tag>}
               {!done && !isTimedOut && <span className="eyebrow text-ink-tertiary">{t("connect.polling")}</span>}
             </div>

@@ -2,7 +2,7 @@
 import { t } from "@/lib/i18n";
 import { IconChevronLeft, IconChevronRight } from "@/components/icons";
 import { Button, Segmented } from "@/components/ui";
-import { SCALES, scaleTitle } from "./scales";
+import { SCALES, scaleTitle, type Scale } from "./scales";
 import type { GanttScale } from "./useGanttScale";
 
 /*
@@ -11,13 +11,18 @@ import type { GanttScale } from "./useGanttScale";
  *   - GanttNavControls：上一段 / 今天 / 下一段 + 延长 / 缩短 + 全屏
  */
 
-export function GanttZoomControls({ g, onFit, canFit }: { g: GanttScale; onFit: () => void; canFit: boolean }) {
+/**
+ * scales 是这张图开放的档位（由细到粗），默认六档全开；路线图只传周 / 月 / 季度 / 年（ADR 0022）。
+ * onScale 让调用方在切档时顺便记住选择，不传就直接切。
+ */
+export function GanttZoomControls({ g, onFit, canFit, scales = SCALES, onScale }: { g: GanttScale; onFit: () => void; canFit: boolean; scales?: readonly Scale[]; onScale?: (s: Scale) => void }) {
+  const set = onScale ?? g.setScale;
   return (
     <>
-      <Segmented size="sm" label={t("gantt.zoom")} value={g.scale} options={SCALES.map((z) => [z, scaleTitle(z)])} onChange={g.setScale} aria-label={t("gantt.zoom")} />
+      <Segmented size="sm" label={t("gantt.zoom")} value={g.scale} options={scales.map((z) => [z, scaleTitle(z)])} onChange={set} aria-label={t("gantt.zoom")} />
       <span className="gantt-btns" title={t("gantt.zoomTip")}>
-        <Button size="sm" variant="ghost" onClick={() => g.zoomStep(-1)} disabled={g.scale === "year"} aria-label={t("gantt.zoomOut")} title={t("gantt.zoomOut")}>−</Button>
-        <Button size="sm" variant="ghost" onClick={() => g.zoomStep(1)} disabled={g.scale === "hour"} aria-label={t("gantt.zoomIn")} title={t("gantt.zoomIn")}>+</Button>
+        <Button size="sm" variant="ghost" onClick={() => set(scales[Math.min(scales.length - 1, scales.indexOf(g.scale) + 1)])} disabled={g.scale === scales[scales.length - 1]} aria-label={t("gantt.zoomOut")} title={t("gantt.zoomOut")}>−</Button>
+        <Button size="sm" variant="ghost" onClick={() => set(scales[Math.max(0, scales.indexOf(g.scale) - 1)])} disabled={g.scale === scales[0]} aria-label={t("gantt.zoomIn")} title={t("gantt.zoomIn")}>+</Button>
         <Button size="sm" variant="ghost" onClick={onFit} disabled={!canFit}>{t("gantt.fit")}</Button>
       </span>
     </>

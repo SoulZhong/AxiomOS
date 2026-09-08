@@ -45,6 +45,10 @@ func (s *Server) orgRoutes(mux *http.ServeMux, auth func(string, http.HandlerFun
 	auth("GET /api/v1/org/capabilities", s.orgCapabilities)
 	auth("PUT /api/v1/org/capabilities/{name}", s.orgCapabilityPut)
 	auth("DELETE /api/v1/org/capabilities/{name}", s.orgCapabilityDelete)
+	auth("GET /api/v1/org/goal-types", s.orgGoalTypes)
+	auth("POST /api/v1/org/goal-types", s.orgGoalTypeCreate)
+	auth("PATCH /api/v1/org/goal-types/{id}", s.orgGoalTypePatch)
+	auth("DELETE /api/v1/org/goal-types/{id}", s.orgGoalTypeDelete)
 	auth("GET /api/v1/org/pricing", s.orgPricing)
 	auth("PUT /api/v1/org/pricing/models/{model}", s.orgPricePut)
 	auth("DELETE /api/v1/org/pricing/models/{model}", s.orgPriceDelete)
@@ -585,6 +589,77 @@ func (s *Server) orgCapabilityPut(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) orgCapabilityDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.App.DeleteCapability(r.Context(), sessionOf(r), r.PathValue("name")); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------- 目标类型（ADR 0023）----------
+//
+// 与能力标签、价格表同级的一页组织设置。读：所有登录成员（新建目标要选它）；写：`org_settings`。
+// 这里只有分类与显示需要的字段——类型不带流程，也不决定权限、成本归口与可见范围。
+
+type goalTypeV struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Color            string `json:"color"`
+	Icon             string `json:"icon"`
+	Sort             int    `json:"sort"`
+	Active           bool   `json:"active"`
+	DefaultPrecision string `json:"default_precision"`
+	// GoalCount 是这个类型下面有多少个目标（含已达成、已放弃的）：删之前要看的就是它。
+	GoalCount int `json:"goal_count"`
+}
+
+func goalTypeView(v app.GoalTypeView) goalTypeV {
+	return goalTypeV{ID: v.ID, Name: v.Name, Color: v.Color, Icon: v.Icon, Sort: v.Sort, Active: v.Active,
+		DefaultPrecision: string(v.DefaultPrecision), GoalCount: v.GoalCount}
+}
+
+func (s *Server) orgGoalTypes(w http.ResponseWriter, r *http.Request) {
+	types, err := s.App.ListGoalTypes(r.Context(), sessionOf(r))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out := []goalTypeV{}
+	for _, t := range types {
+		out = append(out, goalTypeView(t))
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *Server) orgGoalTypeCreate(w http.ResponseWriter, r *http.Request) {
+	var in app.GoalTypePatch
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	t, err := s.App.CreateGoalType(r.Context(), sessionOf(r), in)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, 200, goalTypeView(*t))
+}
+
+func (s *Server) orgGoalTypePatch(w http.ResponseWriter, r *http.Request) {
+	var in app.GoalTypePatch
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	t, err := s.App.UpdateGoalType(r.Context(), sessionOf(r), r.PathValue("id"), in)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, 200, goalTypeView(*t))
+}
+
+func (s *Server) orgGoalTypeDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.App.DeleteGoalType(r.Context(), sessionOf(r), r.PathValue("id")); err != nil {
 		writeErr(w, r, err)
 		return
 	}

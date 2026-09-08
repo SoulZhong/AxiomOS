@@ -23,6 +23,9 @@ const str = (v: unknown): string => {
 };
 const empty = (v: unknown) => v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0);
 
+/** 写死词表（时间桶、信心度、时间粒度）的名字：空值没有名字。 */
+const enumTitle = (kind: "horizon" | "confidence" | "date_precision", v: unknown): string => (empty(v) ? "" : t(`${kind}.${str(v)}` as Key));
+
 /** 字段名 → 界面名；自定义字段用「字段名」。 */
 export function fieldLabel(field: string, data: Record<string, unknown>): string {
   if (field === "fields") return `「${str(data.key)}」`;
@@ -62,6 +65,10 @@ export function fieldChangeSentence(e: Pick<Event, "kind" | "data" | "actor" | "
     }
     case "human_only":
       return t(to === true ? "fc.human_only_on" : "fc.human_only_off", { who, obj });
+    // 成果指标是一句话，写全新的那句就够了，不用把旧句子也念一遍（ADR 0021）
+    case "outcome":
+      if (to === null) return t("fc.cleared", { who, obj, field: label });
+      return t("fc.rewrote_q", { who, obj, field: label, to: str(to) });
     case "status":
       if (to === "achieved") return t("fc.status.achieved", { who, obj });
       if (to === "abandoned") return t("fc.status.abandoned", { who, obj });
@@ -77,6 +84,9 @@ export function fieldChangeSentence(e: Pick<Event, "kind" | "data" | "actor" | "
       fromS = name("from", "from_title"); toS = name("to", "to_title"); break;
     case "priority":
       fromS = priorityOf(from); toS = priorityOf(to); break;
+    // 时间桶、信心度与时间粒度只存取值，名字按当前语言现渲染（ADR 0021、0022）
+    case "horizon": case "confidence": case "date_precision":
+      fromS = enumTitle(field, from); toS = enumTitle(field, to); break;
     case "deadline": case "planned_start": case "planned_end":
       quoted = false; fromS = from === null ? "" : fmtDate(str(from)); toS = to === null ? "" : fmtDate(str(to)); break;
     case "budget": {

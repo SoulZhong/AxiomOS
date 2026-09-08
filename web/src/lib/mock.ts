@@ -94,6 +94,14 @@ import type {
   GanttTask,
   Goal,
   GoalInput,
+  GoalConfidence,
+  GoalDatePrecision,
+  GoalHorizon,
+  GoalType,
+  GoalTypeInput,
+  GoalDefaultPrecision,
+  GoalHorizonResult,
+  GoalRankResult,
   Grant,
   GrantName,
   ID,
@@ -175,6 +183,7 @@ import { fieldChangeSentence } from "./fieldChange";
 import { ApiError, BLOCK_KEYS, DEFAULT_PREFERENCES, DEVICE_CLIENTS, GRID_COLS, GRID_MAX_H, INBOX_KINDS, LINK_KINDS, PREF_FIELDS, blocksOverlap, compactLayout, isBlockHeight, isBlockKey, isBlockWidth, normalizeLayout, sameLayout } from "./api";
 import { addDays, diffDays, parseDate, startOfWeek, toISODate, today } from "./format";
 import { getLocale, normalizeLocale, t, type Key, type Locale } from "./i18n";
+import { agentStateTitle } from "./terms";
 
 // ---------- 时间助手 ----------
 const T0 = today();
@@ -233,6 +242,12 @@ const EN: Record<string, string> = {
   "看经营：成本、趋势、负荷与异常。": "Running the business: cost, trend, load and exceptions.",
   // 目标、任务标题（让英文示例看起来自然）
   "Q3 提升用户留存": "Q3: improve retention", "登录体验改版": "Login experience redesign", "支付转化优化": "Checkout conversion", "内部效率工具": "Internal productivity tools",
+  // 目标类型（ADR 0023，「产品」已在角色那一行）与两个还没排期的目标
+  "项目": "Project", "经营目标": "Business goal",
+  "把帮助中心重写一遍": "Rewrite the help centre", "接入第二家短信服务商": "Add a second SMS provider",
+  "自助解决率过半": "More than half of questions answered without a human",
+  "现有文档跟不上版本。": "The docs no longer match the product.",
+  "现在只有一家，出问题没有退路。": "There is only one provider today; if it fails there is no fallback.",
   "登录页改版": "Login page redesign", "金额显示错位": "Amount misaligned", "写周报": "Write weekly report", "整理客户名单": "Clean up customer list", "v2.0 发布": "v2.0 release",
   "导出报表": "Export reports", "写月度总结": "Write monthly summary", "客户访谈纪要": "Customer interview notes", "导出 CSV 乱码": "CSV export garbled", "数据看板原型": "Overview prototype",
   "支付页优化": "Checkout page optimization", "周报模板整理": "Weekly report template", "留存漏斗分析": "Retention funnel analysis",
@@ -559,27 +574,27 @@ const AGENTS: Record<ID, Agent> = {
   "li-agent": {
     id: "li-agent", name: "小李的编码 Agent", owner: ref("li"), shared: false, capabilities: ["coding"],
     grants: [g("execute"), g("claim_backlog"), g("comment"), g("link"), g("review", "with_approval")],
-    online: true, last_seen_at: nowISO(), max_concurrency: 2, runtime: "claude-code", created_at: at(-60), can_manage: true,
+    state: "running", last_active_at: nowISO(), online: true, last_seen_at: nowISO(), max_concurrency: 2, runtime: "claude-code", created_at: at(-60), can_manage: true,
   },
   "zhang-agent": {
     id: "zhang-agent", name: "小张的测试 Agent", owner: ref("zhang"), shared: false, capabilities: ["testing", "coding"],
     grants: [g("execute"), g("claim_backlog"), g("review"), g("comment")],
-    online: true, last_seen_at: at(0, 8, 40), max_concurrency: 1, runtime: "cursor", created_at: at(-45), can_manage: true,
+    state: "ready", last_active_at: at(0, 8, 40), online: true, last_seen_at: at(0, 8, 40), max_concurrency: 1, runtime: "cursor", created_at: at(-45), can_manage: true,
   },
   "wang-agent": {
     id: "wang-agent", name: "小王的写作助手", owner: ref("wang"), shared: false, capabilities: ["writing", "data_analysis"],
     grants: [g("execute"), g("comment"), g("create_task", "with_approval")],
-    online: false, last_seen_at: at(-1, 18), max_concurrency: 1, runtime: "codex", created_at: at(-30), can_manage: true,
+    state: "ready", last_active_at: at(-1, 18), online: false, last_seen_at: at(-1, 18), max_concurrency: 1, runtime: "codex", created_at: at(-30), can_manage: true,
   },
   "zhou-agent": {
     id: "zhou-agent", name: "小周的客服助手", owner: ref("zhou"), shared: false, capabilities: ["writing", "data_analysis"],
     grants: [g("execute"), g("comment")],
-    online: true, last_seen_at: nowISO(), max_concurrency: 2, created_at: at(-25), can_manage: true,
+    state: "running", last_active_at: nowISO(), online: true, last_seen_at: nowISO(), max_concurrency: 2, created_at: at(-25), can_manage: true,
   },
   "shared-doc": {
     id: "shared-doc", name: "公共文档助手", owner: ref("wang"), shared: true, capabilities: ["writing"],
     grants: [g("execute"), g("comment"), g("claim_backlog", "with_approval")],
-    online: true, last_seen_at: nowISO(), max_concurrency: 3, created_at: at(-20), can_manage: true,
+    state: "ready", last_active_at: nowISO(), online: true, last_seen_at: nowISO(), max_concurrency: 3, created_at: at(-20), can_manage: true,
   },
 };
 
@@ -598,6 +613,12 @@ let loggedIn = true;
 interface GoalRow {
   id: ID; title: string; description: string; owner_id: ID; parent_id: ID | null; achieved: boolean; budget: number | null; status?: Goal["status"]; team_id?: ID | null;
   planned_start: string | null; planned_end: string | null; actual_start: string | null; actual_end: string | null; deadline?: string | null; created_at: string;
+  /** 路线图三字段（ADR 0021）：都可空 */
+  horizon?: GoalHorizon; confidence?: GoalConfidence; outcome?: string;
+  /** 时间线两字段（ADR 0022）：时间粒度（空 = 到周）与排序权重 */
+  date_precision?: GoalDatePrecision; rank?: number | null;
+  /** 目标类型（ADR 0023）：组织自己维护的词表，只做分类 */
+  type_id?: ID | null;
 }
 /** 里程碑（ADR 0016）：目标上的一个有日期的节点；状态与"可以确认了"都是算出来的 */
 interface MilestoneRow {
@@ -685,10 +706,11 @@ const runTokens = (r: RunRow) => r.usage.reduce((s, u) => s + u.total_tokens, 0)
 
 // ---------- 种子数据 ----------
 function seed() {
-  addGoal({ id: "G1", title: "Q3 提升用户留存", description: "把次月留存从 31% 提到 38%。", owner_id: "wang", parent_id: null, achieved: false, budget: 5000, planned_start: day(-40), planned_end: day(50), actual_start: day(-38), actual_end: null, created_at: at(-42) });
-  addGoal({ id: "G2", title: "登录体验改版", description: "减少登录流失，支持一键登录。", owner_id: "li", parent_id: "G1", achieved: false, budget: 2000, planned_start: day(-30), planned_end: day(20), actual_start: day(-28), actual_end: null, created_at: at(-32) });
-  addGoal({ id: "G3", title: "支付转化优化", description: "支付页改版与报表导出。", owner_id: "zhang", parent_id: "G1", achieved: false, budget: null, planned_start: day(-10), planned_end: day(45), actual_start: day(-9), actual_end: null, created_at: at(-12) });
-  addGoal({ id: "G4", title: "内部效率工具", description: "周报、月报、看板自动化。", owner_id: "zhao", parent_id: null, achieved: false, budget: 1500, planned_start: day(-20), planned_end: day(60), actual_start: day(-20), actual_end: null, deadline: day(60), created_at: at(-22) });
+  // G1 自己不填计划起止：条从子目标推出来（斜纹 + 标题旁的箭头，ADR 0022 第四种画法）
+  addGoal({ id: "G1", title: "Q3 提升用户留存", description: "把次月留存从 31% 提到 38%。", owner_id: "wang", parent_id: null, achieved: false, budget: 5000, planned_start: null, planned_end: null, actual_start: day(-38), actual_end: null, created_at: at(-42), horizon: "now", confidence: "medium", outcome: "次月留存从 31% 提到 38%" , type_id: "gt-product" });
+  addGoal({ id: "G2", title: "登录体验改版", description: "减少登录流失，支持一键登录。", owner_id: "li", parent_id: "G1", achieved: false, budget: 2000, planned_start: day(-30), planned_end: day(20), actual_start: day(-28), actual_end: null, created_at: at(-32), horizon: "now", confidence: "high", outcome: "登录转化率从 62% 提到 70%，手机号一键登录可用", date_precision: "week", rank: 1000 , type_id: "gt-product" });
+  addGoal({ id: "G3", title: "支付转化优化", description: "支付页改版与报表导出。", owner_id: "zhang", parent_id: "G1", achieved: false, budget: null, planned_start: day(-10), planned_end: day(45), actual_start: day(-9), actual_end: null, created_at: at(-12), horizon: "next", confidence: "low", outcome: "支付页放弃率从 28% 降到 18%", date_precision: "quarter", rank: 2000 , type_id: "gt-product" });
+  addGoal({ id: "G4", title: "内部效率工具", description: "周报、月报、看板自动化。", owner_id: "zhao", parent_id: null, achieved: false, budget: 1500, planned_start: day(-20), planned_end: day(60), actual_start: day(-20), actual_end: null, deadline: day(60), created_at: at(-22), horizon: "later", confidence: "high", outcome: "周报、月报、看板三件事不再有人手工汇总", date_precision: "month" , type_id: "gt-business" });
   // 里程碑（ADR 0016）：与演示库一致——一条已达到、一条未到、一条逾期（且该日期前的任务都已完成 → 可以确认了）
   addMilestone({ id: "M1", goal_id: "G1", title: "登录页改版进入测试", description: "登录页需求开发完成并提测。", due_on: day(-3), reached_at: at(-2, 18), created_at: at(-40) });
   addMilestone({ id: "M2", goal_id: "G1", title: "官网 v2.0 上线", description: "登录页与支付页一起随 v2.0 发布。", due_on: day(30), reached_at: null, created_at: at(-40) });
@@ -762,7 +784,10 @@ function seed() {
   addTask({ id: "T17", goal_id: "G3", type: "generic", title: "报表导出加权限", description: "只有团队负责人能导出全量。", state: "todo", creator_id: "wang", assignee_id: null, reviewer_id: "wang", participants: {}, planned_start: day(3), planned_end: day(9), actual_start: null, actual_end: null, estimate: 4, points: 2, priority: "normal", created_at: at(-1, 16) });
 
   // 服务事业部这条线：另一个共享域的目标与任务，用来看范围切换与各组织单元对比
-  addGoal({ id: "G5", title: "客户满意度提升", description: "把满意度从 82 分提到 90 分。", owner_id: "zhou", parent_id: null, achieved: false, budget: 1200, planned_start: day(-25), planned_end: day(35), actual_start: day(-24), actual_end: null, created_at: at(-26) });
+  addGoal({ id: "G5", title: "客户满意度提升", description: "把满意度从 82 分提到 90 分。", owner_id: "zhou", parent_id: null, achieved: false, budget: 1200, planned_start: day(-25), planned_end: day(35), actual_start: day(-24), actual_end: null, created_at: at(-26), horizon: "now", confidence: "medium", outcome: "满意度从 82 分提到 90 分", date_precision: "half" , type_id: "gt-business" });
+  // 完全没有日期的两个：沉到时间线底部的「还没排期」，右侧是幽灵条（ADR 0022）
+  addGoal({ id: "G6", title: "把帮助中心重写一遍", description: "现有文档跟不上版本。", owner_id: "wang", parent_id: null, achieved: false, budget: null, planned_start: null, planned_end: null, actual_start: null, actual_end: null, created_at: at(-9), confidence: "low", outcome: "自助解决率过半" , type_id: "gt-project" });
+  addGoal({ id: "G7", title: "接入第二家短信服务商", description: "现在只有一家，出问题没有退路。", owner_id: "zhao", parent_id: null, achieved: false, budget: null, planned_start: null, planned_end: null, actual_start: null, actual_end: null, created_at: at(-4), horizon: "later" , type_id: "gt-project" });
   addTask({ id: "T18", goal_id: "G5", type: "generic", title: "回访流失客户", description: "按上月流失名单逐个回访。", state: "in_progress", creator_id: "zhou", assignee_id: "zhou", reviewer_id: "zhou", participants: {}, planned_start: day(-6), planned_end: day(2), actual_start: day(-6), actual_end: null, estimate: 10, points: 5, priority: "high", created_at: at(-7, 9) });
   addTask({ id: "T19", goal_id: "G5", type: "generic", title: "整理常见问题", description: "把工单里重复最多的问题整理成条目。", state: "done", creator_id: "zhou", assignee_id: "sun", reviewer_id: "zhou", participants: {}, planned_start: day(-12), planned_end: day(-8), actual_start: day(-12), actual_end: day(-9), estimate: 6, points: 3, priority: "normal", created_at: at(-13, 9) });
   addTask({ id: "T20", goal_id: "G5", type: "generic", title: "客服话术更新", description: "按新版流程更新话术。", state: "todo", creator_id: "zhou", assignee_id: "chen", reviewer_id: "zhou", participants: {}, planned_start: day(-4), planned_end: day(-1), actual_start: null, actual_end: null, estimate: 4, points: 2, priority: "normal", created_at: at(-9, 9) });
@@ -940,6 +965,19 @@ function milestoneSummary(goalId: ID): MilestoneSummary {
   const next = ms.find((m) => m.status === "upcoming");
   return { total: ms.length, reached: ms.filter((m) => m.status === "reached").length, overdue: ms.filter((m) => m.status === "overdue").length, next: next ? { title: next.title, due_on: next.due_on } : null };
 }
+/**
+ * 目标类型（ADR 0023）：组织自己维护的词表，只做分类、不带流程。
+ * 停用的仍然留在表里（目标身上还挂着它就得显示得出来），选择器自己过滤 active。
+ */
+const GOAL_TYPES: GoalType[] = [
+  { id: "gt-product", name: "产品", color: "#5e6ad2", icon: "blocks", sort: 1, active: true, default_precision: "quarter", goal_count: 0 },
+  { id: "gt-project", name: "项目", color: "#27a644", icon: "gantt", sort: 2, active: true, default_precision: "week", goal_count: 0 },
+  { id: "gt-business", name: "经营目标", color: "#d9a53b", icon: "chart", sort: 3, active: true, default_precision: "quarter", goal_count: 0 },
+];
+const goalTypeRef = (id: ID | null | undefined) => {
+  const x = id ? GOAL_TYPES.find((v) => v.id === id) : undefined;
+  return x ? { id: x.id, name: L(x.name), color: x.color, icon: x.icon } : null;
+};
 function viewGoal(gr: GoalRow, withChildren: boolean): Goal {
   const ids = goalSubtreeIds(gr.id);
   const ts = Object.values(tasks).filter((tk) => tk.goal_id && ids.includes(tk.goal_id));
@@ -955,8 +993,66 @@ function viewGoal(gr: GoalRow, withChildren: boolean): Goal {
     children: withChildren ? Object.values(goals).filter((c) => c.parent_id === gr.id).map((c) => viewGoal(c, true)) : [],
     created_at: gr.created_at,
     milestones: goalMilestones(gr.id).map(viewMilestone), milestone_summary: milestoneSummary(gr.id),
+    // 路线图三字段（ADR 0021）：取值原样给，名字按当前语言渲染，没填时两个都是空串
+    horizon: gr.horizon ?? "", horizon_title: enumTitle("horizon", gr.horizon), confidence: gr.confidence ?? "", confidence_title: enumTitle("confidence", gr.confidence), outcome: gr.outcome ?? "",
+    // 时间线两字段（ADR 0022）：粒度给的是有效值，条画在吸附之后的起止上
+    ...goalTimeline(gr),
+    // 目标类型（ADR 0023）：没分类时是 null
+    type: goalTypeRef(gr.type_id),
   };
 }
+
+/*
+ * 时间线（ADR 0022，与后端 views.go 同一口径）：
+ *   - 目标自己填了计划起止就用自己的，没填才从子目标与任务推——推算值不落库，只是读的时候算一遍；
+ *   - `derived.start` / `derived.end` 说的是"这一头是推出来的"，界面照它画斜纹与渐隐，不去猜 planned_* 是不是空；
+ *   - `planned_*_snapped` 是按粒度吸附之后的起止，每一档都吸（到周吸到周一与周日），画条只看它们。
+ */
+function goalTimeline(gr: GoalRow) {
+  const p: GoalDatePrecision = gr.date_precision || "week";
+  const ids = goalSubtreeIds(gr.id);
+  let ds: string | null = null;
+  let de: string | null = null;
+  const take = (a: string | null | undefined, b: string | null | undefined) => {
+    if (a && (!ds || a < ds)) ds = a;
+    if (b && (!de || b > de)) de = b;
+  };
+  for (const id of ids) {
+    if (id === gr.id) continue;
+    const c = goals[id];
+    if (c) take(c.planned_start, c.planned_end);
+  }
+  for (const tk of Object.values(tasks)) if (tk.goal_id && ids.includes(tk.goal_id)) take(tk.planned_start, tk.planned_end);
+  const derived = { start: !gr.planned_start && !!ds, end: !gr.planned_end && !!de };
+  const start = gr.planned_start ?? (derived.start ? ds : null);
+  const end = gr.planned_end ?? (derived.end ? de : null);
+  return {
+    date_precision: p,
+    date_precision_title: t(`date_precision.${p}` as Key),
+    rank: gr.rank ?? null,
+    planned_start_snapped: start ? toISODate(snapPrecisionStart(parseDate(start)!, p)) : null,
+    planned_end_snapped: end ? toISODate(snapPrecisionEnd(parseDate(end)!, p)) : null,
+    derived_start: derived.start ? ds : null,
+    derived_end: derived.end ? de : null,
+    derived,
+  };
+}
+/** 退到所在格子的第一天（周从周一起算），与后端 domain.snapStart 一致 */
+function snapPrecisionStart(d: Date, p: GoalDatePrecision): Date {
+  if (p === "week") return startOfWeek(d);
+  const m = p === "month" ? d.getMonth() : p === "quarter" ? Math.floor(d.getMonth() / 3) * 3 : p === "half" ? (d.getMonth() < 6 ? 0 : 6) : 0;
+  return new Date(d.getFullYear(), m, 1);
+}
+/** 进到所在格子的最后一天 */
+function snapPrecisionEnd(d: Date, p: GoalDatePrecision): Date {
+  const first = snapPrecisionStart(d, p);
+  if (p === "week") return addDays(first, 6);
+  const span = p === "month" ? 1 : p === "quarter" ? 3 : p === "half" ? 6 : 12;
+  return addDays(new Date(first.getFullYear(), first.getMonth() + span, 1), -1);
+}
+
+/** 写死词表（时间桶、信心度）的名字；空值没有名字（与后端 enumTitle 一致）。 */
+const enumTitle = (kind: "horizon" | "confidence", v: string | undefined) => (v ? t(`${kind}.${v}` as Key) : "");
 
 const memberStatus = (m: MemberRow): NonNullable<Member["status"]> => (!m.active ? "inactive" : m.status === "pending_activation" ? "pending_activation" : "active");
 const memberStatusTitle = (st: NonNullable<Member["status"]>) => (st === "inactive" ? t("mock.member.status.inactive") : st === "pending_activation" ? t("mock.member.status.pending") : t("mock.member.status.active"));
@@ -1280,23 +1376,132 @@ on("PATCH", "/auth/me", (_m, body) => {
 
 on("GET", "/members", () => { requireLogin(); return Object.values(MEMBERS).filter((m) => m.active).map(viewMember); });
 on("GET", "/capabilities", () => { requireLogin(); return Object.fromEntries(CAPABILITIES.map((c) => [c.name, c.title])); });
+// ---------- 目标类型（ADR 0023）：读人人可以，写要「组织设置」；有目标在用的不许删，只能停用 ----------
+const goalTypeCount = (id: ID) => Object.values(goals).filter((gr) => gr.type_id === id).length;
+const viewGoalType = (x: GoalType): GoalType => ({ ...x, name: L(x.name), goal_count: goalTypeCount(x.id) });
+/** 名字规整与校验，与后端同一套：换行折成空格、去首尾空白、非空、最多 20 个字、同组织不许重名。 */
+const checkGoalTypeName = (raw: string, selfId?: ID) => {
+  const name = raw.replace(/\r\n/g, "\n").replace(/\n/g, " ").trim();
+  if (!name) throw new ApiError(400, t("mock.goalType.needName"));
+  if ([...name].length > 20) throw new ApiError(400, t("mock.goalType.longName"));
+  if (GOAL_TYPES.some((x) => x.id !== selfId && x.name === name)) throw new ApiError(400, t("mock.goalType.duplicate", { name }));
+  return name;
+};
+const checkGoalTypePrecision = (v: string): GoalDefaultPrecision => {
+  if (!v) return "";
+  return checkPrecision(v);
+};
+const getGoalType = (id: ID) => {
+  const x = GOAL_TYPES.find((v) => v.id === id);
+  if (!x) throw new ApiError(404, t("mock.goalType.missing"));
+  return x;
+};
+/** 按 sort、再按创建次序（数组次序）排；含已停用的。 */
+const sortedGoalTypes = () => GOAL_TYPES.map((x, i) => [x, i] as const).sort((a, b) => a[0].sort - b[0].sort || a[1] - b[1]).map(([x]) => x);
+on("GET", "/org/goal-types", () => {
+  requireLogin();
+  return sortedGoalTypes().map(viewGoalType);
+});
+on("POST", "/org/goal-types", (_m, body) => {
+  requireOrgAdmin();
+  const b = (body ?? {}) as Partial<GoalTypeInput>;
+  const name = checkGoalTypeName(b.name ?? "");
+  const x: GoalType = {
+    id: nextId("gt-"), name, color: b.color || "#5e6ad2", icon: b.icon || "blocks",
+    sort: b.sort ?? GOAL_TYPES.reduce((n, v) => Math.max(n, v.sort + 1), 1),
+    active: b.active ?? true, default_precision: checkGoalTypePrecision(b.default_precision ?? ""), goal_count: 0,
+  };
+  GOAL_TYPES.push(x);
+  return viewGoalType(x);
+});
+on("PATCH", "/org/goal-types/:id", (m, body) => {
+  requireOrgAdmin();
+  const x = getGoalType(m.groups!.id);
+  const b = (body ?? {}) as Partial<GoalTypeInput>;
+  if (b.name !== undefined) x.name = checkGoalTypeName(b.name, x.id);
+  if (b.default_precision !== undefined) x.default_precision = checkGoalTypePrecision(b.default_precision);
+  if (b.color !== undefined) x.color = b.color;
+  if (b.icon !== undefined) x.icon = b.icon;
+  if (b.sort !== undefined) x.sort = b.sort;
+  if (b.active !== undefined) x.active = b.active;
+  return viewGoalType(x);
+});
+on("DELETE", "/org/goal-types/:id", (m) => {
+  requireOrgAdmin();
+  const x = getGoalType(m.groups!.id);
+  // 还有目标在用就不许删（与后端 on delete restrict 同一句理由）：只能停用
+  const n = goalTypeCount(x.id);
+  if (n > 0) throw new ApiError(400, t("mock.goalType.inUse", { name: L(x.name), n }));
+  GOAL_TYPES.splice(GOAL_TYPES.indexOf(x), 1);
+  return undefined;
+});
+
 on("GET", "/goals", (_m, _b, q) => {
   requireLogin();
   // 目标按负责人所属团队归口；子树里有本范围的任务时也留下（不然下钻会看不见挂在别处的目标）
   const pick = scopePick(q);
   const keep = (gr: GoalRow) => !pick || pick(teamOf(gr.owner_id)) || goalSubtreeIds(gr.id).some((gid) => Object.values(tasks).some((tk) => tk.goal_id === gid && pick(taskTeam(tk))));
+  // 路线图按时间桶筛选（ADR 0021）：?horizon=now|next|later|none，命中的目标各自做顶级，子树照旧
+  const h = str(q, "horizon") ?? "";
+  if (h) {
+    if (!["now", "next", "later", "none"].includes(h)) throw new ApiError(400, t("mock.goal.badHorizon"));
+    const want = h === "none" ? "" : h;
+    return Object.values(goals).filter((gr) => (gr.horizon ?? "") === want && keep(gr)).map((gr) => viewGoal(gr, true));
+  }
+  // 目标类型筛选（ADR 0023）：?type=<id> 或 none（还没分类），与其余筛选叠加
+  const ty = str(q, "type") ?? "";
+  if (ty) {
+    if (ty !== "none" && !GOAL_TYPES.some((x) => x.id === ty)) throw new ApiError(400, t("mock.goal.badType"));
+    const hit = (gr: GoalRow) => (ty === "none" ? !gr.type_id : gr.type_id === ty);
+    return Object.values(goals).filter((gr) => hit(gr) && keep(gr)).map((gr) => viewGoal(gr, true));
+  }
   return Object.values(goals).filter((gr) => !gr.parent_id && keep(gr)).map((gr) => viewGoal(gr, true));
 });
 on("POST", "/goals", (_m, body) => {
   requireLogin();
   const b = body as GoalInput;
   if (!b.title?.trim()) throw new ApiError(400, t("mock.goal.emptyTitle"));
-  const row: GoalRow = { id: nextId("G"), title: b.title.trim(), description: b.description ?? "", owner_id: b.owner_id ?? ME, parent_id: b.parent_id ?? null, achieved: false, budget: b.budget ?? null, planned_start: b.planned_start ?? null, planned_end: b.planned_end ?? null, actual_start: null, actual_end: null, created_at: nowISO() };
+  const row: GoalRow = { id: nextId("G"), title: b.title.trim(), description: b.description ?? "", owner_id: b.owner_id ?? ME, parent_id: b.parent_id ?? null, achieved: false, budget: b.budget ?? null, planned_start: b.planned_start ?? null, planned_end: b.planned_end ?? null, actual_start: null, actual_end: null, created_at: nowISO(),
+    horizon: checkHorizon(b.horizon), confidence: checkConfidence(b.confidence), outcome: checkOutcome(b.outcome),
+    date_precision: b.date_precision ? checkPrecision(b.date_precision) : undefined, type_id: b.type_id || null };
+  if (row.type_id) {
+    const ty = getGoalType(row.type_id);
+    // 停用的类型新建时选不到（ADR 0023）；没显式给粒度时用类型的默认粒度预填，建完仍可逐个改
+    if (!ty.active) throw new ApiError(400, t("mock.goalType.inactive", { name: L(ty.name) }));
+    if (!b.date_precision && ty.default_precision) row.date_precision = ty.default_precision;
+  }
   addGoal(row);
   emit("GoalCreated", { goal: row.id, actor: ME, summary: t("mock.ev.goalCreated", { title: row.title }) });
   return viewGoal(row, true);
 });
 on("GET", "/goals/:id", (m) => { requireLogin(); return viewGoal(getGoal(m.groups!.id), true); });
+
+// ---------- 路线图三字段的校验（ADR 0021）：与后端同样三档写死、同样的整句理由 ----------
+const HORIZONS = ["now", "next", "later"];
+const CONFIDENCES = ["high", "medium", "low"];
+function checkHorizon(v: string | undefined): GoalHorizon {
+  if (!v) return "";
+  if (!HORIZONS.includes(v)) throw new ApiError(400, t("mock.goal.badHorizon"));
+  return v as GoalHorizon;
+}
+function checkConfidence(v: string | undefined): GoalConfidence {
+  if (!v) return "";
+  if (!CONFIDENCES.includes(v)) throw new ApiError(400, t("mock.goal.badConfidence"));
+  return v as GoalConfidence;
+}
+/** 时间粒度只有五档，空等价于「到周」（与后端 domain.ValidDatePrecision 一致） */
+const PRECISIONS = ["week", "month", "quarter", "half", "year"];
+function checkPrecision(v: string | undefined): GoalDatePrecision {
+  if (!v) return "week";
+  if (!PRECISIONS.includes(v)) throw new ApiError(400, t("mock.goal.badPrecision"));
+  return v as GoalDatePrecision;
+}
+/** 首尾空白去掉、换行折成空格（它是一句话，不是段落），最多 200 字 */
+function checkOutcome(v: string | undefined): string {
+  const s = (v ?? "").replace(/\s+/g, " ").trim();
+  if ([...s].length > 200) throw new ApiError(400, t("mock.goal.outcomeLong"));
+  return s;
+}
 // ---------- 就地编辑（DESIGN.md §15）：与后端同一套规则 ----------
 const isOrgOwner = () => ORG.owner_id === ME;
 /** 目标：负责人链（本目标或任一上级目标的负责人）或组织负责人 */
@@ -1356,6 +1561,41 @@ on("PATCH", "/goals/:id", (m, body) => {
     if (b.deadline === undefined) gr.deadline = gr.planned_end;
   }
   if (b.deadline !== undefined && (b.deadline || null) !== (gr.deadline ?? null)) { const from = gr.deadline ?? null; gr.deadline = b.deadline || null; fc({ field: "deadline", from, to: gr.deadline }); }
+  // 路线图三字段（ADR 0021）：""（空串）表示清空；各记一条动态，名字按当前语言现渲染
+  if (b.horizon !== undefined) {
+    const to = checkHorizon(b.horizon);
+    if (to !== (gr.horizon ?? "")) { const from = gr.horizon ?? ""; gr.horizon = to; fc({ field: "horizon", from: from || null, to: to || null }); }
+  }
+  if (b.confidence !== undefined) {
+    const to = checkConfidence(b.confidence);
+    if (to !== (gr.confidence ?? "")) { const from = gr.confidence ?? ""; gr.confidence = to; fc({ field: "confidence", from: from || null, to: to || null }); }
+  }
+  if (b.outcome !== undefined) {
+    const to = checkOutcome(b.outcome);
+    if (to !== (gr.outcome ?? "")) { const from = gr.outcome ?? ""; gr.outcome = to; fc({ field: "outcome", from: from || null, to: to || null }); }
+  }
+  // 时间粒度（ADR 0022）：在时间线上拖过条就落实成「到周」；改动记一条动态，名字按当前语言现渲染
+  if (b.date_precision !== undefined) {
+    const to = checkPrecision(b.date_precision);
+    if (to !== (gr.date_precision || "week")) {
+      const from = gr.date_precision || "week";
+      gr.date_precision = to === "week" ? undefined : to;
+      fc({ field: "date_precision", from, to, from_title: t(`date_precision.${from}` as Key), to_title: t(`date_precision.${to}` as Key) });
+    }
+  }
+  // 排序权重是次序不是表态，不记动态（与后端一致）
+  if (b.rank !== undefined) gr.rank = b.rank;
+  // 目标类型（ADR 0023）：""（空串）表示不分类
+  if (b.type_id !== undefined) {
+    const to = b.type_id || null;
+    if (to && !GOAL_TYPES.some((x) => x.id === to)) throw new ApiError(404, t("mock.goal.badType"));
+    if (to && to !== (gr.type_id ?? null) && !GOAL_TYPES.find((x) => x.id === to)!.active) throw new ApiError(400, t("mock.goalType.inactive", { name: L(GOAL_TYPES.find((x) => x.id === to)!.name) }));
+    if (to !== (gr.type_id ?? null)) {
+      const from = gr.type_id ?? null;
+      gr.type_id = to;
+      fc({ field: "type_id", from, to, from_title: goalTypeRef(from)?.name ?? null, to_title: goalTypeRef(to)?.name ?? null });
+    }
+  }
   if (b.achieved !== undefined && b.achieved !== gr.achieved) {
     const from = gr.status ?? (gr.achieved ? "achieved" : "active");
     gr.achieved = b.achieved; gr.actual_end = b.achieved ? day(0) : null; gr.status = b.achieved ? "achieved" : "active";
@@ -1363,6 +1603,59 @@ on("PATCH", "/goals/:id", (m, body) => {
   }
   if (b.status !== undefined && b.status !== (gr.status ?? "active")) { const from = gr.status ?? "active"; gr.status = b.status; if (b.status === "active") gr.achieved = false; fc({ field: "status", from, to: b.status }); }
   return viewGoal(gr, true);
+});
+
+/**
+ * 批量改时间桶（ADR 0021）：路线图上把卡片从一栏拖到另一栏就是它。
+ * 每个目标单独判权限、单独记动态；改不了的跳过并给一句完整的理由，其余照做。
+ */
+on("PUT", "/goals/horizon", (_m, body) => {
+  requireLogin();
+  const b = (body ?? {}) as { ids?: string[]; horizon?: string };
+  const to = checkHorizon(b.horizon);
+  const ids = b.ids ?? [];
+  if (!ids.length) throw new ApiError(400, t("mock.goal.bulkEmpty"));
+  const out: GoalHorizonResult = { updated: 0, skipped: [] };
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const gr = goals[id];
+    if (!gr) { out.skipped.push({ id, reason: t("mock.goal.gone"), code: "err.goal_gone" }); continue; }
+    if (!canEditGoal(gr)) { out.skipped.push({ id, name: L(gr.title), reason: t("mock.goal.editForbidden"), code: "err.goal_edit_forbidden" }); continue; }
+    if ((gr.horizon ?? "") === to) { out.skipped.push({ id, name: L(gr.title), reason: t("mock.goal.horizonSame", { title: L(gr.title), horizon: to ? t(`horizon.${to}` as Key) : t("horizon.none") }), code: "err.goal_horizon_same" }); continue; }
+    const from = gr.horizon ?? "";
+    gr.horizon = to;
+    emitFieldChange("GoalFieldChanged", { goal: gr.id, title: gr.title }, { field: "horizon", from: from || null, to: to || null });
+    out.updated += 1;
+  }
+  return out;
+});
+
+/**
+ * 泳道内上下拖动排序（ADR 0022）：前端把这条泳道拖完之后的整串顺序发过来，
+ * 服务端给它们重新发一遍等间距的排序权重（第 i 个拿 (i+1)*1000），免得前端自己算插入值。
+ * 排序权重不记动态：它是次序不是表态，一次拖动会动好几个目标。改不了的跳过并给一句完整的理由。
+ */
+on("PUT", "/goals/rank", (_m, body) => {
+  requireLogin();
+  const ids = ((body ?? {}) as { ids?: string[] }).ids ?? [];
+  if (!ids.length) throw new ApiError(400, t("mock.goal.rankEmpty"));
+  const out: GoalRankResult = { updated: 0, skipped: [], goals: [] };
+  const seen = new Set<string>();
+  let pos = 0;
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const gr = goals[id];
+    if (!gr) { out.skipped.push({ id, reason: t("mock.goal.gone"), code: "err.goal_gone" }); continue; }
+    if (!canEditGoal(gr)) { out.skipped.push({ id, name: L(gr.title), reason: t("mock.goal.editForbidden"), code: "err.goal_edit_forbidden" }); continue; }
+    pos += 1;
+    const rank = pos * 1000;
+    if (gr.rank !== rank) { gr.rank = rank; out.updated += 1; }
+    out.goals.push({ id: gr.id, title: L(gr.title), rank });
+  }
+  return out;
 });
 
 // 只有空目标能删；有内容的目标应当放弃（与后端同一条规则）
@@ -1651,7 +1944,7 @@ on("POST", "/agents", (_m, body): AgentRegistration => {
   requireLogin();
   const b = body as AgentInput;
   if (!b.name?.trim()) throw new ApiError(400, t("mock.agentEmptyName"));
-  const a: Agent = { id: nextId("agent-"), name: b.name.trim(), owner: ref(ME), shared: !!b.shared, capabilities: b.capabilities ?? [], grants: b.grants ?? [], online: false, last_seen_at: null, max_concurrency: b.max_concurrency ?? 1, created_at: nowISO(), can_manage: true };
+  const a: Agent = { id: nextId("agent-"), name: b.name.trim(), owner: ref(ME), shared: !!b.shared, capabilities: b.capabilities ?? [], grants: b.grants ?? [], state: "ready", last_active_at: null, online: false, last_seen_at: null, max_concurrency: b.max_concurrency ?? 1, created_at: nowISO(), can_manage: true };
   AGENTS[a.id] = a;
   emit("AgentRegistered", { actor: ME, summary: t("mock.ev.agentRegistered", { name: a.name }) });
   const token = `axm_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
@@ -1760,7 +2053,7 @@ const notifications: NotificationRow[] = [
   { id: 1, member_id: "wang", title: "「留存漏斗分析」已提交，等你验收", body: "小张的测试 Agent 提交了结果：报告里的口径和上次一致。", task_id: "T13", read_at: null, created_at: at(-1, 17, 2) },
   { id: 2, member_id: "wang", title: "「第 7 次迭代」还剩 2 天", body: "12 个任务里还有 5 个没到验收，其中 1 个逾期。", task_id: null, read_at: null, created_at: at(0, 8) },
   { id: 3, member_id: "wang", title: "小李的编码 Agent 在「导出报表」上附了代码 PR", body: "feat: weekly CSV export #4，等测试角色领取后进入测试。", task_id: "T6", read_at: null, created_at: at(-4, 18, 3) },
-  { id: 4, member_id: "wang", title: "小王的写作助手已离线一天", body: "上次心跳是昨天 18:00，名下没有进行中的执行记录。", task_id: null, read_at: at(-1, 19), created_at: at(-1, 18, 30) },
+  { id: 4, member_id: "wang", title: "小王的写作助手一天没有活动", body: "最近活动是昨天 18:00，名下没有进行中的执行记录。", task_id: null, read_at: at(-1, 19), created_at: at(-1, 18, 30) },
   { id: 5, member_id: "li", title: "「金额显示错位」已确认并指派给你", body: "小张确认了这个 Bug，严重程度：中，在第 7 次迭代里。", task_id: "T2", read_at: null, created_at: at(-3, 14, 31) },
   { id: 6, member_id: "li", title: "小王答复了你的 Agent 在「登录页改版」里的提问", body: "用品牌蓝，深灰那处是笔误。任务已回到开发中。", task_id: "T1", read_at: null, created_at: at(-6, 14, 6) },
 ];
@@ -2094,7 +2387,7 @@ function loadRows(q: Query): LoadRow[] {
       planned_hours_this_week: mine.filter(overlapsWeek).reduce((sum, tk) => sum + (tk.estimate ?? 0), 0),
       overdue: mine.filter((tk) => tk.planned_end && tk.planned_end < todayISO).length,
       capacity_hint: null,
-      ...(agent ? { max_concurrent: agent.max_concurrency, online: agent.online } : {}),
+      ...(agent ? { max_concurrent: agent.max_concurrency, state: agent.state, online: agent.online } : {}),
     };
   });
   return rows.sort((a, b) => b.points_open - a.points_open || b.open_tasks - a.open_tasks);
@@ -4052,7 +4345,7 @@ on("POST", "/agent-auth/device/:code/approve", (m, body) => {
   if (deviceStatus(r) !== "pending") throw new ApiError(400, t("mock.device.decided", { status: t(`device.status.${deviceStatus(r)}` as Key) }));
   const b = (body ?? {}) as DeviceApproveInput;
   const grants: Grant[] = Object.entries(b.grants ?? {}).filter(([, mode]) => mode && mode !== "deny").map(([name, mode]) => ({ name: name as GrantName, mode: name === "manage_workflows" || mode === "with_approval" ? "with_approval" : "direct" }));
-  const a: Agent = { id: nextId("agent-"), name: (b.name?.trim() || r.name || clientTitleOf(r.client)).slice(0, 80), owner: ref(ME), shared: !!b.shared, capabilities: b.capabilities ?? [], grants, online: false, last_seen_at: null, max_concurrency: b.max_concurrency ?? 1, runtime: r.client, created_at: nowISO(), can_manage: true };
+  const a: Agent = { id: nextId("agent-"), name: (b.name?.trim() || r.name || clientTitleOf(r.client)).slice(0, 80), owner: ref(ME), shared: !!b.shared, capabilities: b.capabilities ?? [], grants, state: "ready", last_active_at: null, online: false, last_seen_at: null, max_concurrency: b.max_concurrency ?? 1, runtime: r.client, created_at: nowISO(), can_manage: true };
   AGENTS[a.id] = a;
   r.status = "approved"; r.decided_at = nowISO(); r.agent_id = a.id; r.approved_by = ME; r.token = `axm_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
   emit("AgentConnected", { actor: ME, summary: t("mock.ev.agentConnected", { name: a.name, client: clientTitleOf(r.client) }), data: { agent_id: a.id, client: r.client, name: a.name, user_code: r.user_code } });
@@ -4088,8 +4381,13 @@ on("GET", "/agents/:id/check", (m): AgentCheck => {
   if (!a) throw new ApiError(404, t("mock.agentNotFound"));
   const lt = LAST_TOOL[a.id];
   const clock = (iso: string) => { const d = parseDate(iso)!; return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
-  const hint = !a.last_seen_at ? t("mock.check.never") : a.online ? (lt ? t("mock.check.onlineTool", { tool: lt.tool, time: clock(lt.at) }) : t("mock.check.online")) : t("mock.check.offline", { time: clock(a.last_seen_at) });
-  return { online: a.online, connected: !!a.last_seen_at, last_seen_at: a.last_seen_at, last_tool: lt?.tool ?? null, last_tool_at: lt?.at ?? null, hint };
+  const title = agentStateTitle(a.state);
+  const activeAt = lt?.at ?? a.last_active_at ?? a.last_seen_at;
+  const hint = !a.last_seen_at ? t("mock.check.never")
+    : a.state === "inactive" ? t("mock.check.inactive")
+    : lt ? t("mock.check.stateTool", { state: title, time: clock(activeAt!), tool: lt.tool })
+    : t("mock.check.state", { state: title, time: clock(activeAt!) });
+  return { state: a.state, state_title: title, online: a.online, connected: !!a.last_seen_at, last_seen_at: a.last_seen_at, last_active_at: activeAt ?? null, last_tool: lt?.tool ?? null, last_tool_at: lt?.at ?? null, hint };
 });
 
 export async function mockRequest(method: string, path: string, body?: unknown, query?: Query): Promise<unknown> {

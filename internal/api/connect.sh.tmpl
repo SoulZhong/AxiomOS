@@ -67,13 +67,13 @@ AGENT=$(printf '%s' "$BODY" | jstr name)
 [ -n "$MCP" ] || MCP="$BASE/mcp"
 say "{{.T.approved}} $AGENT"
 
-JSON_SNIPPET=$(printf '{\n  "mcpServers": {\n    "axiomos": {\n      "type": "http",\n      "url": "%s",\n      "headers": { "Authorization": "Bearer %s" }\n    }\n  }\n}' "$MCP" "$TOKEN")
+JSON_SNIPPET=$(printf '{{.Cfg.JSON}}' "$MCP" "$TOKEN")
 
 case "$CLIENT" in
   claude-code)
     if command -v claude >/dev/null 2>&1; then
       claude mcp remove axiomos >/dev/null 2>&1 || true
-      claude mcp add --transport http axiomos "$MCP" --header "Authorization: Bearer $TOKEN"
+      {{.Cfg.ClaudeCLI}}
       say "{{.T.written}} Claude Code (mcp: axiomos)"
     else
       say "{{.T.no_claude}}"
@@ -85,7 +85,7 @@ case "$CLIENT" in
     F="$HOME/.cursor/mcp.json"
     mkdir -p "$HOME/.cursor"
     if [ ! -s "$F" ]; then
-      printf '{\n  "mcpServers": {\n    "axiomos": {\n      "url": "%s",\n      "headers": { "Authorization": "Bearer %s" }\n    }\n  }\n}\n' "$MCP" "$TOKEN" > "$F"
+      printf '{{.Cfg.CursorJSON}}\n' "$MCP" "$TOKEN" > "$F"
       say "{{.T.written}} $F"
     elif command -v python3 >/dev/null 2>&1; then
       python3 - "$F" "$MCP" "$TOKEN" <<'PY'
@@ -108,7 +108,7 @@ PY
   codex)
     F="$HOME/.codex/config.toml"
     mkdir -p "$HOME/.codex"
-    SNIP=$(printf '\n[mcp_servers.axiomos]\nurl = "%s"\nhttp_headers = { Authorization = "Bearer %s" }\n' "$MCP" "$TOKEN")
+    SNIP=$(printf '{{.Cfg.CodexTOML}}' "$MCP" "$TOKEN")
     if [ -s "$F" ] && grep -q '^\[mcp_servers\.axiomos\]' "$F"; then
       say "$F {{.T.codex_exists}}"
       say "$SNIP"

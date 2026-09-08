@@ -1,6 +1,6 @@
 // 界面用语：代码标识符 -> 当前语言的文案（CONTEXT.md / ADR 0007，字典在 src/lib/i18n.ts）。
 // 数据自带的名字（状态、步骤、角色、交付物类型……）由后端按语言返回，这里的兜底只在缺失时使用，不覆盖服务端给的。
-import type { EventKind, GrantName, GrantMode, Priority, Proposal, ProposalStatus, ProposalTarget, RelationType, RunOutcome, StateLabel, TaskType } from "./api";
+import type { AgentState, EventKind, GrantName, GrantMode, Priority, Proposal, ProposalStatus, ProposalTarget, RelationType, RunOutcome, StateLabel, TaskType } from "./api";
 import { parseDate } from "./format";
 import { t, type Key } from "./i18n";
 
@@ -24,6 +24,11 @@ export const GRANT_ORDER: GrantName[] = [
 ];
 export const grantTitle = (g: GrantName) => t(`grant.${g}` as Key);
 export const grantModeTitle = (m: GrantMode) => t(`grantMode.${m}` as Key);
+
+// Agent 状态（CONTEXT.md「Agent 状态」）：执行中 / 可用 / 已停用。后端也给 state_title，
+// 但界面自己译一遍，切换语言时不用等下一次请求。
+export const AGENT_STATES: AgentState[] = ["running", "ready", "inactive"];
+export const agentStateTitle = (s: AgentState) => t(`agentState.${s}` as Key);
 
 export const runOutcomeTitle = (o: RunOutcome) => t(`outcome.${o}` as Key);
 

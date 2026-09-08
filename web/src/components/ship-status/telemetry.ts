@@ -6,7 +6,7 @@ import { parseDate, today } from "@/lib/format";
 /**
  * 舰内遥测：舷窗带（BridgeBar）与「舰况」面板共用的一份组织读数，30s 刷新一次，标签页隐藏时停，
  * 有几个订阅者都只拉一次。全部来自现有接口，没有新端点：
- * - 计数：GET /tasks（全部）→ 进行中 / 待验收（waiting）/ 逾期（计划结束日已过且未结束）/ 全部；GET /agents → 在线 / 全部。
+ * - 计数：GET /tasks（全部）→ 进行中 / 待验收（waiting）/ 逾期（计划结束日已过且未结束）/ 全部；GET /agents → 可用 / 全部（CONTEXT.md「Agent 状态」）。
  * - 24 点趋势：GET /events（最近 300 条）里的「状态变化」按小时倒放——从当前状态出发，每跨过一个整点记一次三类计数
  *   （状态名 → 状态类型 由 GET /task-types 的流程定义给出；查不到的状态跳过）。
  * - 今日成本：今天有执行记录事件（开始 / 结束 / 上报用量）的任务，各取一次 GET /tasks/:id 拿到执行记录的金额，
@@ -28,7 +28,8 @@ export interface ShipTelemetry {
   waiting: number;
   overdue: number;
   total: number;
-  agentsOnline: number;
+  /** 可用的 Agent 数：没有被停用的（可用 + 执行中）都算随时能干活 */
+  agentsReady: number;
   agentsTotal: number;
   costToday: number;
   costReal: boolean;
@@ -158,7 +159,7 @@ export async function fetchShipTelemetry(): Promise<ShipTelemetry> {
     waiting,
     overdue,
     total: tasks.length,
-    agentsOnline: agents.filter((a) => a.online).length,
+    agentsReady: agents.filter((a) => a.state !== "inactive").length,
     agentsTotal: agents.length,
     costToday: cost.total,
     costReal: cost.real,

@@ -3,12 +3,21 @@ package app
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/teemo/axiomos/internal/domain"
 	"github.com/teemo/axiomos/internal/store"
+)
+
+// 整个包共用一个连接池：每个测试各开一个池会把数据库的连接数用光
+// （FATAL: sorry, too many clients already），而池本身是无状态的，共用没有副作用。
+var (
+	testStoreOnce sync.Once
+	testStore     *store.Store
+	testStoreErr  error
 )
 
 // 需要 DATABASE_URL 指向一个可用的 PostgreSQL；没有就跳过。
@@ -18,14 +27,22 @@ func testApp(t *testing.T) (*App, context.Context) {
 		t.Skip("未设置 DATABASE_URL，跳过数据库集成测试")
 	}
 	ctx := context.Background()
-	st, err := store.Open(ctx, url)
-	if err != nil {
-		t.Fatal(err)
+	testStoreOnce.Do(func() {
+		st, err := store.Open(ctx, url)
+		if err != nil {
+			testStoreErr = err
+			return
+		}
+		if err := st.Migrate(ctx); err != nil {
+			testStoreErr = err
+			return
+		}
+		testStore = st
+	})
+	if testStoreErr != nil {
+		t.Fatal(testStoreErr)
 	}
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	a := New(st)
+	a := New(testStore)
 	if err := a.EnsureGlobals(ctx); err != nil {
 		t.Fatal(err)
 	}

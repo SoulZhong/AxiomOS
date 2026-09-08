@@ -724,6 +724,12 @@ export interface Grant {
   mode: GrantMode;
 }
 
+/**
+ * Agent 状态（CONTEXT.md「Agent 状态」）：执行中 = 手上有打开的执行记录或刚刚还在说话；
+ * 可用 = 令牌有效、所有者在职，只是这会儿没活干（正常的休息状态）；已停用 = 已注销或所有者已停用。
+ */
+export type AgentState = "running" | "ready" | "inactive";
+
 export interface Agent {
   id: ID;
   name: string;
@@ -731,6 +737,12 @@ export interface Agent {
   shared: boolean; // 公共 Agent
   capabilities: string[];
   grants: Grant[];
+  state: AgentState;
+  /** 状态的显示名，后端按语言给；界面自己也会译，所以是可选的 */
+  state_title?: string;
+  /** 最近一次活动：心跳与最近一次工具调用里更晚的那个 */
+  last_active_at: ISODateTime | null;
+  /** @deprecated 旧口径（最近有没有心跳），界面不再用它，看 state */
   online: boolean;
   last_seen_at: ISODateTime | null;
   max_concurrency: number;
@@ -756,10 +768,14 @@ export interface AgentRegistration {
 
 /** GET /agents/{id}/check：接入向导的连接检查，一句人话（ADR 0018）。 */
 export interface AgentCheck {
+  state: AgentState;
+  state_title?: string;
+  /** @deprecated 旧口径，看 state */
   online: boolean;
   /** 曾收到过它的请求 */
   connected: boolean;
   last_seen_at: ISODateTime | null;
+  last_active_at: ISODateTime | null;
   last_tool?: string | null;
   last_tool_at?: ISODateTime | null;
   hint: string;
@@ -906,7 +922,86 @@ export interface Goal {
   /** 里程碑（ADR 0016），按日期升序；老后端没有这个字段 */
   milestones?: Milestone[];
   milestone_summary?: MilestoneSummary;
+  /** 时间桶（ADR 0021）：现在 / 下一步 / 以后，空表示还没排期 */
+  horizon: GoalHorizon;
+  /** 时间桶的界面名（后端按当前语言渲染，没填时为空串）——界面直接用它，不自己拼词 */
+  horizon_title: string;
+  /** 信心度（ADR 0021）：高 / 中 / 低，空表示没填 */
+  confidence: GoalConfidence;
+  /** 信心度的界面名（同上） */
+  confidence_title: string;
+  /** 成果指标（ADR 0021）：一句话说明达成时什么变了，最多 200 字 */
+  outcome: string;
+  /** 时间粒度（ADR 0022）：日期填到多细为止，后端给的是有效值（落库的空一律读作 week） */
+  date_precision?: GoalDatePrecision;
+  /** 时间粒度的界面名（后端按当前语言渲染） */
+  date_precision_title?: string;
+  /** 排序权重（ADR 0022）：泳道内的手动次序，空表示没排过 */
+  rank?: number | null;
+  /**
+   * 按粒度吸附之后的起止（服务端算好，路线图画条只看这两个）。
+   * 到周吸到周一与周日，到月 / 季度 / 半年 / 年吸到那一格的头尾；没有日期时两个都不给。
+   */
+  planned_start_snapped?: ISODate | null;
+  planned_end_snapped?: ISODate | null;
+  /** 目标自己没填时从子目标与任务推出来的日期（只在读时算、不落库） */
+  derived_start?: ISODate | null;
+  derived_end?: ISODate | null;
+  /** 条的哪一端是推出来的：为真的那一端画渐隐，整条画斜纹 */
+  derived?: { start: boolean; end: boolean };
+  /** 目标类型（ADR 0023）：组织自己维护的词表，只做分类不带流程；没分类时是 null */
+  type?: GoalTypeRef | null;
 }
+
+/** 目标身上带的类型（够画一枚色点与一个名字） */
+export interface GoalTypeRef {
+  id: ID;
+  name: string;
+  color: string;
+  icon: string;
+}
+
+/** 组织的目标类型词表（GET /org/goal-types，含已停用的） */
+export interface GoalType extends GoalTypeRef {
+  sort: number;
+  active: boolean;
+  /** 新建这一类目标时预填的时间粒度；空串表示不预填 */
+  default_precision: GoalDefaultPrecision;
+  goal_count: number;
+}
+
+/** 目标类型的默认时间粒度：五档之一，或空串（不预填） */
+export type GoalDefaultPrecision = GoalDatePrecision | "";
+
+/** 新建 / 修改目标类型时能给的字段（ADR 0023：只有分类与显示，没有流程、权限、成本归口） */
+export interface GoalTypeInput {
+  name: string;
+  color: string;
+  icon: string;
+  default_precision: GoalDefaultPrecision;
+  sort: number;
+  active: boolean;
+}
+
+// ---------- 路线图三字段（ADR 0021）：三档写死，不做成可配置词表 ----------
+
+/** 时间桶：粗时间表达，空串 = 还没排期 */
+export type GoalHorizon = "" | "now" | "next" | "later";
+/** 路线图上从左到右的三列；「还没排期」不是取值，是空串那一栏 */
+export const GOAL_HORIZONS: Array<Exclude<GoalHorizon, "">> = ["now", "next", "later"];
+/** 信心度：能不能按这个时间桶达成，空串 = 没填 */
+export type GoalConfidence = "" | "high" | "medium" | "low";
+export const GOAL_CONFIDENCES: Array<Exclude<GoalConfidence, "">> = ["high", "medium", "low"];
+/**
+ * 时间粒度（ADR 0022）：目标的计划起止填到多细为止，最细就是到周。
+ * 空等价于 "week"（后端给的已是有效值，这里的空只出现在老数据上）。
+ */
+export type GoalDatePrecision = "week" | "month" | "quarter" | "half" | "year";
+export const GOAL_DATE_PRECISIONS: GoalDatePrecision[] = ["week", "month", "quarter", "half", "year"];
+/** 有效粒度：空一律读作「到周」（与后端 EffectiveDatePrecision 一致） */
+export const effectivePrecision = (p: GoalDatePrecision | "" | null | undefined): GoalDatePrecision => (p ? p : "week");
+/** 成果指标的长度上限（与后端 domain.OutcomeMaxRunes 一致） */
+export const OUTCOME_MAX = 200;
 
 // ---------- 里程碑（ADR 0016）：目标的时间刻度，不是任务 ----------
 
@@ -964,6 +1059,38 @@ export interface GoalInput {
   achieved?: boolean;
   /** "abandoned" 放弃，"active" 重新开始 */
   status?: "active" | "abandoned";
+  /** 时间桶（ADR 0021）；"" 表示清空（还没排期） */
+  horizon?: GoalHorizon;
+  /** 信心度（ADR 0021）；"" 表示清空 */
+  confidence?: GoalConfidence;
+  /** 成果指标（ADR 0021）；"" 表示清空 */
+  outcome?: string;
+  /** 时间粒度（ADR 0022）；在时间线上拖过条就落实成 "week" */
+  date_precision?: GoalDatePrecision;
+  /** 排序权重（ADR 0022）；null 表示清空（回到没排过的那一堆） */
+  rank?: number | null;
+  /** 目标类型（ADR 0023）；"" 表示不分类 */
+  type_id?: ID | "";
+}
+
+/** GET /goals 的查询串：horizon=now|next|later|none（none 是还没排期），只返回命中的目标（各自做顶级）。 */
+export interface GoalQuery {
+  horizon?: "now" | "next" | "later" | "none";
+  /** 目标类型（ADR 0023）：类型 id，或 none（还没分类） */
+  type?: string;
+}
+
+/** PUT /goals/horizon 的结果：改不了的目标逐个给出完整的理由句。 */
+export interface GoalHorizonResult {
+  updated: number;
+  skipped: Array<{ id: ID; name?: string; reason: string; code?: string }>;
+}
+
+/** PUT /goals/rank 的结果：改不了的目标逐个给出理由，改得动的带上各自最新的排序权重。 */
+export interface GoalRankResult {
+  updated: number;
+  skipped: Array<{ id: ID; name?: string; reason: string; code?: string }>;
+  goals: Array<{ id: ID; title: string; rank: number }>;
 }
 
 // ---------- 任务 ----------
@@ -1623,7 +1750,10 @@ export interface LoadRow {
   capacity_hint?: string | null;
   /** Agent：最多同时任务数 */
   max_concurrent?: number | null;
-  /** Agent：是否在线 */
+  /** Agent：状态与它的显示名（CONTEXT.md「Agent 状态」） */
+  state?: AgentState | null;
+  state_title?: string | null;
+  /** @deprecated 旧口径，看 state */
   online?: boolean;
 }
 
@@ -2028,8 +2158,14 @@ export const api = {
     list: () => request<Record<string, string>>("GET", "/capabilities"),
   },
   goals: {
-    list: () => request<Goal[]>("GET", "/goals"),
+    list: (q: GoalQuery = {}) => request<Goal[]>("GET", "/goals", undefined, q as Query),
     create: (input: GoalInput) => request<Goal>("POST", "/goals", input),
+    /** 批量改时间桶（ADR 0021）：路线图上拖卡片就是它，一个目标一条动态；改不了的跳过并给理由。 */
+    setHorizon: (ids: ID[], horizon: GoalHorizon) => request<GoalHorizonResult>("PUT", "/goals/horizon", { ids, horizon }),
+    /** 泳道内上下拖动排序（ADR 0022）：把这条泳道拖完之后的整串顺序发过去，服务端重发等间距的排序权重。 */
+    setRank: (ids: ID[]) => request<GoalRankResult>("PUT", "/goals/rank", { ids }),
+    /** 组织的目标类型词表（ADR 0023）：按次序返回，含已停用的——选择器只列启用的，目标身上已有的停用类型照常显示。 */
+    types: () => request<GoalType[]>("GET", "/org/goal-types"),
     get: (id: ID) => request<Goal>("GET", `/goals/${encodeURIComponent(id)}`),
     update: (id: ID, patch: Partial<GoalInput>) => request<Goal>("PATCH", `/goals/${encodeURIComponent(id)}`, patch),
     /** 只有空目标（没有子目标、没有任务）能删；有内容的目标应当放弃 */
@@ -2097,7 +2233,7 @@ export const api = {
     list: () => request<Agent[]>("GET", "/agents"),
     create: (input: AgentInput) => request<AgentRegistration>("POST", "/agents", input),
     remove: (id: ID) => request<void>("DELETE", `/agents/${encodeURIComponent(id)}`),
-    /** 连接检查：在线否、最近一次请求 / 工具，附一句现在该做什么 */
+    /** 连接检查：现在的状态、最近一次活动 / 工具，附一句现在该做什么 */
     check: (id: ID) => request<AgentCheck>("GET", `/agents/${encodeURIComponent(id)}/check`),
   },
   /** 设备码接入（ADR 0018）。device / token 是公开接口（Agent 端调用），其余需登录。 */
@@ -2109,6 +2245,14 @@ export const api = {
     token: (deviceCode: string) => request<DeviceToken>("POST", "/agent-auth/token", { device_code: deviceCode }),
     /** 接入脚本的完整地址（在 Agent 所在机器上 `curl … | sh`）；浏览器里用页面自己的来源，避免把 localhost 写进命令 */
     scriptUrl: (client: DeviceClient) => `${publicBase()}/api/v1/agent-auth/connect.sh?client=${encodeURIComponent(client)}`,
+    /**
+     * 给 Agent 的接入链接（ADR 0024）：人把它贴给自己的 Agent。
+     * 同一条地址，Agent / curl 拿到写给它看的操作说明（Markdown），浏览器被跳到 /connect/ 这张落地页。
+     * 不带 client 就四种运行环境的配置写法都给。地址同样以页面自己的来源为准。
+     */
+    onboardUrl: (client?: DeviceClient) => `${publicBase()}/connect${client ? `?client=${encodeURIComponent(client)}` : ""}`,
+      /** 贴给 Agent 的一整句话：光给网址它多半只会去读一下然后问你要做什么，得把要做的事说出来 */
+      onboardPrompt: (client?: DeviceClient) => t("onboard.prompt", { url: `${publicBase()}/connect${client ? `?client=${client}` : ""}` }),
   },
   /** 显示偏好：个人 → 角色 → 默认（逐字段）。Agent 调用一律 403。 */
   preferences: {
@@ -2233,6 +2377,17 @@ export const api = {
     deleteTeam: (id: ID) => request<void>("DELETE", `/org/teams/${encodeURIComponent(id)}`),
     /** 把团队 id 并入 into：旧团队的成员、目标、任务、迭代整体并入，旧团队停用不删除 */
     mergeTeam: (id: ID, into: ID) => request<OrgTeam>("POST", `/org/teams/${encodeURIComponent(id)}/merge`, { into }),
+    /**
+     * 目标类型（ADR 0023）：组织自己维护的词表，只做分类与显示——不决定流程、权限或成本归口。
+     * 读所有成员都行（api.goals.types 走同一条），写要「组织设置」权限。
+     * 还有目标在用的类型删不掉（400 一整句），只能停用。排序没有批量接口：一次拖动逐行 PATCH sort。
+     */
+    goalTypes: {
+      list: () => request<GoalType[]>("GET", "/org/goal-types"),
+      create: (input: Partial<GoalTypeInput>) => request<GoalType>("POST", "/org/goal-types", input),
+      update: (id: ID, patch: Partial<GoalTypeInput>) => request<GoalType>("PATCH", `/org/goal-types/${encodeURIComponent(id)}`, patch),
+      remove: (id: ID) => request<void>("DELETE", `/org/goal-types/${encodeURIComponent(id)}`),
+    },
     capabilities: () => request<Capability[]>("GET", "/org/capabilities"),
     saveCapability: (name: string, input: { title: LocalizedTitle }) => request<Capability>("PUT", `/org/capabilities/${encodeURIComponent(name)}`, input),
     deleteCapability: (name: string) => request<void>("DELETE", `/org/capabilities/${encodeURIComponent(name)}`),

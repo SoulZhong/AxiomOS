@@ -63,6 +63,9 @@ type Session struct {
 	// 正在执行一条被确认的待确认操作时，这里是确认人；动态摘要会带上「经<确认人>确认」。
 	ApprovedByID   string
 	ApprovedByName string
+
+	// Write 是这次写操作的两个开关：只看不做、幂等键（ADR 0025）。由 HTTP 与 MCP 层填。
+	Write WriteOptions
 }
 
 // WithScope 返回一个带范围参数的会话副本（HTTP / MCP 层用）。
@@ -213,6 +216,11 @@ func (a *App) requireTaskVisible(ctx context.Context, tx pgx.Tx, sess *Session, 
 func (a *App) persist(ctx context.Context, tx pgx.Tx, sess *Session, c *domain.Context, o *domain.Outcome) error {
 	if o == nil {
 		return nil
+	}
+	// 只看不做（ADR 0025）：校验与权限都已经走完了，内核也算出了结果，就在写回之前停住，
+	// 把结果翻译成一句「将要发生什么」返回。返回错误会让整个事务回滚，所以一行也不会落库。
+	if sess != nil && sess.Write.DryRun {
+		return dryRun(sess, a.willClauses(ctx, tx, sess, c, o)...)
 	}
 	t := o.Task
 	if err := a.Store.UpdateTask(ctx, tx, t); err != nil {

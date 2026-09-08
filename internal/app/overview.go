@@ -127,6 +127,14 @@ func startOfDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
+// calendarDay 把「只有日期、没有时刻」的值当成一个日历日：只取年月日，不做时区换算。
+// 计划结束日、里程碑日期这些存在 date 列里，驱动读出来带的是 UTC 零点；服务器时区在 UTC 以西时
+// 用 startOfDay 换算会整整退一天，于是「昨天到期」被算成逾期两天。日期没有时区，别给它安一个。
+func calendarDay(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.Local)
+}
+
 func startOfWeek(t time.Time) time.Time {
 	d := startOfDay(t)
 	wd := int(d.Weekday())
@@ -650,8 +658,11 @@ type LoadRow struct {
 	Overdue              int     `json:"overdue"`
 	CapacityHint         string  `json:"capacity_hint"`
 	MaxConcurrent        *int    `json:"max_concurrent"`
-	Online               *bool   `json:"online"`
-	ActiveRuns           int     `json:"active_runs"`
+	// Online 是旧口径（最近有没有心跳），只为兼容保留；对外的状态看 State（CONTEXT.md「Agent 状态」）。
+	Online     *bool  `json:"online"`
+	State      string `json:"state,omitempty"`
+	StateTitle string `json:"state_title,omitempty"`
+	ActiveRuns int    `json:"active_runs"`
 }
 
 // Load 返回范围内成员与 Agent 的负荷。
@@ -698,6 +709,11 @@ func (a *App) Load(ctx context.Context, sess *Session) ([]LoadRow, error) {
 			}
 			add(m.ID, string(domain.ExecutorMember), m.Name)
 		}
+		memberActive := map[string]bool{}
+		for _, m := range ix.Members {
+			memberActive[m.ID] = m.Active
+		}
+		agentByID := map[string]*domain.Agent{}
 		for _, ag := range ix.Agents {
 			r := add(ag.ID, string(domain.ExecutorAgent), ag.Name)
 			if r == nil {
@@ -706,6 +722,7 @@ func (a *App) Load(ctx context.Context, sess *Session) ([]LoadRow, error) {
 			mc := ag.MaxConcurrent
 			on := ag.Online(now)
 			r.MaxConcurrent, r.Online = &mc, &on
+			agentByID[ag.ID] = ag
 		}
 		for _, t := range tasks {
 			r := rows[t.AssigneeID]
@@ -744,6 +761,11 @@ func (a *App) Load(ctx context.Context, sess *Session) ([]LoadRow, error) {
 		}
 		for _, id := range order {
 			r := rows[id]
+			// Agent 的状态要等执行记录数出来才算得准（有打开的执行记录就是执行中）
+			if ag := agentByID[id]; ag != nil {
+				st := NewAgentStatus(loc, ag, now, r.ActiveRuns, memberActive[ag.OwnerMemberID])
+				r.State, r.StateTitle = string(st.State), st.Title
+			}
 			r.CapacityHint = capacityHint(r, loc)
 			out = append(out, *r)
 		}

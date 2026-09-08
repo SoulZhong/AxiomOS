@@ -40,8 +40,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [canManageOrg, setCanManageOrg] = useState(false);
   const [checked, setChecked] = useState(false);
   const isLogin = pathname === "/login";
-  // 平台后台与邀请页不走组织会话，也不套这层外壳
-  const bare = pathname === "/admin" || pathname.startsWith("/admin/") || pathname.startsWith("/invite/");
+  // 平台后台、邀请页与给 Agent 的接入链接落地页（/connect/，ADR 0024）不走组织会话，也不套这层外壳：
+  // 它们都可能在没登录时打开，这里不查会话就不会被 401 弹去登录页
+  const bare = pathname === "/admin" || pathname.startsWith("/admin/") || pathname.startsWith("/invite/") || pathname === "/connect";
 
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((tk) => tk + 1), []);

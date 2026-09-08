@@ -36,8 +36,31 @@ type CreateTaskInput struct {
 	Ready                bool              `json:"ready"` // 创建后直接就绪（跳过草稿）
 }
 
+// commentOp 是评论 / 工作日志在幂等键里记的操作名（两者是两个工具，不该互相顶替）。
+func commentOp(isNote bool) string {
+	if isNote {
+		return "add_note"
+	}
+	return "add_comment"
+}
+
 // CreateTask 创建任务。
 func (a *App) CreateTask(ctx context.Context, sess *Session, in CreateTaskInput) (*domain.Task, error) {
+	return idempotent(ctx, a, sess, createTaskOp(in), in, func() (*domain.Task, error) {
+		return a.createTask(ctx, sess, in)
+	})
+}
+
+// createTaskOp 区分创建任务与创建子任务：同一个幂等键换了其中一种，参数指纹本来就不同，
+// 名字分开只是让"这个键上次用在哪个工具上"看得明白。
+func createTaskOp(in CreateTaskInput) string {
+	if in.ParentID != "" {
+		return "create_subtask"
+	}
+	return "create_task"
+}
+
+func (a *App) createTask(ctx context.Context, sess *Session, in CreateTaskInput) (*domain.Task, error) {
 	if in.Title == "" {
 		return nil, Bad("err.title_required")
 	}
@@ -127,6 +150,20 @@ func (a *App) CreateTask(ctx context.Context, sess *Session, in CreateTaskInput)
 			}
 			task.Participants[k] = v
 		}
+		// 只看不做（ADR 0025）：类型、上级、目标、迭代、参与角色都已经校验过了，就在写库之前停住。
+		if sess.Write.DryRun {
+			clauses := []i18n.Msg{i18n.M("will.task.create_new", tt.Title, task.Title)}
+			if task.AssigneeID != "" {
+				clauses = append(clauses, i18n.M("will.task.assign_to", a.executorName(ctx, tx, task.AssigneeID)))
+			}
+			if sprint != nil {
+				clauses = append(clauses, i18n.M("will.task.into_sprint", sprint.Name))
+			}
+			if in.Ready {
+				clauses = append(clauses, i18n.M("will.task.ready"))
+			}
+			return dryRun(sess, clauses...)
+		}
 		if err := a.Store.InsertTask(ctx, tx, task); err != nil {
 			return err
 		}
@@ -203,6 +240,12 @@ func (in UpdateTaskInput) agentForbidden() bool {
 // 已结束的任务只能改描述与自定义字段。人改任务要与任务有关（负责人、创建者、验收人、参与人、所属目标的负责人）或是组织负责人；
 // Agent 受「所有者权限 ∩ 授权」约束，验收人、优先级、归属目标、上级、迭代、参与角色、所需能力、仅限人工一律不能改。
 func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in UpdateTaskInput) (*domain.Task, error) {
+	return idempotent(ctx, a, sess, "update_task", map[string]any{"task_id": id, "input": in}, func() (*domain.Task, error) {
+		return a.updateTask(ctx, sess, id, in)
+	})
+}
+
+func (a *App) updateTask(ctx context.Context, sess *Session, id string, in UpdateTaskInput) (*domain.Task, error) {
 	var task *domain.Task
 	var prop *ProposalView
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
@@ -225,6 +268,9 @@ func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in Updat
 				return Forbidden("err.agent_no_grant", i18n.Key("grant.execute"))
 			}
 			if domain.NeedsApproval(sess.Actor, domain.GrantExecute) {
+				if sess.Write.DryRun {
+					return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), i18n.M("proposal.summary.task.update", t.Title))
+				}
 				v, err := a.createProposal(ctx, tx, sess, proposalDraft{Action: ActionTaskUpdate, Grant: domain.GrantExecute,
 					TargetKind: "task", TargetID: t.ID, TargetTitle: t.Title, Payload: in,
 					Summary: i18n.M("proposal.summary.task.update", t.Title)})
@@ -469,8 +515,15 @@ func (a *App) UpdateTask(ctx context.Context, sess *Session, id string, in Updat
 			extra = append(extra, evs...)
 		}
 		if len(changes) == 0 && len(soft) == 0 && len(extra) == 0 {
+			if sess.Write.DryRun {
+				return dryRun(sess)
+			}
 			task = t
 			return nil
+		}
+		// 只看不做：改动都算清楚了，就在写库之前停住。
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.task.update", taskRefText(t)))
 		}
 		if err := a.Store.UpdateTask(ctx, tx, t); err != nil {
 			return err
@@ -553,24 +606,6 @@ func taskDescendants(tasks []*domain.Task, rootID string) map[string]bool {
 	return out
 }
 
-// ResolveTaskRef 把「#123」「123」这样的序号换成任务 ID；其他写法原样返回。
-func (a *App) ResolveTaskRef(ctx context.Context, sess *Session, ref string) (string, error) {
-	n, ok := parseTaskNumber(ref)
-	if !ok {
-		return ref, nil
-	}
-	var id string
-	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
-		t, err := a.Store.TaskByNumber(ctx, tx, n)
-		if err != nil {
-			return NotFound("err.task_number", strings.TrimPrefix(strings.TrimSpace(ref), "#"))
-		}
-		id = t.ID
-		return nil
-	})
-	return id, err
-}
-
 // parseTaskNumber 认「#123」「123」（可带空白）。
 func parseTaskNumber(ref string) (int, bool) {
 	s := strings.TrimSpace(ref)
@@ -625,7 +660,7 @@ func (a *App) Transition(ctx context.Context, sess *Session, taskID, name string
 			Payload: map[string]any{"task_id": c.Task.ID, "transition": name, "comment": p.Comment, "result": p.Result},
 			Summary: i18n.M("proposal.summary.task.transition", c.Task.Title, from, to)}, nil
 	}
-	return a.taskCommand(ctx, sess, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
+	return a.taskCommand(ctx, sess, writeOp{"transition_task", map[string]any{"task_id": taskID, "name": name, "comment": p.Comment, "result": p.Result}}, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
 		return domain.Apply(c, sess.Actor, name, domain.Payload{Comment: p.Comment, Result: p.Result})
 	})
 }
@@ -637,7 +672,7 @@ func (a *App) Claim(ctx context.Context, sess *Session, taskID string) (*domain.
 			Payload: map[string]any{"task_id": c.Task.ID},
 			Summary: i18n.M("proposal.summary.task.claim", sess.Actor.Name, c.Task.Title)}, nil
 	}
-	return a.taskCommand(ctx, sess, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
+	return a.taskCommand(ctx, sess, writeOp{"claim_task", map[string]any{"task_id": taskID}}, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
 		return domain.Claim(c, sess.Actor)
 	})
 }
@@ -649,7 +684,7 @@ func (a *App) Begin(ctx context.Context, sess *Session, taskID string) (*domain.
 			Payload: map[string]any{"task_id": c.Task.ID},
 			Summary: i18n.M("proposal.summary.task.begin", sess.Actor.Name, c.Task.Title)}, nil
 	}
-	return a.taskCommand(ctx, sess, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
+	return a.taskCommand(ctx, sess, writeOp{"begin_task", map[string]any{"task_id": taskID}}, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
 		return domain.Begin(c, sess.Actor)
 	})
 }
@@ -665,7 +700,7 @@ func (a *App) Assign(ctx context.Context, sess *Session, taskID, executorID stri
 		}
 		return d, nil
 	}
-	return a.taskCommand(ctx, sess, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
+	return a.taskCommand(ctx, sess, writeOp{"assign_task", map[string]any{"task_id": taskID, "executor_id": executorID}}, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
 		return domain.Assign(c, sess.Actor, executorID)
 	})
 }
@@ -684,7 +719,7 @@ func (a *App) AddArtifact(ctx context.Context, sess *Session, taskID string, art
 			Payload: art,
 			Summary: i18n.M("proposal.summary.task.artifact", c.Task.Title, title)}, nil
 	}
-	return a.taskCommand(ctx, sess, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
+	return a.taskCommand(ctx, sess, writeOp{"attach_artifact", map[string]any{"task_id": taskID, "type": art.Type, "title": art.Title, "ref": art.Ref}}, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
 		if domain.NeedsApproval(sess.Actor, domain.GrantExecute) {
 			return nil, &domain.ErrNeedsApproval{Grant: domain.GrantExecute}
 		}
@@ -707,58 +742,68 @@ func (a *App) AddComment(ctx context.Context, sess *Session, taskID, text string
 		}
 		return d, nil
 	}
-	return a.taskCommand(ctx, sess, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
+	return a.taskCommand(ctx, sess, writeOp{commentOp(isNote), map[string]any{"task_id": taskID, "text": text, "is_note": isNote}}, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
 		return domain.AddComment(c, sess.Actor, text, isNote)
 	})
 }
 
 // Link 建立关联。
 func (a *App) Link(ctx context.Context, sess *Session, taskID string, typ domain.RelationType, otherID string) (*domain.Task, error) {
-	var task *domain.Task
-	var v *ProposalView
-	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
-		c, err := a.loadContext(ctx, tx, sess, taskID)
-		if err != nil {
-			return err
-		}
-		other, err := a.Store.TaskByID(ctx, tx, otherID)
-		if err != nil {
-			return Bad("err.other_task_missing")
-		}
-		blocksOf := func(id string) []string {
-			ids, _ := a.Store.BlocksOf(ctx, tx, id)
-			return ids
-		}
-		o, err := domain.Link(c, sess.Actor, typ, otherID, blocksOf)
-		if err != nil {
-			var na *domain.ErrNeedsApproval
-			if errors.As(err, &na) {
-				v, err = a.createProposal(ctx, tx, sess, proposalDraft{
-					Action: ActionTaskLink, Grant: na.Grant, TargetKind: "task", TargetID: c.Task.ID, TargetTitle: c.Task.Title,
-					Payload: map[string]any{"task_id": c.Task.ID, "type": string(typ), "other_id": otherID},
-					Summary: i18n.M("proposal.summary.task.link", c.Task.Title, i18n.Key("rel."+string(typ)), other.Title)})
+	return idempotent(ctx, a, sess, "link_tasks", map[string]any{"task_id": taskID, "type": string(typ), "other_id": otherID}, func() (*domain.Task, error) {
+		var task *domain.Task
+		var v *ProposalView
+		err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+			c, err := a.loadContext(ctx, tx, sess, taskID)
+			if err != nil {
 				return err
 			}
-			return err
+			other, err := a.Store.TaskByID(ctx, tx, otherID)
+			if err != nil {
+				return Bad("err.other_task_missing")
+			}
+			blocksOf := func(id string) []string {
+				ids, _ := a.Store.BlocksOf(ctx, tx, id)
+				return ids
+			}
+			o, err := domain.Link(c, sess.Actor, typ, otherID, blocksOf)
+			if err != nil {
+				var na *domain.ErrNeedsApproval
+				if errors.As(err, &na) {
+					summary := i18n.M("proposal.summary.task.link", c.Task.Title, i18n.Key("rel."+string(typ)), other.Title)
+					if sess.Write.DryRun {
+						return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), summary)
+					}
+					v, err = a.createProposal(ctx, tx, sess, proposalDraft{
+						Action: ActionTaskLink, Grant: na.Grant, TargetKind: "task", TargetID: c.Task.ID, TargetTitle: c.Task.Title,
+						Payload: map[string]any{"task_id": c.Task.ID, "type": string(typ), "other_id": otherID},
+						Summary: summary})
+					return err
+				}
+				return err
+			}
+			if sess.Write.DryRun {
+				return dryRun(sess, i18n.M("will.task.link_to", taskRefText(c.Task), taskRefText(other), i18n.Key("rel."+string(typ))))
+			}
+			if err := a.persist(ctx, tx, sess, c, o); err != nil {
+				return err
+			}
+			task = o.Task
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		if err := a.persist(ctx, tx, sess, c, o); err != nil {
-			return err
+		if v != nil {
+			return nil, pending(sess, v)
 		}
-		task = o.Task
-		return nil
+		return task, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if v != nil {
-		return nil, pending(sess, v)
-	}
-	return task, nil
 }
 
 // Heartbeat 是 Agent 的心跳，顺带上报累计用量。
 func (a *App) Heartbeat(ctx context.Context, sess *Session, taskID string, usage []domain.Usage) (*domain.Task, error) {
-	if sess.IsAgent() {
+	// 只看不做连"最后活跃时间"都不碰（ADR 0025）：说好一行不落就是一行不落。
+	if sess.IsAgent() && !sess.Write.DryRun {
 		_ = a.Store.WithOrg(ctx, sess.OrgID, func(tx pgx.Tx) error { return a.Store.TouchAgent(ctx, tx, sess.AgentID) })
 	}
 	if taskID == "" {

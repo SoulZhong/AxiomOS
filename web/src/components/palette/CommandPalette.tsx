@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 import { api, type Agent, type Goal, type Member, type Task } from "@/lib/api";
 import { LOCALES, setLocale, t, useLocale } from "@/lib/i18n";
 import { keyboardIntent, markKeyboardIntent } from "@/lib/motion";
+import { agentStateTitle } from "@/lib/terms";
 import { THEMES, useTheme } from "@/lib/theme";
 import { setScope, useScopeState } from "@/lib/useScope";
 import { IconAgent, IconBacklog, IconEdit, IconGoal, IconHome, IconKeyboard, IconMember, IconOrg, IconPlus, IconTask } from "@/components/icons";
@@ -180,7 +181,7 @@ export function CommandPalette({ open, onClose, onHelp, pages, loggedIn, canMana
     const pageItems: PaletteItem[] = pages.map((p) => ({ id: `p:${p.href}`, group: "pages", title: p.label, keywords: p.href, icon: p.icon, run: () => go(p.href) }));
     const taskItems: PaletteItem[] = (index?.tasks ?? []).map((tk) => ({ id: `t:${tk.id}`, group: "tasks", title: tk.number != null ? `#${tk.number} ${tk.title}` : tk.title, hint: tk.state.title, keywords: `${tk.number != null ? `#${tk.number} ${tk.number}` : ""} ${tk.type_title} ${tk.assignee?.name ?? ""}`, icon: <IconTask />, run: () => go(`/tasks/${encodeURIComponent(tk.id)}/`) }));
     const goalItems: PaletteItem[] = flattenGoals(index?.goals ?? []).map((g) => ({ id: `g:${g.id}`, group: "goals", title: g.title, hint: `${Math.round(g.progress)}%`, keywords: g.owner?.name ?? "", icon: <IconGoal stage={g.achieved ? "grown" : "bud"} />, run: () => go(`/goals/${encodeURIComponent(g.id)}/`) }));
-    const agentItems: PaletteItem[] = (index?.agents ?? []).map((a) => ({ id: `ag:${a.id}`, group: "agents", title: a.name, hint: a.online ? t("agents.online") : t("agents.offlineShort"), keywords: a.owner.name, icon: <IconAgent />, run: () => go("/agents/") }));
+    const agentItems: PaletteItem[] = (index?.agents ?? []).map((a) => ({ id: `ag:${a.id}`, group: "agents", title: a.name, hint: agentStateTitle(a.state), keywords: a.owner.name, icon: <IconAgent />, run: () => go("/agents/") }));
     const memberItems: PaletteItem[] = canManageOrg ? (index?.members ?? []).map((m) => ({ id: `m:${m.id}`, group: "members", title: m.name, hint: m.email, keywords: `${m.email} ${m.roles.join(" ")}`, icon: <IconMember />, run: () => go(`/settings/?tab=people&member=${encodeURIComponent(m.id)}`) })) : [];
     return [...actions, ...scopeItems, ...pageItems, ...taskItems, ...goalItems, ...agentItems, ...memberItems];
   }, [theme, locale, pages, index, go, close, setTheme, loggedIn, onHelp, scopeState, canManageOrg]);

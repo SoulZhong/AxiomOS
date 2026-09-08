@@ -23,15 +23,23 @@ type GoalView struct {
 	Children   []*GoalView `json:"children"`
 	Start      *time.Time  `json:"start,omitempty"` // 子项聚合的计划开始
 	End        *time.Time  `json:"end,omitempty"`   // 子项聚合的计划结束
+	// 汇总（ADR 0022 第 6 条）：目标自己没填计划起止时，从子目标与子树里的任务推出来的起止。
+	// 只在读时算，永远不写回数据库；目标自己填了就以自己的为准，这两个字段仍然给出推算值供对照。
+	DerivedStart *time.Time `json:"derived_start,omitempty"`
+	DerivedEnd   *time.Time `json:"derived_end,omitempty"`
 	// 里程碑（ADR 0016）：目标自己的，按日期升序；摘要只算自己的里程碑，提示按子树任务算。
 	Milestones       []*MilestoneView        `json:"milestones"`
 	MilestoneSummary domain.MilestoneSummary `json:"milestone_summary"`
+	// Type 是目标类型（ADR 0023），未分类时为 nil。只做分类与显示，不影响这里任何一个汇总数字。
+	Type *domain.GoalType `json:"type"`
 }
 
 // CreateGoalInput 是创建/修改目标的输入。
 type CreateGoalInput struct {
-	ParentID      string     `json:"parent_id"`
-	TeamID        string     `json:"team_id"`
+	ParentID string `json:"parent_id"`
+	TeamID   string `json:"team_id"`
+	// TypeID 是目标类型（ADR 0023），可以不填（未分类）。
+	TypeID        string     `json:"type_id"`
 	OwnerMemberID string     `json:"owner_member_id"`
 	Title         string     `json:"title"`
 	Description   string     `json:"description"`
@@ -39,12 +47,37 @@ type CreateGoalInput struct {
 	Deadline      *time.Time `json:"deadline"`
 	PlannedStart  *time.Time `json:"planned_start"`
 	PlannedEnd    *time.Time `json:"planned_end"`
+	// 路线图三字段（ADR 0021），都可以不填
+	Horizon    domain.GoalHorizon    `json:"horizon"`
+	Confidence domain.GoalConfidence `json:"confidence"`
+	Outcome    string                `json:"outcome"`
+	// 时间线两字段（ADR 0022），也都可以不填
+	DatePrecision domain.DatePrecision `json:"date_precision"`
+	Rank          *float64             `json:"rank"`
+}
+
+// goalPlanErr 把路线图三字段的校验问题变成一句句完整的话。
+func goalPlanErr(errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	return &UserError{Status: 400, Reasons: reasonsOf(errs)}
 }
 
 // CreateGoal 创建目标。
 func (a *App) CreateGoal(ctx context.Context, sess *Session, in CreateGoalInput) (*domain.Goal, error) {
+	return idempotent(ctx, a, sess, "create_goal", in, func() (*domain.Goal, error) {
+		return a.createGoal(ctx, sess, in)
+	})
+}
+
+func (a *App) createGoal(ctx context.Context, sess *Session, in CreateGoalInput) (*domain.Goal, error) {
 	if in.Title == "" {
 		return nil, Bad("err.title_required")
+	}
+	in.Outcome = domain.NormalizeOutcome(in.Outcome)
+	if err := goalPlanErr(domain.ValidateGoalPlan(in.Horizon, in.Confidence, in.Outcome, in.DatePrecision)); err != nil {
+		return nil, err
 	}
 	if sess.IsAgent() {
 		if !sess.Actor.HasGrant(domain.GrantCreateGoal) {
@@ -61,7 +94,8 @@ func (a *App) CreateGoal(ctx context.Context, sess *Session, in CreateGoalInput)
 	if owner == "" {
 		owner = sess.MemberID
 	}
-	g := &domain.Goal{OrgID: sess.OrgID, ParentID: in.ParentID, TeamID: in.TeamID, OwnerMemberID: owner, Title: in.Title, Description: in.Description, Budget: in.Budget, Deadline: in.Deadline, PlannedStart: in.PlannedStart, PlannedEnd: in.PlannedEnd}
+	g := &domain.Goal{OrgID: sess.OrgID, ParentID: in.ParentID, TeamID: in.TeamID, TypeID: in.TypeID, OwnerMemberID: owner, Title: in.Title, Description: in.Description, Budget: in.Budget, Deadline: in.Deadline, PlannedStart: in.PlannedStart, PlannedEnd: in.PlannedEnd,
+		Horizon: in.Horizon, Confidence: in.Confidence, Outcome: in.Outcome, DatePrecision: in.DatePrecision, Rank: in.Rank}
 	// 没指定团队时按就近原则归队：上级目标的团队 → 当前正看着的那个团队 → 创建者自己的团队。
 	// 否则新目标会落成"未分组"，在按团队筛选的范围里直接消失。
 	defaultTeam := in.TeamID == ""
@@ -86,6 +120,34 @@ func (a *App) CreateGoal(ctx context.Context, sess *Session, in CreateGoalInput)
 				}
 			}
 		}
+		// 目标类型（ADR 0023）：停用了的类型新建时选不到；类型带了默认时间粒度而这次没显式填粒度时，
+		// 在这里预填（应用层的事，不是数据库默认值：它只是「预填」，之后可以逐个目标改）。
+		if g.TypeID != "" {
+			types, err := a.goalTypesByID(ctx, tx)
+			if err != nil {
+				return err
+			}
+			t := types[g.TypeID]
+			if t == nil {
+				return Bad("err.goal_type_missing")
+			}
+			if !t.Active {
+				return Bad("err.goal_type_inactive", t.Name)
+			}
+			if in.DatePrecision == "" && t.DefaultPrecision != "" {
+				g.DatePrecision = t.DefaultPrecision
+			}
+		}
+		// 只看不做（ADR 0025）：上级、团队、类型都校验过了，就在写库之前停住。
+		if sess.Write.DryRun {
+			clauses := []i18n.Msg{i18n.M("will.goal.create", g.Title)}
+			if g.TeamID != "" {
+				if ix, err := a.OrgIndex(ctx, tx); err == nil && ix.TeamName[g.TeamID] != "" {
+					clauses = append(clauses, i18n.M("will.goal.team", ix.TeamName[g.TeamID]))
+				}
+			}
+			return dryRun(sess, clauses...)
+		}
 		if err := a.Store.CreateGoal(ctx, tx, g); err != nil {
 			return err
 		}
@@ -97,18 +159,27 @@ func (a *App) CreateGoal(ctx context.Context, sess *Session, in CreateGoalInput)
 // UpdateGoalInput 是可改字段。指针为 nil 表示不改；要清空可空字段（预算、截止日、计划起止、进度）时把字段名写进 Clear。
 // ParentID 指向空字符串表示提为顶级目标。
 type UpdateGoalInput struct {
-	Title            *string            `json:"title"`
-	Description      *string            `json:"description"`
-	Status           *domain.GoalStatus `json:"status"`
-	OwnerMemberID    *string            `json:"owner_member_id"`
-	TeamID           *string            `json:"team_id"`
-	ParentID         *string            `json:"parent_id"`
-	Budget           *float64           `json:"budget"`
-	Deadline         *time.Time         `json:"deadline"`
-	PlannedStart     *time.Time         `json:"planned_start"`
-	PlannedEnd       *time.Time         `json:"planned_end"`
-	ProgressOverride *int               `json:"progress_override"`
-	Clear            []string           `json:"clear,omitempty"` // budget | deadline | planned_start | planned_end | progress_override
+	Title         *string            `json:"title"`
+	Description   *string            `json:"description"`
+	Status        *domain.GoalStatus `json:"status"`
+	OwnerMemberID *string            `json:"owner_member_id"`
+	TeamID        *string            `json:"team_id"`
+	// TypeID 是目标类型（ADR 0023）：指向空字符串表示清空（未分类）。
+	TypeID           *string    `json:"type_id"`
+	ParentID         *string    `json:"parent_id"`
+	Budget           *float64   `json:"budget"`
+	Deadline         *time.Time `json:"deadline"`
+	PlannedStart     *time.Time `json:"planned_start"`
+	PlannedEnd       *time.Time `json:"planned_end"`
+	ProgressOverride *int       `json:"progress_override"`
+	// 路线图三字段（ADR 0021）：指向空字符串表示清空（未排期 / 没填信心度 / 去掉成果指标）
+	Horizon    *domain.GoalHorizon    `json:"horizon"`
+	Confidence *domain.GoalConfidence `json:"confidence"`
+	Outcome    *string                `json:"outcome"`
+	// 时间线两字段（ADR 0022）：时间粒度传空字符串等同于「到周」；排序权重写进 Clear 表示清空
+	DatePrecision *domain.DatePrecision `json:"date_precision"`
+	Rank          *float64              `json:"rank"`
+	Clear         []string              `json:"clear,omitempty"` // budget | deadline | planned_start | planned_end | progress_override | rank
 }
 
 // UpdateGoal 修改目标；只有目标负责人、上级目标负责人或组织负责人可以。
@@ -166,6 +237,25 @@ func (a *App) UpdateGoal(ctx context.Context, sess *Session, id string, in Updat
 			changes = append(changes, fieldChange{Field: "team_id", From: nilIfEmpty(cur.TeamID), To: nilIfEmpty(*in.TeamID),
 				FromTitle: names[cur.TeamID], ToTitle: names[*in.TeamID]})
 			cur.TeamID = *in.TeamID
+		}
+		if in.TypeID != nil && *in.TypeID != cur.TypeID {
+			types, err := a.goalTypesByID(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if *in.TypeID != "" {
+				t := types[*in.TypeID]
+				if t == nil {
+					return Bad("err.goal_type_missing")
+				}
+				if !t.Active {
+					return Bad("err.goal_type_inactive", t.Name)
+				}
+			}
+			// 名字记进动态：类型之后改名不影响这条历史（ADR 0023 第 6 条）
+			changes = append(changes, fieldChange{Field: "type_id", From: nilIfEmpty(cur.TypeID), To: nilIfEmpty(*in.TypeID),
+				FromTitle: goalTypeName(types, cur.TypeID), ToTitle: goalTypeName(types, *in.TypeID)})
+			cur.TypeID = *in.TypeID
 		}
 		if in.ParentID != nil && *in.ParentID != cur.ParentID {
 			goals, err := a.Store.ListGoals(ctx, tx)
@@ -244,6 +334,59 @@ func (a *App) UpdateGoal(ctx context.Context, sess *Session, id string, in Updat
 			changes = append(changes, fieldChange{Field: "progress_override", From: from, To: *in.ProgressOverride})
 			cur.ProgressOverride = in.ProgressOverride
 		}
+		// 路线图三字段（ADR 0021）：先按输入算出目标值，一起校验，再各记一条动态
+		horizon, confidence, outcome := cur.Horizon, cur.Confidence, cur.Outcome
+		if in.Horizon != nil {
+			horizon = *in.Horizon
+		}
+		if in.Confidence != nil {
+			confidence = *in.Confidence
+		}
+		if in.Outcome != nil {
+			outcome = domain.NormalizeOutcome(*in.Outcome)
+		}
+		precision := cur.DatePrecision
+		if in.DatePrecision != nil {
+			precision = domain.NormalizeDatePrecision(*in.DatePrecision)
+		}
+		if err := goalPlanErr(domain.ValidateGoalPlan(horizon, confidence, outcome, precision)); err != nil {
+			return err
+		}
+		if horizon != cur.Horizon {
+			changes = append(changes, fieldChange{Field: "horizon", From: nilIfEmpty(string(cur.Horizon)), To: nilIfEmpty(string(horizon))})
+			cur.Horizon = horizon
+		}
+		if confidence != cur.Confidence {
+			changes = append(changes, fieldChange{Field: "confidence", From: nilIfEmpty(string(cur.Confidence)), To: nilIfEmpty(string(confidence))})
+			cur.Confidence = confidence
+		}
+		if outcome != cur.Outcome {
+			changes = append(changes, fieldChange{Field: "outcome", From: nilIfEmpty(cur.Outcome), To: nilIfEmpty(outcome)})
+			cur.Outcome = outcome
+		}
+		if precision != cur.DatePrecision {
+			changes = append(changes, fieldChange{Field: "date_precision", From: nilIfEmpty(string(cur.DatePrecision)), To: nilIfEmpty(string(precision))})
+			cur.DatePrecision = precision
+		}
+		// 排序权重不记动态：它是泳道里的次序，不是对目标本身的表态，一次拖动会动好几个目标，
+		// 记下来只会把动态刷满（ADR 0022 第 4 条）。改了就直接写。
+		switch {
+		case contains(in.Clear, "rank"):
+			if cur.Rank != nil {
+				cur.Rank = nil
+				changes = append(changes, fieldChange{Field: "rank", Silent: true})
+			}
+		case in.Rank != nil && !sameFloat(in.Rank, cur.Rank):
+			cur.Rank = in.Rank
+			changes = append(changes, fieldChange{Field: "rank", Silent: true})
+		}
+		// 只看不做（ADR 0025）：字段算完、权限判完，就在写库之前停住。一个字段都没变时说「什么都不会变。」
+		if sess.Write.DryRun {
+			if len(changes) == 0 {
+				return dryRun(sess)
+			}
+			return dryRun(sess, i18n.M("will.goal.update", cur.Title, len(changes)))
+		}
 		if len(changes) == 0 {
 			g = cur
 			return nil
@@ -255,7 +398,13 @@ func (a *App) UpdateGoal(ctx context.Context, sess *Session, id string, in Updat
 		base := map[string]any{"goal_id": cur.ID, "title": cur.Title}
 		events := make([]domain.Event, 0, len(changes))
 		for _, c := range changes {
+			if c.Silent {
+				continue
+			}
 			events = append(events, c.event("GoalFieldChanged", sess, "", base))
+		}
+		if len(events) == 0 {
+			return nil
 		}
 		return a.insertEvents(ctx, tx, sess, events)
 	})
@@ -303,6 +452,10 @@ func (a *App) DeleteGoal(ctx context.Context, sess *Session, id string) error {
 		if children > 0 || tasks > 0 {
 			return Bad("err.goal_not_empty", children, tasks)
 		}
+		// 只看不做（ADR 0025）：能不能删已经判完了，就在删之前停住。
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.goal.delete", g.Title))
+		}
 		if err := a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "GoalDeleted", ActorID: sess.Actor.ID, At: time.Now(),
 			Data: map[string]any{"goal_id": g.ID, "title": g.Title}}}); err != nil {
 			return err
@@ -335,8 +488,26 @@ func (a *App) canEditGoal(ctx context.Context, tx pgx.Tx, sess *Session, g *doma
 	return false
 }
 
+// GoalFilter 是目标树的筛选条件（ADR 0021）。
+type GoalFilter struct {
+	// Horizon 是时间桶：now | next | later，"none" 表示还没排期；空表示不筛。
+	Horizon string
+	// Type 是目标类型编号（ADR 0023），"none" 表示未分类；空表示不筛。
+	Type string
+}
+
 // GoalTree 返回带进度、成本、时间聚合的目标树，按本次请求的范围筛选（范围只是筛选）。
 func (a *App) GoalTree(ctx context.Context, sess *Session) ([]*GoalView, error) {
+	return a.GoalTreeFiltered(ctx, sess, GoalFilter{})
+}
+
+// GoalTreeFiltered 是带筛选的目标树。按时间桶筛时返回的是「命中的那些目标」本身：
+// 它们各自做顶级，子树与汇总（进度、成本、里程碑）照旧按整棵子树算；命中的目标之下
+// 又命中的目标留在原位，不重复出现。
+func (a *App) GoalTreeFiltered(ctx context.Context, sess *Session, f GoalFilter) ([]*GoalView, error) {
+	if f.Horizon != "" && !validHorizonFilter(f.Horizon) {
+		return nil, Bad("err.goal_horizon_filter", f.Horizon)
+	}
 	var roots []*GoalView
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
 		scope, err := a.scope(ctx, tx, sess)
@@ -361,9 +532,94 @@ func (a *App) GoalTree(ctx context.Context, sess *Session) ([]*GoalView, error) 
 			return err
 		}
 		roots = buildGoalTree(goals, tasks, types, runs)
-		return a.attachMilestones(ctx, tx, roots, tasks, types)
+		if err := a.attachMilestones(ctx, tx, roots, tasks, types); err != nil {
+			return err
+		}
+		// 目标类型（ADR 0023）：挂上类型对象供显示，未分类的留 nil
+		goalTypes, err := a.goalTypesByID(ctx, tx)
+		if err != nil {
+			return err
+		}
+		attachGoalTypes(roots, goalTypes)
+		if f.Type != "" {
+			if f.Type != "none" {
+				types, err := a.goalTypesByID(ctx, tx)
+				if err != nil {
+					return err
+				}
+				if types[f.Type] == nil {
+					return Bad("err.goal_type_filter", f.Type)
+				}
+			}
+			roots = pickBy(roots, func(v *GoalView) bool { return matchGoalType(v.TypeID, f.Type) })
+		}
+		if f.Horizon != "" {
+			roots = pickByHorizon(roots, f.Horizon)
+		}
+		return nil
 	})
 	return roots, err
+}
+
+// validHorizonFilter 判断筛选值：三档加上 none（还没排期）。
+func validHorizonFilter(h string) bool {
+	return h == "none" || domain.ValidHorizon(domain.GoalHorizon(h)) && h != ""
+}
+
+// pickByHorizon 从整棵树里挑出时间桶命中的目标，作为顶级返回（顺序按创建时间，深度优先）。
+func pickByHorizon(tree []*GoalView, h string) []*GoalView {
+	return pickBy(tree, func(v *GoalView) bool { return matchHorizon(v.Horizon, h) })
+}
+
+// pickBy 从整棵树里挑出命中的目标，作为顶级返回（顺序按创建时间，深度优先）：
+// 命中的目标之下又命中的目标留在原位，不重复出现，子树与汇总照旧按整棵子树算。
+func pickBy(tree []*GoalView, hit func(*GoalView) bool) []*GoalView {
+	out := []*GoalView{}
+	var walk func(vs []*GoalView)
+	walk = func(vs []*GoalView) {
+		for _, v := range vs {
+			if hit(v) {
+				out = append(out, v)
+				continue
+			}
+			walk(v.Children)
+		}
+	}
+	walk(tree)
+	return out
+}
+
+// attachGoalTypes 把类型对象挂到整棵树上。
+func attachGoalTypes(vs []*GoalView, types map[string]*domain.GoalType) {
+	for _, v := range vs {
+		if v.TypeID != "" {
+			v.Type = types[v.TypeID]
+		}
+		attachGoalTypes(v.Children, types)
+	}
+}
+
+// matchGoalType 判断一个目标是不是这一类；want 为 "none" 时匹配未分类的目标。
+func matchGoalType(cur, want string) bool {
+	if want == "none" {
+		return cur == ""
+	}
+	return cur == want
+}
+
+// goalTypeName 取类型当时的名字，用来写进动态；没有类型时是空串。
+func goalTypeName(types map[string]*domain.GoalType, id string) string {
+	if t := types[id]; t != nil {
+		return t.Name
+	}
+	return ""
+}
+
+func matchHorizon(cur domain.GoalHorizon, want string) bool {
+	if want == "none" {
+		return cur == ""
+	}
+	return string(cur) == want
 }
 
 // GetGoal 返回单个目标及其子树。
@@ -457,7 +713,7 @@ func buildGoalTree(goals []*domain.Goal, tasks []*domain.Task, types map[string]
 			v.TaskCount, v.DoneCount, v.Cost = ag.count, ag.done, ag.cost
 			v.Start, v.End = ag.start, ag.end
 		}
-		sort.Slice(v.Children, func(i, j int) bool { return v.Children[i].CreatedAt.Before(v.Children[j].CreatedAt) })
+		sort.SliceStable(v.Children, func(i, j int) bool { return goalBefore(v.Children[i], v.Children[j]) })
 		for _, c := range v.Children {
 			cw, cwd := fill(c)
 			wSum += cw
@@ -468,6 +724,9 @@ func buildGoalTree(goals []*domain.Goal, tasks []*domain.Task, types map[string]
 			v.Start = minTime(v.Start, c.Start)
 			v.End = maxTime(v.End, c.End)
 		}
+		// 汇总只在读时算（ADR 0022 第 6 条）：到这里 v.Start / v.End 里还只有子目标与任务的日期，
+		// 正是「目标自己没填时该画在哪」的答案，先留一份；随后再并进目标自己填的计划起止。
+		v.DerivedStart, v.DerivedEnd = v.Start, v.End
 		if v.PlannedStart != nil {
 			v.Start = minTime(v.Start, v.PlannedStart)
 		}
@@ -488,11 +747,35 @@ func buildGoalTree(goals []*domain.Goal, tasks []*domain.Task, types map[string]
 	for _, r := range roots {
 		fill(r)
 	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i].CreatedAt.Before(roots[j].CreatedAt) })
+	sort.SliceStable(roots, func(i, j int) bool { return goalBefore(roots[i], roots[j]) })
 	if roots == nil {
 		roots = []*GoalView{}
 	}
 	return roots
+}
+
+// goalBefore 是同一层目标之间的先后（ADR 0022）：先看手工排的次序，再看计划开始，最后按创建时间。
+//
+//  1. 手工排过的（rank 不为空）排在没排过的前面，彼此按 rank 从小到大——手工次序就是「这个更要紧」的表态；
+//  2. 都没手工排过时，填了计划开始的排在前面（早的在前），没填日期的沉到最后；
+//  3. 还分不出来就按创建时间。
+//
+// 这里看的是目标自己填的计划开始，不是从子目标推算的：推算值只用来画条，不参与排序，
+// 否则父目标的次序会跟着子目标的日期跳来跳去。
+func goalBefore(a, b *GoalView) bool {
+	if (a.Rank != nil) != (b.Rank != nil) {
+		return a.Rank != nil
+	}
+	if a.Rank != nil && *a.Rank != *b.Rank {
+		return *a.Rank < *b.Rank
+	}
+	if (a.PlannedStart != nil) != (b.PlannedStart != nil) {
+		return a.PlannedStart != nil
+	}
+	if a.PlannedStart != nil && !a.PlannedStart.Equal(*b.PlannedStart) {
+		return a.PlannedStart.Before(*b.PlannedStart)
+	}
+	return a.CreatedAt.Before(b.CreatedAt)
 }
 
 // filterGoals 按范围裁剪目标：目标自己的团队在范围里就留下，上级目标为了保住树形也留下。

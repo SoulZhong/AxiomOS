@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { t } from "@/lib/i18n";
 import { IconCheck, IconChevronDown } from "@/components/icons";
 import { cx } from "@/components/ui";
@@ -9,6 +10,8 @@ import { cx } from "@/components/ui";
  * 选项 > 8 个时顶部带搜索框；depth 用于目标树的层级缩进；nullable 时列表首项是「不指定」（或调用方给的字样）。
  * 键盘：↑↓ 移动、Enter 选中、Esc 关闭、Home/End 首尾；搜索框内同样可用。
  * 不能改的人看到的是同一行高的纯文本（display 或选项名）。
+ * portal：菜单挂到 body 上、固定定位（与 ui.tsx 的 Menu 同一套做法）。给放在会裁切的容器里的控件用——
+ * 表格的滚动壳（.tbl-wrap 的 overflow-x）会把绝对定位的菜单剪掉，那种地方要打开这个开关。
  */
 export interface InlineOption {
   value: string;
@@ -23,7 +26,7 @@ export interface InlineOption {
   keywords?: string;
 }
 
-export function InlineSelect({ value, options, onChange, editable, nullable = false, nullLabel, display, placeholder, searchable, align = "left", ariaLabel, className, loading }: {
+export function InlineSelect({ value, options, onChange, editable, nullable = false, nullLabel, display, placeholder, searchable, align = "left", ariaLabel, className, loading, portal = false }: {
   value: string | null;
   options: InlineOption[];
   onChange: (next: string | null) => void;
@@ -39,11 +42,14 @@ export function InlineSelect({ value, options, onChange, editable, nullable = fa
   className?: string;
   /** 选项还在加载：菜单里显示加载中 */
   loading?: boolean;
+  /** 菜单挂到 body 上、固定定位：放在有 overflow 的容器（表格滚动壳）里时必须打开，否则菜单会被剪掉 */
+  portal?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [place, setPlace] = useState<"bottom" | "top">("bottom");
+  const [box, setBox] = useState<{ left?: number; right?: number; top?: number; bottom?: number } | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
   const btn = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLUListElement>(null);
@@ -79,11 +85,32 @@ export function InlineSelect({ value, options, onChange, editable, nullable = fa
     close(true);
     if (next !== value) onChange(next);
   };
+  useLayoutEffect(() => {
+    if (!open || !portal) return;
+    const place2 = () => {
+      const r = btn.current?.getBoundingClientRect();
+      if (!r) return;
+      const est = (canSearch ? 40 : 0) + 8 + Math.min(rows.length, 9) * 30;
+      const below = window.innerHeight - r.bottom;
+      const vertical = below < est + 12 && r.top > est ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 };
+      const horizontal = align === "right" ? { right: Math.max(8, window.innerWidth - r.right - 6) } : { left: Math.max(8, r.left - 6) };
+      setBox({ ...vertical, ...horizontal });
+    };
+    place2();
+    window.addEventListener("resize", place2);
+    window.addEventListener("scroll", place2, true);
+    return () => {
+      window.removeEventListener("resize", place2);
+      window.removeEventListener("scroll", place2, true);
+    };
+  }, [open, portal, align, rows.length, canSearch]);
   useEffect(() => {
     if (!open) return;
     (canSearch ? search.current : list.current)?.focus();
     const onDown = (e: MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) { setOpen(false); setQuery(""); }
+      const el = e.target as Node;
+      // portal 时菜单不在 wrap 里，两边都要认
+      if (!wrap.current?.contains(el) && !menu.current?.contains(el)) { setOpen(false); setQuery(""); }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -107,32 +134,35 @@ export function InlineSelect({ value, options, onChange, editable, nullable = fa
   const shown = display ?? (current ? <span className="inline-flex min-w-0 items-center gap-1.5">{current.icon}<span className="inl-text">{current.label}</span></span> : <span className="inl-text text-ink-subtle">{placeholder ?? (nullable ? (nullLabel ?? t("inline.none")) : "—")}</span>);
   if (!editable) return <span className={cx("inl-static", className)}>{shown}</span>;
 
+  const menuNode = (
+    <div ref={menu} className={cx("inl-menu", portal && "!fixed")} data-align={align} style={portal ? { left: box?.left ?? "auto", right: box?.right ?? "auto", top: box?.top ?? "auto", bottom: box?.bottom ?? "auto" } : place === "top" ? { top: "auto", bottom: "calc(100% + 4px)" } : undefined} onKeyDown={onKey}>
+      {canSearch && <input ref={search} value={query} onChange={(e) => { setQuery(e.target.value); setActive(0); }} placeholder={t("inline.search")} className="inl-menu-search text-body" aria-label={t("inline.search")} aria-controls={`${id}-list`} />}
+      <ul ref={list} id={`${id}-list`} role="listbox" tabIndex={canSearch ? -1 : 0} className="inl-menu-list" aria-activedescendant={rows[active] ? `${id}-${active}` : undefined}>
+        {loading && <li role="presentation" className="inl-opt text-ink-subtle">{t("common.loading")}</li>}
+        {!loading && rows.length === 0 && <li role="presentation" className="inl-opt text-ink-subtle">{options.length ? t("inline.noMatch") : t("inline.noOptions")}</li>}
+        {rows.map((o, i) => {
+          const selected = (o.value || null) === value;
+          return (
+            <li key={o.value || "__null"} id={`${id}-${i}`} data-i={i} role="option" aria-selected={selected} aria-disabled={o.disabled || undefined} data-active={i === active ? "" : undefined} className="inl-opt text-body" style={o.depth ? { paddingLeft: 8 + o.depth * 14 } : undefined} onMouseMove={() => setActive(i)} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(o)}>
+              <span className="inl-opt-check" aria-hidden="true">{selected && <IconCheck size={12} />}</span>
+              {o.icon}
+              <span className={cx("inl-opt-label", !o.value && "text-ink-subtle")}>{o.label}</span>
+              {o.hint && <span className="inl-opt-hint">{o.hint}</span>}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+
   return (
     <span ref={wrap} className={cx("inl-wrap relative inline-flex max-w-full", className)}>
       <button ref={btn} type="button" className="inl" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? `${id}-list` : undefined} aria-label={ariaLabel} onClick={() => (open ? close(true) : openMenu())} onKeyDown={(e) => { if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); openMenu(); } }}>
         {shown}
         <IconChevronDown size={12} className="inl-caret" aria-hidden="true" />
       </button>
-      {open && (
-        <div ref={menu} className="inl-menu" data-align={align} style={place === "top" ? { top: "auto", bottom: "calc(100% + 4px)" } : undefined} onKeyDown={onKey}>
-          {canSearch && <input ref={search} value={query} onChange={(e) => { setQuery(e.target.value); setActive(0); }} placeholder={t("inline.search")} className="inl-menu-search text-body" aria-label={t("inline.search")} aria-controls={`${id}-list`} />}
-          <ul ref={list} id={`${id}-list`} role="listbox" tabIndex={canSearch ? -1 : 0} className="inl-menu-list" aria-activedescendant={rows[active] ? `${id}-${active}` : undefined}>
-            {loading && <li role="presentation" className="inl-opt text-ink-subtle">{t("common.loading")}</li>}
-            {!loading && rows.length === 0 && <li role="presentation" className="inl-opt text-ink-subtle">{options.length ? t("inline.noMatch") : t("inline.noOptions")}</li>}
-            {rows.map((o, i) => {
-              const selected = (o.value || null) === value;
-              return (
-                <li key={o.value || "__null"} id={`${id}-${i}`} data-i={i} role="option" aria-selected={selected} aria-disabled={o.disabled || undefined} data-active={i === active ? "" : undefined} className="inl-opt text-body" style={o.depth ? { paddingLeft: 8 + o.depth * 14 } : undefined} onMouseMove={() => setActive(i)} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(o)}>
-                  <span className="inl-opt-check" aria-hidden="true">{selected && <IconCheck size={12} />}</span>
-                  {o.icon}
-                  <span className={cx("inl-opt-label", !o.value && "text-ink-subtle")}>{o.label}</span>
-                  {o.hint && <span className="inl-opt-hint">{o.hint}</span>}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+      {/* portal 时菜单固定定位挂在 body 上，逃开表格滚动壳的裁切；普通场合仍是就地的绝对定位 */}
+      {open && (portal ? (box && typeof document !== "undefined" ? createPortal(menuNode, document.body) : null) : menuNode)}
     </span>
   );
 }

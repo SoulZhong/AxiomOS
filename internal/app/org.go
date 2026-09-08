@@ -45,6 +45,9 @@ func (a *App) UpdateOrganization(ctx context.Context, sess *Session, in OrgPatch
 	if err := a.requireOrgSettings(sess); err != nil {
 		return nil, err
 	}
+	if err := refuseDryRun(sess); err != nil {
+		return nil, err
+	}
 	var org *domain.Organization
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
 		cur, err := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
@@ -556,6 +559,9 @@ func (a *App) MakeOwner(ctx context.Context, sess *Session, memberID string) err
 	if !sess.IsOwner {
 		return Forbidden("err.owner_required")
 	}
+	if err := refuseDryRun(sess); err != nil {
+		return err
+	}
 	return a.tx(ctx, sess, func(tx pgx.Tx) error {
 		m, err := a.Store.MemberByID(ctx, tx, memberID)
 		if err != nil {
@@ -933,6 +939,9 @@ func (a *App) SaveRole(ctx context.Context, sess *Session, name string, title i1
 	if err := a.requireOrgSettings(sess); err != nil {
 		return nil, err
 	}
+	if err := refuseDryRun(sess); err != nil {
+		return nil, err
+	}
 	if !roleNameRe.MatchString(name) {
 		return nil, Bad("err.slug")
 	}
@@ -970,6 +979,9 @@ func (a *App) SaveRole(ctx context.Context, sess *Session, name string, title i1
 // DeleteRole 删除角色。
 func (a *App) DeleteRole(ctx context.Context, sess *Session, name string) error {
 	if err := a.requireOrgSettings(sess); err != nil {
+		return err
+	}
+	if err := refuseDryRun(sess); err != nil {
 		return err
 	}
 	return a.tx(ctx, sess, func(tx pgx.Tx) error {
@@ -1406,6 +1418,9 @@ func (a *App) SaveCapability(ctx context.Context, sess *Session, name string, ti
 	if err := a.requireOrgSettings(sess); err != nil {
 		return err
 	}
+	if err := refuseDryRun(sess); err != nil {
+		return err
+	}
 	if !capNameRe.MatchString(name) {
 		return Bad("err.slug")
 	}
@@ -1418,6 +1433,9 @@ func (a *App) SaveCapability(ctx context.Context, sess *Session, name string, ti
 // DeleteCapability 删除能力标签。
 func (a *App) DeleteCapability(ctx context.Context, sess *Session, name string) error {
 	if err := a.requireOrgSettings(sess); err != nil {
+		return err
+	}
+	if err := refuseDryRun(sess); err != nil {
 		return err
 	}
 	return a.tx(ctx, sess, func(tx pgx.Tx) error { return a.Store.DeleteCapability(ctx, tx, name) })
@@ -1497,6 +1515,9 @@ func (a *App) SetPriceOverride(ctx context.Context, sess *Session, p domain.Pric
 	if err := a.requireOrgSettings(sess); err != nil {
 		return err
 	}
+	if err := refuseDryRun(sess); err != nil {
+		return err
+	}
 	if !validPrice(p) {
 		return Bad("err.price_fields")
 	}
@@ -1511,12 +1532,18 @@ func (a *App) DeletePriceOverride(ctx context.Context, sess *Session, modelID st
 	if err := a.requireOrgSettings(sess); err != nil {
 		return err
 	}
+	if err := refuseDryRun(sess); err != nil {
+		return err
+	}
 	return a.tx(ctx, sess, func(tx pgx.Tx) error { return a.Store.DeletePrice(ctx, tx, sess.OrgID, modelID) })
 }
 
 // SetExchangeRate 写汇率。
 func (a *App) SetExchangeRate(ctx context.Context, sess *Session, from, to string, rate float64) error {
 	if err := a.requireOrgSettings(sess); err != nil {
+		return err
+	}
+	if err := refuseDryRun(sess); err != nil {
 		return err
 	}
 	if rate <= 0 || from == "" || to == "" {

@@ -65,6 +65,25 @@ func (s *Store) ActiveRunCount(ctx context.Context, q Querier, executorID string
 	return n, err
 }
 
+// OpenRunCounts 返回每个执行者名下打开的执行记录数（Agent 状态用，一次查完不逐个数）。
+func (s *Store) OpenRunCounts(ctx context.Context, q Querier) (map[string]int, error) {
+	rows, err := q.Query(ctx, `select executor_id, count(*) from runs where ended_at is null group by executor_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) RunsOfTask(ctx context.Context, q Querier, taskID string) ([]*RunRow, error) {
 	rows, err := q.Query(ctx, `select `+runCols+` from runs where task_id=$1 order by started_at`, taskID)
 	if err != nil {

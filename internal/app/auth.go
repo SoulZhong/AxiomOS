@@ -139,6 +139,9 @@ func (a *App) SessionFromAgentToken(ctx context.Context, token string) (*Session
 
 // SetMyLocale 修改当前账号的语言。
 func (a *App) SetMyLocale(ctx context.Context, sess *Session, locale string) error {
+	if err := refuseDryRun(sess); err != nil {
+		return err
+	}
 	l := i18n.Normalize(locale)
 	if l == "" {
 		return Bad("err.locale", locale)
@@ -321,6 +324,54 @@ func (a *App) ListAgents(ctx context.Context, sess *Session) ([]*domain.Agent, e
 			if sess.SeesAllAgents() || ag.OwnerMemberID == sess.MemberID || ag.Shared {
 				out = append(out, ag)
 			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// AgentStatus 是一个 Agent 对外的状态（CONTEXT.md「Agent 状态」）：三选一的状态、它的显示名，
+// 以及最近一次活动的时间（心跳与最近一次工具调用里更晚的那个）。
+type AgentStatus struct {
+	State        domain.AgentState
+	Title        string
+	LastActiveAt *time.Time
+}
+
+// AgentStateTitle 是状态的显示名（执行中 / 可用 / 已停用）。
+func AgentStateTitle(loc i18n.Locale, st domain.AgentState) string {
+	return i18n.Tr(loc, "agent.state."+string(st))
+}
+
+// NewAgentStatus 由三项输入算出一个 Agent 的对外状态。
+func NewAgentStatus(loc i18n.Locale, ag *domain.Agent, now time.Time, activeRuns int, ownerActive bool) AgentStatus {
+	st := ag.State(now, activeRuns, ownerActive)
+	return AgentStatus{State: st, Title: AgentStateTitle(loc, st), LastActiveAt: ag.LastActiveAt()}
+}
+
+// AgentStates 算出这些 Agent 的状态。状态的两项外部输入——名下打开的执行记录数、所有者是否在职——
+// 一次查完（CONTEXT.md「Agent 状态」）。
+func (a *App) AgentStates(ctx context.Context, sess *Session, agents []*domain.Agent) (map[string]AgentStatus, error) {
+	out := map[string]AgentStatus{}
+	if len(agents) == 0 {
+		return out, nil
+	}
+	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+		runs, err := a.Store.OpenRunCounts(ctx, tx)
+		if err != nil {
+			return err
+		}
+		members, err := a.Store.ListMembers(ctx, tx)
+		if err != nil {
+			return err
+		}
+		active := map[string]bool{}
+		for _, m := range members {
+			active[m.ID] = m.Active
+		}
+		now, loc := time.Now(), sess.Loc()
+		for _, ag := range agents {
+			out[ag.ID] = NewAgentStatus(loc, ag, now, runs[ag.ID], active[ag.OwnerMemberID])
 		}
 		return nil
 	})

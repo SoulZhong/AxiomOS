@@ -1,0 +1,343 @@
+/*
+ * 路线图时间线（ADR 0022、DESIGN.md §25）。类名前缀 rt-（roadmap timeline）；
+ * 框架（滚动、表头、左列固定、今天线）全部沿用 gantt.css，这里只补"行是什么"那一半。
+ * 只用 token（var(--c-*)），不写字面颜色；动效只有折叠（沿用 .fold）与两处 120ms 的底色过渡。
+ */
+
+/* ---------- 泳道头：32px，安静一档 ---------- */
+.rt-lane {
+  border-bottom-color: var(--c-hairline-strong);
+}
+.rt-lane-label {
+  gap: 6px;
+  background: var(--c-surface-2);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-ink-muted);
+}
+.rt-lane-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.rt-lane-group {
+  position: relative;
+  z-index: 1;
+}
+/* 「还没排期」：整组安静一档，条区不给底色 */
+.rt-unscheduled .rt-lane-label,
+.rt-unscheduled .rt-info {
+  background: color-mix(in srgb, var(--c-surface-2) 60%, transparent);
+}
+.rt-unscheduled .rt-lane-title {
+  color: var(--c-ink-subtle);
+  font-weight: 400;
+}
+
+/* 第二行的工具条（分组与筛选）：与第一行同高，标签不换行 */
+.rt-toolbar-2 {
+  margin-top: -2px;
+}
+
+/* ---------- 信息列：一行四段，44px 行高里垂直居中 ---------- */
+.rt-info {
+  gap: 6px;
+  padding: 0 6px 0 8px;
+  cursor: default;
+}
+.rt-row-on .rt-info {
+  background: var(--c-surface-3);
+  box-shadow: inset 2px 0 0 var(--c-accent);
+}
+.rt-row-ranking {
+  opacity: 0.6;
+}
+.rt-info-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+.rt-title-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* 信心度圆点：高 = 成功色、中 = 中性、低 = 警示色，没填画一圈空心 */
+.rt-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  border: 1px solid var(--c-hairline-tertiary);
+}
+.rt-dot-success {
+  border-color: var(--c-success);
+  background: var(--c-success);
+}
+.rt-dot-neutral {
+  border-color: var(--c-neutral);
+  background: var(--c-neutral);
+}
+.rt-dot-warning {
+  border-color: var(--c-warning);
+  background: var(--c-warning);
+}
+.rt-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--c-ink);
+}
+.rt-title:hover {
+  color: var(--c-accent-hover);
+}
+/* 「这条是从子目标推出来的」：标题旁一枚箭头 */
+.rt-derived {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--c-ink-subtle);
+}
+/* 目标类型（ADR 0023）：标题旁一枚类型色点 + 名字，淡一级 */
+/* 第二行：类型标签 + 成果指标 */
+.rt-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.rt-type {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--c-ink-tertiary);
+}
+.rt-type-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+.rt-outcome {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--c-ink-subtle);
+}
+.rt-pie {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+}
+.rt-pie-num {
+  fill: var(--c-ink-muted);
+  font-family: var(--font-jetbrains), "SF Mono", Menlo, monospace;
+}
+
+/*
+ * 行尾：跳到任务甘特图并预置这个目标。它只在悬停时出现，所以绝对定位、不占标题的宽度；
+ * 底色与悬停时的行底色一致，出现时干净地盖住百分比（那个数字条上也有一份）。
+ */
+.rt-jump {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 22px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--c-surface-2);
+  color: var(--c-ink-tertiary);
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+}
+.rt-row-on .rt-jump {
+  background: var(--c-surface-3);
+}
+.rt-row:hover .rt-jump,
+.rt-jump:focus-visible {
+  opacity: 1;
+}
+.rt-jump:hover {
+  color: var(--c-ink);
+  background: var(--c-surface-3);
+}
+/* 上下拖动排序的把手：同样平时隐形，压在左内边距里 */
+.rt-grip {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 16px;
+  color: var(--c-ink-tertiary);
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  transition: opacity 120ms var(--ease-out);
+}
+.rt-row:hover .rt-grip {
+  opacity: 1;
+}
+.rt-grip:active {
+  cursor: grabbing;
+}
+
+/* 上级目标：「还没排期」那一组里，让人看得出它是谁的下级 */
+.rt-parent {
+  flex: none;
+  max-width: 76px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--c-ink-tertiary);
+}
+
+/* ---------- 条区 ---------- */
+.rt-row-summary .rt-info {
+  background: var(--c-surface-2);
+}
+.rt-bars {
+  cursor: default;
+}
+/* 条身：拖着移动 */
+.rt-grab {
+  fill: transparent;
+  cursor: grab;
+}
+.rt-row[data-dragging] .rt-grab {
+  cursor: grabbing;
+}
+.rt-bar-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+/* 幽灵条：极淡的虚线，按住往右拖就算排期了 */
+.rt-ghost-hit {
+  fill: transparent;
+  cursor: ew-resize;
+}
+.rt-ghost[data-locked] .rt-ghost-hit {
+  cursor: not-allowed;
+}
+.rt-ghost-bar {
+  fill: color-mix(in srgb, var(--c-ink) 4%, transparent);
+  stroke: var(--c-hairline-strong);
+  stroke-dasharray: 4 3;
+}
+.rt-ghost:hover .rt-ghost-bar {
+  stroke: var(--c-accent-border);
+}
+.rt-ghost-hint {
+  fill: var(--c-ink-tertiary);
+}
+.rt-ghost[data-locked] .rt-ghost-hint {
+  fill: var(--c-ink-tertiary);
+}
+.rt-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+/* 一个目标都没排上时间线时的一句话 */
+.rt-nobars {
+  position: sticky;
+  left: 0;
+  padding: 18px 16px;
+  font-size: 13px;
+  color: var(--c-ink-subtle);
+}
+
+/* ---------- 工具条上的下拉 ---------- */
+.rt-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rt-pick-label {
+  flex: none;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--c-ink-subtle);
+}
+.rt-pick select {
+  height: 26px;
+  padding: 0 24px 0 8px;
+  font-size: 12px;
+}
+
+/* ---------- 图例：四种条各是什么意思 ---------- */
+.rt-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rt-key-bar {
+  display: inline-block;
+  width: 26px;
+  height: 9px;
+  border-radius: 3px;
+  border: 1px solid var(--c-accent-border);
+  background: var(--c-accent-bg);
+}
+.rt-key-fuzzy {
+  mask-image: linear-gradient(to right, transparent, #000 35%, #000 65%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 35%, #000 65%, transparent);
+}
+.rt-key-hatch {
+  background-image: repeating-linear-gradient(45deg, color-mix(in srgb, var(--c-ink) 22%, transparent) 0 2px, transparent 2px 5px);
+}
+.rt-key-ghost {
+  border-style: dashed;
+  border-color: var(--c-hairline-strong);
+  background: transparent;
+}
+
+/* ---------- 气泡 ---------- */
+.rt-tip {
+  max-width: 320px;
+}
+.rt-tip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rt-tip-line {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rt-jump,
+  .rt-grip {
+    transition: none;
+  }
+}

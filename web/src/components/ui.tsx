@@ -383,8 +383,10 @@ export function RelativeTime({ iso, className }: { iso: string | null | undefine
 }
 
 // ---------- 复制 ----------
-export function CopyButton({ text, size = "sm", variant = "default", plain = false }: { text: string; size?: "sm" | "md"; variant?: ButtonVariant; plain?: boolean }) {
+export function CopyButton({ text, size = "sm", variant = "default", plain = false, label, onCopied }: { text: string; size?: "sm" | "md"; variant?: ButtonVariant; plain?: boolean; /** 覆盖按钮文字（复制完仍然显示「已复制」） */ label?: string; /** 复制成功后额外做点什么，例如弹一条 toast */ onCopied?: () => void }) {
   const [done, setDone] = useState(false);
+  const idle = label ?? t("common.copy");
+  const copied = t("common.copied");
   return (
     <Button
       size={size}
@@ -393,10 +395,16 @@ export function CopyButton({ text, size = "sm", variant = "default", plain = fal
       onClick={() => {
         void navigator.clipboard?.writeText(text);
         setDone(true);
+        onCopied?.();
         window.setTimeout(() => setDone(false), 1500);
       }}
     >
-      {done ? t("common.copied") : t("common.copy")}
+      {/* 两种文字叠在一起，按宽的那个占位：换成「已复制」时按钮宽度不变，旁边的东西不会跳（DESIGN.md §6 按压反馈） */}
+      <span className="grid">
+        <span aria-hidden="true" className="invisible col-start-1 row-start-1 whitespace-nowrap">{idle}</span>
+        <span aria-hidden="true" className="invisible col-start-1 row-start-1 whitespace-nowrap">{copied}</span>
+        <span className="col-start-1 row-start-1 whitespace-nowrap">{done ? copied : idle}</span>
+      </span>
     </Button>
   );
 }
@@ -673,12 +681,13 @@ export interface StatChip {
   key: string;
   label: string;
   value: number | string;
-  tone?: "danger" | "warning" | "accent";
+  /** 指示灯颜色（见下面的 LedTone）：不给就不画灯 */
+  tone?: LedTone;
 }
 // ---------- 状态指示灯 ----------
 export type LedTone = "neutral" | "accent" | "success" | "online" | "warning" | "danger" | "dark";
 const LED: Record<LedTone, string> = { neutral: "bg-neutral", accent: "bg-accent led-active", success: "bg-success", online: "bg-success led-online", warning: "bg-warning", danger: "bg-danger", dark: "bg-hairline-tertiary" };
-/** 5. 8px 圆点。accent（进行中）带 accent-glow 微光并以 2s 周期呼吸；online（在线 Agent）success 常亮微光；其他不发光。 */
+/** 5. 8px 圆点。accent（进行中）带 accent-glow 微光并以 2s 周期呼吸；online（可用的 Agent）success 常亮微光；其他不发光。 */
 export function StatusLED({ tone = "neutral", className }: { tone?: LedTone; className?: string }) {
   return <span className={cx("led", LED[tone], className)} aria-hidden="true" />;
 }

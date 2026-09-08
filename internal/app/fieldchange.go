@@ -17,6 +17,8 @@ type fieldChange struct {
 	ToTitle   any
 	Label     i18n.Text      // 参与角色位置名等需要展示名的字段
 	Extra     map[string]any // 货币、位置名等附加信息
+	// Silent 的字段照样落库，但不记动态：排序权重这种纯次序的改动记下来只会把动态刷满（ADR 0022）。
+	Silent bool
 }
 
 // event 组装一条动态。base 是对象级信息（goal_id、title），每条动态都带。

@@ -107,6 +107,12 @@ func isTerminalFn(types map[string]*domain.TaskType) func(*domain.Task) bool {
 
 // CreateSprint 创建迭代（规划中）。
 func (a *App) CreateSprint(ctx context.Context, sess *Session, in CreateSprintInput) (*domain.Sprint, error) {
+	return idempotent(ctx, a, sess, "create_sprint", in, func() (*domain.Sprint, error) {
+		return a.createSprint(ctx, sess, in)
+	})
+}
+
+func (a *App) createSprint(ctx context.Context, sess *Session, in CreateSprintInput) (*domain.Sprint, error) {
 	sp := &domain.Sprint{OrgID: sess.OrgID, TeamID: in.TeamID, Name: strings.TrimSpace(in.Name), Goal: in.Goal, Status: domain.SprintPlanning, CreatedBy: sess.Actor.ID}
 	if in.StartsOn != nil {
 		sp.StartsOn = *in.StartsOn
@@ -122,6 +128,9 @@ func (a *App) CreateSprint(ctx context.Context, sess *Session, in CreateSprintIn
 			if _, err := teamByID(ctx, tx, a, sp.TeamID); err != nil {
 				return Bad("err.team_missing")
 			}
+		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.sprint.create", sp.Name))
 		}
 		if err := a.Store.InsertSprint(ctx, tx, sp); err != nil {
 			return err
@@ -158,6 +167,9 @@ func (a *App) UpdateSprint(ctx context.Context, sess *Session, id string, in Upd
 		if err := sprintErr(domain.ValidateSprint(sp), sess.Loc()); err != nil {
 			return err
 		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.sprint.update", sp.Name))
+		}
 		if err := a.Store.UpdateSprint(ctx, tx, sp); err != nil {
 			return err
 		}
@@ -185,6 +197,12 @@ func (a *App) sprintNeedsApproval(sess *Session) bool {
 
 // StartSprint 开始迭代。同一团队（无团队时按组织）同时只能有一个进行中的迭代。
 func (a *App) StartSprint(ctx context.Context, sess *Session, id string) (*domain.Sprint, error) {
+	return idempotent(ctx, a, sess, "start_sprint", map[string]any{"sprint_id": id}, func() (*domain.Sprint, error) {
+		return a.startSprint(ctx, sess, id)
+	})
+}
+
+func (a *App) startSprint(ctx context.Context, sess *Session, id string) (*domain.Sprint, error) {
 	if err := a.requireSprintControl(sess); err != nil {
 		return nil, err
 	}
@@ -233,6 +251,9 @@ func (a *App) StartSprint(ctx context.Context, sess *Session, id string) (*domai
 			}
 			return Conflict("err.sprint_active_team", teamName, active.Name)
 		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.sprint.start", sp.Name))
+		}
 		now := time.Now()
 		sp.Status, sp.StartedAt = domain.SprintActive, &now
 		if err := a.Store.UpdateSprint(ctx, tx, sp); err != nil {
@@ -252,6 +273,12 @@ type CloseResult struct {
 
 // CloseSprint 结束迭代。未完成（非终止）的任务按 unfinished 退回待办（backlog）或转入下一个迭代（next），逐个产生动态。
 func (a *App) CloseSprint(ctx context.Context, sess *Session, id, unfinished, nextID string) (*CloseResult, error) {
+	return idempotent(ctx, a, sess, "close_sprint", map[string]any{"sprint_id": id, "unfinished": unfinished, "next_sprint_id": nextID}, func() (*CloseResult, error) {
+		return a.closeSprint(ctx, sess, id, unfinished, nextID)
+	})
+}
+
+func (a *App) closeSprint(ctx context.Context, sess *Session, id, unfinished, nextID string) (*CloseResult, error) {
 	if err := a.requireSprintControl(sess); err != nil {
 		return nil, err
 	}
@@ -310,6 +337,18 @@ func (a *App) CloseSprint(ctx context.Context, sess *Session, id, unfinished, ne
 			return err
 		}
 		terminal, done := isTerminalFn(types), isDoneFn(types)
+		if sess.Write.DryRun {
+			open := 0
+			for _, t := range tasks {
+				if !terminal(t) {
+					open++
+				}
+			}
+			if next != nil {
+				return dryRun(sess, i18n.M("will.sprint.close_next", sp.Name, open, next.Name))
+			}
+			return dryRun(sess, i18n.M("will.sprint.close_backlog", sp.Name, open))
+		}
 		now := time.Now()
 		var events []domain.Event
 		for _, t := range tasks {
@@ -348,6 +387,12 @@ func (a *App) CloseSprint(ctx context.Context, sess *Session, id, unfinished, ne
 
 // AddTasksToSprint 把任务加入迭代（已结束的拒绝）。任务原本在别的迭代里时先移出。返回实际加入的数量。
 func (a *App) AddTasksToSprint(ctx context.Context, sess *Session, id string, taskIDs []string) (int, error) {
+	return idempotent(ctx, a, sess, "add_tasks_to_sprint", map[string]any{"sprint_id": id, "task_ids": taskIDs}, func() (int, error) {
+		return a.addTasksToSprint(ctx, sess, id, taskIDs)
+	})
+}
+
+func (a *App) addTasksToSprint(ctx context.Context, sess *Session, id string, taskIDs []string) (int, error) {
 	added := 0
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
 		sp, err := a.Store.SprintByID(ctx, tx, id)
@@ -374,12 +419,19 @@ func (a *App) AddTasksToSprint(ctx context.Context, sess *Session, id string, ta
 			if err != nil {
 				return err
 			}
+			if sess.Write.DryRun {
+				added++
+				continue
+			}
 			evs, err := a.moveTaskToSprint(ctx, tx, sess, t, tt, sp, names)
 			if err != nil {
 				return err
 			}
 			events = append(events, evs...)
 			added++
+		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.sprint.add_tasks", added, sp.Name))
 		}
 		return a.insertEvents(ctx, tx, sess, events)
 	})
@@ -413,6 +465,13 @@ func (a *App) moveTaskToSprint(ctx context.Context, tx pgx.Tx, sess *Session, t 
 
 // RemoveTaskFromSprint 把任务移出迭代。
 func (a *App) RemoveTaskFromSprint(ctx context.Context, sess *Session, id, taskID string) error {
+	_, err := idempotent(ctx, a, sess, "remove_task_from_sprint", map[string]any{"sprint_id": id, "task_id": taskID}, func() (struct{}, error) {
+		return struct{}{}, a.removeTaskFromSprint(ctx, sess, id, taskID)
+	})
+	return err
+}
+
+func (a *App) removeTaskFromSprint(ctx context.Context, sess *Session, id, taskID string) error {
 	return a.tx(ctx, sess, func(tx pgx.Tx) error {
 		sp, err := a.Store.SprintByID(ctx, tx, id)
 		if err != nil {
@@ -428,6 +487,9 @@ func (a *App) RemoveTaskFromSprint(ctx context.Context, sess *Session, id, taskI
 		tt, err := a.Store.TaskType(ctx, tx, t.TypeName, t.TypeVersion)
 		if err != nil {
 			return err
+		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.sprint.remove_task", taskRefText(t), sp.Name))
 		}
 		names := map[string]string{sp.ID: sp.Name}
 		events, err := a.moveTaskToSprint(ctx, tx, sess, t, tt, nil, names)

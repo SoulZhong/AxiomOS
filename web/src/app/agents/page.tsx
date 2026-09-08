@@ -1,38 +1,43 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type Agent, type AgentCheck, type AgentStat, type Event, type Grant, type GrantMode, type GrantName, type Task } from "@/lib/api";
+import { api, type Agent, type AgentCheck, type AgentStat, type AgentState, type Event, type Grant, type GrantMode, type GrantName, type Task } from "@/lib/api";
 import { fmtMoney, fmtRelative, parseDate, today } from "@/lib/format";
 import { errorMessage, useAction, useCapabilityTitles, useHighlight, useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { isAcceptanceWait, useTaskTypeIndex } from "@/lib/states";
-import { capabilityTitle, GRANT_ORDER, grantModeTitle, grantTitle } from "@/lib/terms";
+import { agentStateTitle, capabilityTitle, GRANT_ORDER, grantModeTitle, grantTitle } from "@/lib/terms";
 import { useSession } from "@/components/AppShell";
 import { AgentVisor, type VisorState } from "@/components/AgentVisor";
 import { clientTitle, ConnectWizard } from "@/components/agents/ConnectWizard";
 import { IconAgent, IconApprove, IconEdit, IconKey, IconPlus, IconRun, IconTrash } from "@/components/icons";
 import { useToast } from "@/components/toast";
-import { Avatar, Button, Checkbox, ConsequenceDialog, CopyLine, Dialog, Drawer, Empty, ErrorBox, Field, FormSection, Input, PageHeader, Panel, RelativeTime, Select, StatChips, StatusLED, Table, TableSkeleton, Tag, TagList, Tip, cx } from "@/components/ui";
+import { Avatar, Button, Checkbox, ConsequenceDialog, CopyLine, Dialog, Drawer, Empty, ErrorBox, Field, FormSection, Input, PageHeader, Panel, Select, StatChips, StatusLED, Table, TableSkeleton, Tag, TagList, Tip, type LedTone, cx } from "@/components/ui";
 
 const POLL_MS = 30_000;
 
-/** 最近心跳：一分钟内按秒说，之后沿用相对时间。 */
-function heartbeat(iso: string | null): string {
+/** 最近活动：一分钟内按秒说，之后沿用相对时间（CONTEXT.md「Agent 状态」，界面里不说「心跳」）。 */
+function lastActive(agent: Agent): string {
+  const iso = agent.last_active_at ?? agent.last_seen_at;
   const d = parseDate(iso);
-  if (!d) return t("agents.never");
+  if (!d) return t("agents.neverActive");
   const sec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
-  return sec < 60 ? t("time.secondsAgo", { n: sec }) : fmtRelative(iso);
+  const when = sec < 5 ? t("time.justNow") : sec < 60 ? t("time.secondsAgo", { n: sec }) : fmtRelative(iso);
+  return t("agents.lastActive", { when });
 }
 
+/** 状态灯：执行中 = accent 呼吸；可用 = success 常亮微光；已停用 = 暗灯（DESIGN.md §7）。 */
+const STATE_LED: Record<AgentState, LedTone> = { running: "accent", ready: "online", inactive: "dark" };
+
 /**
- * 每行下方的等宽遥测（舰内系统 v3 §6）：`最近心跳 12 秒前 · 今日 3 段 · ¥4.17`。
+ * 每行下方的等宽遥测（舰内系统 v3 §6）：`今日 3 段 · ¥4.17`。
  * 今日段数 = 今天由这个 Agent 发起的「开始执行」动态条数（GET /events）；成本 = GET /stats/agents 的累计成本。
+ * 「最近活动」不放这里，它跟着状态列走。
  */
-function AgentTelemetry({ agent, stat, todayRuns, currency }: { agent: Agent; stat: AgentStat | undefined; todayRuns: number; currency?: string }) {
+function AgentTelemetry({ stat, todayRuns, currency }: { stat: AgentStat | undefined; todayRuns: number; currency?: string }) {
   // 一项一个不折行的小块，分隔点跟在后一项前面：窄的时候整块换行，行尾不会剩一个孤零零的「·」
   return (
     <span className="eyebrow mt-1 flex flex-wrap items-center gap-x-1 normal-case text-ink-subtle">
-      <span className="whitespace-nowrap">{t("agents.lastHeartbeat")} <span className="text-telemetry">{heartbeat(agent.last_seen_at)}</span></span>
-      <span className="whitespace-nowrap"><span className="mr-1 text-hairline-tertiary" aria-hidden="true">·</span>{t("agents.todaySegments", { n: todayRuns })}</span>
+      <span className="whitespace-nowrap">{t("agents.todaySegments", { n: todayRuns })}</span>
       <span className="whitespace-nowrap"><span className="mr-1 text-hairline-tertiary" aria-hidden="true">·</span>{t("agents.costTotal")} <span className="text-telemetry">{stat ? fmtMoney(stat.cost, currency) : "—"}</span></span>
     </span>
   );
@@ -48,7 +53,7 @@ export default function AgentsPage() {
   const tasks = useLoad(() => api.tasks.list().catch(() => [] as Task[]), []);
   const types = useTaskTypeIndex();
   const caps = useCapabilityTitles();
-  // 心跳 30s 一拍：标签页可见时重拉 Agent 与任务，上线 / 离线是真实变化才会播充电 / 变灰
+  // 30s 一拍：标签页可见时重拉 Agent 与任务，状态真的变了才会播充电 / 变灰
   const reloadAgents = agents.reload;
   const reloadTasks = tasks.reload;
   const reloadEvents = events.reload;
@@ -65,18 +70,21 @@ export default function AgentsPage() {
     const ended = new Set((events.data ?? []).filter((e) => e.kind === "RunEnded").map((e) => String(e.data.run_id ?? "")));
     return (events.data ?? []).some((e) => e.kind === "RunStarted" && e.actor?.id === id && !ended.has(String(e.data.run_id ?? "")));
   };
-  // 上线 / 离线的变化（渲染期比较上一次的在线快照），动效 800ms 后清掉
-  const onlineSig = (agents.data ?? []).map((a) => `${a.id}:${a.online ? 1 : 0}`).join("\n");
-  const [snap, setSnap] = useState<{ sig: string; online: Map<string, boolean>; motions: Record<string, "charge" | "dim"> }>(() => ({ sig: onlineSig, online: new Map((agents.data ?? []).map((a) => [a.id, a.online])), motions: {} }));
-  if (snap.sig !== onlineSig) {
-    const online = new Map<string, boolean>();
+  // 状态变化（渲染期比较上一次的状态快照）：开始干活播充电，被停用播变灰，动效 800ms 后清掉
+  const stateSig = (agents.data ?? []).map((a) => `${a.id}:${a.state}`).join("\n");
+  const [snap, setSnap] = useState<{ sig: string; states: Map<string, AgentState>; motions: Record<string, "charge" | "dim"> }>(() => ({ sig: stateSig, states: new Map((agents.data ?? []).map((a) => [a.id, a.state])), motions: {} }));
+  if (snap.sig !== stateSig) {
+    const states = new Map<string, AgentState>();
     const motions: Record<string, "charge" | "dim"> = {};
     for (const a of agents.data ?? []) {
-      const prev = snap.online.get(a.id);
-      if (prev !== undefined && prev !== a.online) motions[a.id] = a.online ? "charge" : "dim";
-      online.set(a.id, a.online);
+      const prev = snap.states.get(a.id);
+      if (prev !== undefined && prev !== a.state) {
+        if (a.state === "running") motions[a.id] = "charge";
+        else if (a.state === "inactive") motions[a.id] = "dim";
+      }
+      states.set(a.id, a.state);
     }
-    setSnap({ sig: onlineSig, online, motions });
+    setSnap({ sig: stateSig, states, motions });
   }
   const hasMotion = Object.keys(snap.motions).length > 0;
   useEffect(() => {
@@ -85,11 +93,11 @@ export default function AgentsPage() {
     return () => window.clearTimeout(id);
   }, [hasMotion, snap.sig]);
   const visorState = (a: Agent): VisorState => {
-    if (!a.online) return "offline";
+    if (a.state === "inactive") return "inactive";
     const rows = tasks.data ?? [];
-    if (openRuns(a.id)) return "busy";
+    if (openRuns(a.id) || a.state === "running") return "running";
     if (rows.some((x) => x.assignee?.id === a.id && x.state.label === "waiting" && !isAcceptanceWait(x.state, types[x.type]?.workflow))) return "waiting";
-    return "online";
+    return "ready";
   };
   const currency = session?.organization.currency;
   const statOf = (id: string) => stats.data?.find((s) => s.agent.id === id);
@@ -110,7 +118,11 @@ export default function AgentsPage() {
   const [removing, setRemoving] = useState<Agent | null>(null);
   const [highlight, mark] = useHighlight();
   const { busy, run } = useAction();
-  const online = agents.data?.filter((a) => a.online).length ?? 0;
+  // 上方筹码：全部 · 可用 · 执行中（已停用只在真有的时候出现），点一下筛这一类
+  const all = agents.data ?? [];
+  const [filter, setFilter] = useState<AgentState | null>(null);
+  const countOf = (st: AgentState) => all.filter((a) => a.state === st).length;
+  const rows = filter ? all.filter((a) => a.state === filter) : all;
   // 可见范围（DESIGN.md §14）：组织负责人 / 持「组织设置」权限的人看到全部并每行显示所有者；
   // 其他人只看到自己的加公共 Agent。列表里出现 can_manage = false 的行就一定不是"全部"。
   const isAdmin = !!session?.is_owner || !!session?.permissions?.includes("org_settings");
@@ -125,25 +137,41 @@ export default function AgentsPage() {
 
   return (
     <div>
-      <PageHeader title={t("agents.title")} description={seesAll ? t("agents.descriptionAll") : t("agents.descriptionMine")} actions={<Button variant="primary" icon={<IconPlus />} onClick={() => setConnecting(true)}>{t("agents.connect")}</Button>} />
+      <PageHeader
+        title={t("agents.title")}
+        description={seesAll ? t("agents.descriptionAll") : t("agents.descriptionMine")}
+        actions={
+          <>
+            <Button variant="primary" icon={<IconPlus />} onClick={() => setConnecting(true)}>{t("agents.connect")}</Button>
+          </>
+        }
+      />
       <StatChips
         className="mb-4"
-        value={null}
-        total={agents.data?.length ?? 0}
-        items={[{ key: "online", label: t("agents.online"), value: online, tone: "accent" }]}
+        value={filter}
+        onChange={(k) => setFilter((k as AgentState | null) ?? null)}
+        total={all.length}
+        items={[
+          { key: "ready", label: agentStateTitle("ready"), value: countOf("ready"), tone: "online" as const },
+          { key: "running", label: agentStateTitle("running"), value: countOf("running"), tone: "accent" as const },
+          ...(countOf("inactive") ? [{ key: "inactive", label: agentStateTitle("inactive"), value: countOf("inactive"), tone: "dark" as const }] : []),
+        ]}
       />
-      <Panel index={1} icon={<IconAgent />} title={t("nav.agents")} telemetry={agents.data ? t("panel.rows", { n: agents.data.length }) : undefined} padded={false}>
+      <Panel index={1} icon={<IconAgent />} title={t("nav.agents")} telemetry={agents.data ? t("panel.rows", { n: rows.length }) : undefined} padded={false}>
         {agents.loading ? <TableSkeleton rows={4} cols={6} /> : agents.error ? <div className="p-4"><ErrorBox message={agents.error} onRetry={agents.reload} /></div> : !agents.data?.length ? (
           <Empty text={t("agents.empty")} action={<Button variant="primary" icon={<IconPlus />} onClick={() => setConnecting(true)}>{t("agents.connect")}</Button>} />
         ) : (
           <Table>
             <thead>
               <tr>
-                <th className="w-full">Agent</th><th className="w-[120px]">{t("agents.status")}</th><th className="w-[104px]">{t("agents.runtime")}</th>{seesAll && <th className="w-[88px]">{t("agents.owner")}</th>}<th className="w-[116px]">{t("agents.capabilities")}</th><th className="w-[92px]">{t("agents.grants")}</th><th className="num w-[64px]">{t("agents.maxAtOnce")}</th><th className="actions w-[300px]" aria-label={t("common.actions")} />
+                <th className="w-full">Agent</th><th className="w-[152px]">{t("agents.status")}</th><th className="w-[104px]">{t("agents.runtime")}</th>{seesAll && <th className="w-[88px]">{t("agents.owner")}</th>}<th className="w-[116px]">{t("agents.capabilities")}</th><th className="w-[92px]">{t("agents.grants")}</th><th className="num w-[64px]">{t("agents.maxAtOnce")}</th><th className="actions w-[300px]" aria-label={t("common.actions")} />
               </tr>
             </thead>
             <tbody>
-              {agents.data.map((a) => {
+              {rows.length === 0 && (
+                <tr><td colSpan={seesAll ? 8 : 7}><Empty text={t("agents.emptyFilter")} /></td></tr>
+              )}
+              {rows.map((a) => {
                 const grantLines = GRANT_ORDER.filter((g) => a.grants.some((x) => x.name === g)).map((g) => `${grantTitle(g)} · ${grantModeTitle(a.grants.find((x) => x.name === g)!.mode)}`);
                 // 含「需要人确认」的授权：气泡里多一句说明这些动作会先变成待确认操作（ADR 0003）
                 const hasApproval = a.grants.some((x) => x.mode === "with_approval");
@@ -157,12 +185,12 @@ export default function AgentsPage() {
                             <span className="min-w-0 truncate font-medium" title={a.name}>{a.name}</span>
                             {a.shared && <Tip tip={t("agents.sharedManaged")}><Tag tone="accent">{t("agents.sharedTag")}</Tag></Tip>}
                           </span>
-                          <AgentTelemetry agent={a} stat={statOf(a.id)} todayRuns={todayRuns(a.id)} currency={currency} />
+                          <AgentTelemetry stat={statOf(a.id)} todayRuns={todayRuns(a.id)} currency={currency} />
                           {checks[a.id] && (
                             <span className="mt-1 flex items-center gap-1.5 text-caption" data-agent-check={a.id}>
                               {"error" in checks[a.id] ? <span className="text-danger">{(checks[a.id] as { error: string }).error}</span> : "hint" in checks[a.id] ? (
                                 <>
-                                  <StatusLED tone={(checks[a.id] as AgentCheck).online ? "online" : (checks[a.id] as AgentCheck).connected ? "warning" : "dark"} />
+                                  <StatusLED tone={(checks[a.id] as AgentCheck).connected ? STATE_LED[(checks[a.id] as AgentCheck).state] : "warning"} />
                                   <span className="text-ink-muted">{(checks[a.id] as AgentCheck).hint}</span>
                                   {(checks[a.id] as AgentCheck).last_tool && <Tag>{t("connect.lastTool", { tool: (checks[a.id] as AgentCheck).last_tool })}</Tag>}
                                 </>
@@ -173,11 +201,13 @@ export default function AgentsPage() {
                       </span>
                     </td>
                     <td className="whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1.5">
-                        {/* 在线 = success 灯常亮微光；离线 = 暗灯 */}
-                        <StatusLED tone={a.online ? "online" : "dark"} />
-                        <span>{a.online ? t("agents.online") : t("agents.offlineShort")}</span>
-                        {!a.online && <span className="text-caption text-ink-subtle">· {a.last_seen_at ? <RelativeTime iso={a.last_seen_at} /> : t("agents.never")}</span>}
+                      {/* 执行中 = accent 呼吸灯；可用 = success 常亮微光；已停用 = 暗灯（CONTEXT.md「Agent 状态」） */}
+                      <span className="flex flex-col gap-0.5">
+                        <span className="inline-flex items-center gap-1.5">
+                          <StatusLED tone={STATE_LED[a.state]} />
+                          <span>{agentStateTitle(a.state)}</span>
+                        </span>
+                        <span className="text-caption text-ink-subtle">{lastActive(a)}</span>
                       </span>
                     </td>
                     <td className="max-w-[112px]">{a.runtime ? <span className="block truncate text-ink-muted" title={clientTitle(a.runtime)}>{clientTitle(a.runtime)}</span> : <span className="text-ink-subtle">—</span>}</td>

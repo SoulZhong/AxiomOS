@@ -229,6 +229,9 @@ func (a *App) pendingDevice(ctx context.Context, sess *Session, userCode string)
 
 // ApproveDevice 批准接入：以批准人为所有者创建 Agent（走与手工注册同一条路），令牌加密暂存给 Agent 端来取。
 func (a *App) ApproveDevice(ctx context.Context, sess *Session, userCode string, in ApproveDeviceInput) (*domain.Agent, *DeviceView, error) {
+	if err := refuseDryRun(sess); err != nil {
+		return nil, nil, err
+	}
 	d, err := a.pendingDevice(ctx, sess, userCode)
 	if err != nil {
 		return nil, nil, err
@@ -271,6 +274,9 @@ func (a *App) ApproveDevice(ctx context.Context, sess *Session, userCode string,
 
 // DenyDevice 拒绝接入：不创建任何东西，Agent 端轮询会得到 denied。
 func (a *App) DenyDevice(ctx context.Context, sess *Session, userCode string) (*DeviceView, error) {
+	if err := refuseDryRun(sess); err != nil {
+		return nil, err
+	}
 	d, err := a.pendingDevice(ctx, sess, userCode)
 	if err != nil {
 		return nil, err
@@ -341,12 +347,17 @@ func (a *App) ExpireDeviceCodes(ctx context.Context) (int, error) {
 
 // AgentCheck 是接入向导的连接检查。
 type AgentCheck struct {
-	Online     bool       `json:"online"`
-	Connected  bool       `json:"connected"` // 曾经收到过它的请求
-	LastSeenAt *time.Time `json:"last_seen_at"`
-	LastTool   string     `json:"last_tool,omitempty"`
-	LastToolAt *time.Time `json:"last_tool_at,omitempty"`
-	Hint       string     `json:"hint"`
+	// State / StateTitle 是对外的三选一状态（CONTEXT.md「Agent 状态」）。
+	State      domain.AgentState `json:"state"`
+	StateTitle string            `json:"state_title"`
+	// Online 是旧口径（最近有没有心跳），只为兼容旧客户端保留。
+	Online       bool       `json:"online"`
+	Connected    bool       `json:"connected"` // 曾经收到过它的请求
+	LastSeenAt   *time.Time `json:"last_seen_at"`
+	LastActiveAt *time.Time `json:"last_active_at"`
+	LastTool     string     `json:"last_tool,omitempty"`
+	LastToolAt   *time.Time `json:"last_tool_at,omitempty"`
+	Hint         string     `json:"hint"`
 }
 
 // CheckAgent 用心跳数据回答"它连上了吗"。能看到这个 Agent 的人都能查。
@@ -362,16 +373,30 @@ func (a *App) CheckAgent(ctx context.Context, sess *Session, id string) (*AgentC
 		}
 		now := time.Now()
 		loc := sess.Loc()
-		out = &AgentCheck{Online: ag.Online(now), Connected: ag.LastSeenAt != nil, LastSeenAt: ag.LastSeenAt, LastTool: ag.LastTool, LastToolAt: ag.LastToolAt}
+		runs, err := a.Store.ActiveRunCount(ctx, tx, ag.ID)
+		if err != nil {
+			return err
+		}
+		ownerActive := true
+		if owner, err := a.Store.MemberByID(ctx, tx, ag.OwnerMemberID); err == nil {
+			ownerActive = owner.Active
+		}
+		st := NewAgentStatus(loc, ag, now, runs, ownerActive)
+		out = &AgentCheck{State: st.State, StateTitle: st.Title, Online: ag.Online(now), Connected: ag.LastSeenAt != nil,
+			LastSeenAt: ag.LastSeenAt, LastActiveAt: st.LastActiveAt, LastTool: ag.LastTool, LastToolAt: ag.LastToolAt}
+		at := ""
+		if st.LastActiveAt != nil {
+			at = st.LastActiveAt.Local().Format("15:04")
+		}
 		switch {
+		case st.State == domain.AgentInactive:
+			out.Hint = i18n.Tr(loc, "agent.check.inactive")
 		case ag.LastSeenAt == nil:
 			out.Hint = i18n.Tr(loc, "agent.check.never")
-		case !out.Online:
-			out.Hint = i18n.Trf(loc, "agent.check.offline", ag.LastSeenAt.Local().Format("15:04"))
 		case ag.LastTool != "" && ag.LastToolAt != nil:
-			out.Hint = i18n.Trf(loc, "agent.check.online_tool", ag.LastTool, ag.LastToolAt.Local().Format("15:04"))
+			out.Hint = i18n.Trf(loc, "agent.check.state_tool", st.Title, at, ag.LastTool)
 		default:
-			out.Hint = i18n.Trf(loc, "agent.check.online", ag.LastSeenAt.Local().Format("15:04"))
+			out.Hint = i18n.Trf(loc, "agent.check.state", st.Title, at)
 		}
 		return nil
 	})

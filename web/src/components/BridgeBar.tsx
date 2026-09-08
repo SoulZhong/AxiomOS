@@ -16,7 +16,7 @@ import { Readout, StatusLED, SysClock, cx } from "./ui";
 /*
  * 舷窗带（DESIGN.md「舰内系统 v3」§1）：主内容区顶部 32px 的舰桥舷窗——背后一条 Canvas2D 星海缓慢流过（StarBand，两层视差、软圆星点），
  * 前景是等宽 11px 读数。整条在浅色主题下也是深色（data-theme="dark"）：白色舱室里的一条舷窗。
- * 读数：AXIOM · 操作系统 · 组织 DEMO · AGENT 在线 n/m（有在线时雷达式脉冲）· 执行中 n · 待我处理 n（只在有的时候出现，点它回「我的工作」）· 今日成本 ¥x（24 小时迷你折线 + 数字滚动）；
+ * 读数：AXIOM · 操作系统 · 组织 DEMO · AGENT 可用 n/m（有可用的 Agent 时雷达式脉冲）· 执行中 n · 待我处理 n（只在有的时候出现，点它回「我的工作」）· 今日成本 ¥x（24 小时迷你折线 + 数字滚动）；
  * 右侧 系统 16:07:22 + 主题 / 语言切换。数据来自 ship-status/telemetry（30s 刷新、隐藏时停、与「舰况」面板共用一次请求）。
  * 后台版：AXIOM · 平台控制台 · 组织 n · 系统。
  */
@@ -31,7 +31,7 @@ function Item({ led, children, className = "inline-flex" }: { led?: ReactNode; c
   );
 }
 const Val = ({ value }: { value: ReactNode }) => <Readout value={value} className="text-telemetry" />;
-/** 标签 + 数值 + 可选后缀：英文是 `AGENTS 2/2 ONLINE`，中文是 `AGENT 在线 2/2`（后缀为空就不渲染，不留多余空格）。 */
+/** 标签 + 数值 + 可选后缀：英文是 `AGENTS 2/2 READY`，中文是 `AGENT 可用 2/2`（后缀为空就不渲染，不留多余空格）。 */
 function Reading({ label, value, suffix }: { label: string; value: ReactNode; suffix?: string }) {
   return (
     <>
@@ -42,12 +42,12 @@ function Reading({ label, value, suffix }: { label: string; value: ReactNode; su
 }
 const Sep = ({ className }: { className?: string }) => <i className={cx("bridge-sep", className)} aria-hidden="true" />;
 
-/** 雷达式脉冲：在线的 success 灯外一圈 2.4s 扩散的细环（有 Agent 在线时才有）。 */
-function RadarLED({ online }: { online: boolean }) {
+/** 雷达式脉冲：success 灯外一圈 2.4s 扩散的细环（有可用的 Agent 时才有）。 */
+function RadarLED({ ready }: { ready: boolean }) {
   return (
     <span className="radar" aria-hidden="true">
-      <StatusLED tone={online ? "online" : "dark"} />
-      {online && <i className="radar-ring" />}
+      <StatusLED tone={ready ? "online" : "dark"} />
+      {ready && <i className="radar-ring" />}
     </span>
   );
 }
@@ -56,7 +56,7 @@ function RadarLED({ online }: { online: boolean }) {
 export function BridgeBar({ org, live }: { org: Session["organization"] | null | undefined; live: boolean }) {
   const tele = useShipTelemetry(live);
   const slug = org ? (org.slug ?? org.name).toUpperCase() : "—";
-  const anyOnline = !!tele && tele.agentsOnline > 0;
+  const anyReady = !!tele && tele.agentsReady > 0;
   const anyRuns = !!tele && tele.active > 0;
   const cost = tele ? fmtMoney(tele.costToday, org?.currency) : "—";
   const inbox = tele?.inbox ?? 0;
@@ -73,8 +73,8 @@ export function BridgeBar({ org, live }: { org: Session["organization"] | null |
         <Sep />
         <ScopePicker className="inline-flex" />
         <Sep className="hidden sm:block" />
-        <Item className="hidden sm:inline-flex" led={<RadarLED online={anyOnline} />}>
-          <Reading label={t("bridge.agents")} value={tele ? `${tele.agentsOnline}/${tele.agentsTotal}` : "–/–"} suffix={t("bridge.online")} />
+        <Item className="hidden sm:inline-flex" led={<RadarLED ready={anyReady} />}>
+          <Reading label={t("bridge.agents")} value={tele ? `${tele.agentsReady}/${tele.agentsTotal}` : "–/–"} suffix={t("bridge.online")} />
         </Item>
         <Sep className="hidden md:block" />
         <Item className="hidden md:inline-flex" led={<StatusLED tone={anyRuns ? "accent" : "dark"} />}>

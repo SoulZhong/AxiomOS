@@ -472,7 +472,7 @@ func (a *App) EnqueueDueReminders(ctx context.Context, orgID string, now time.Ti
 				if g == nil || m.Reached() || g.OwnerMemberID == "" {
 					continue
 				}
-				due := startOfDay(m.DueOn)
+				due := calendarDay(m.DueOn) // 里程碑日期也是日历日，同 daysOverdue
 				if due.After(today) {
 					continue
 				}
@@ -862,6 +862,9 @@ func (a *App) SetNotifyPolicy(ctx context.Context, sess *Session, in NotifyPolic
 // TestNotifyChannel 用一个通道给调用者本人发一条测试消息，同步等结果，返回一句话；也记一条投递（kind = test）。
 func (a *App) TestNotifyChannel(ctx context.Context, sess *Session, channel string) (*NotifyTestResult, error) {
 	if err := a.requireOrgSettings(sess); err != nil {
+		return nil, err
+	}
+	if err := refuseDryRun(sess); err != nil {
 		return nil, err
 	}
 	loc := sess.Loc()

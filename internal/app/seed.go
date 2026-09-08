@@ -21,6 +21,15 @@ var defaultPrices = []domain.Price{
 	{ModelID: "claude-haiku-4-5-20251001", InputPerMillion: 1, OutputPerMillion: 5, CacheReadPerMillion: 0.1, CacheWritePerMillion: 1.25, Currency: "USD"},
 }
 
+// 内置的三种目标类型（ADR 0023）：产品、项目、经营目标。它们只是**起点**——
+// 组织可以改名、可以加、可以停用，改名只改显示不动历史。颜色取自设计规范的强调色一组
+// （accent / success / warning），图标取现成的那几枚。默认时间粒度是新建时的预填值，仍可逐个改。
+var defaultGoalTypes = []domain.GoalType{
+	{Name: "产品", Color: "#5e6ad2", Icon: "blocks", Sort: 1, Active: true, DefaultPrecision: domain.PrecisionQuarter},
+	{Name: "项目", Color: "#27a644", Icon: "gantt", Sort: 2, Active: true, DefaultPrecision: domain.PrecisionWeek},
+	{Name: "经营目标", Color: "#d9a53b", Icon: "chart", Sort: 3, Active: true, DefaultPrecision: domain.PrecisionQuarter},
+}
+
 var defaultCapabilities = map[string]i18n.Text{
 	"coding": i18n.T("编码", "Coding"), "testing": i18n.T("测试", "Testing"), "writing": i18n.T("写作", "Writing"), "data-analysis": i18n.T("数据分析", "Data analysis"),
 	"design": i18n.T("设计", "Design"), "review": i18n.T("评审", "Review"), "ops": i18n.T("运维", "Operations"),
@@ -65,7 +74,7 @@ func upgradeBuiltinTriggers(cur, builtin *domain.TaskType) bool {
 	return changed
 }
 
-// EnsureOrgDefaults 为组织写入内置任务类型、能力标签、汇率（幂等）。
+// EnsureOrgDefaults 为组织写入内置任务类型、能力标签、目标类型、汇率（幂等）。
 func (a *App) EnsureOrgDefaults(ctx context.Context, orgID string) error {
 	return a.Store.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		for _, tt := range domain.BuiltinTaskTypes() {
@@ -95,6 +104,22 @@ func (a *App) EnsureOrgDefaults(ctx context.Context, orgID string) error {
 			}
 			if err := a.Store.UpsertCapability(ctx, tx, orgID, n, t); err != nil {
 				return err
+			}
+		}
+		// 目标类型（ADR 0023）：一张组织自己维护的词表，名称就是显示值、随时可改。
+		// 所以只在一个类型都没有时补齐内置三种（新组织，或升级上来的老组织第一次启动），
+		// 之后不再按名字逐条补——否则组织把「产品」改成「产品线」，下次启动又会冒出一个「产品」。
+		goalTypes, err := a.Store.ListGoalTypes(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if len(goalTypes) == 0 {
+			for _, gt := range defaultGoalTypes {
+				t := gt
+				t.OrgID = orgID
+				if err := a.Store.CreateGoalType(ctx, tx, &t); err != nil {
+					return err
+				}
 			}
 		}
 		roles, err := a.Store.ListRoles(ctx, tx)
@@ -332,19 +357,23 @@ func (a *App) SeedDemo(ctx context.Context) (string, error) {
 
 	day := func(d int) *time.Time { t := time.Now().AddDate(0, 0, d).Truncate(24 * time.Hour); return &t }
 	budget := 5000.0
-	q3, err := a.CreateGoal(ctx, wang, CreateGoalInput{Title: "Q3：把新版官网上线", Description: "包含登录页改版与支付页优化", Budget: &budget, Deadline: day(45), PlannedStart: day(-20), PlannedEnd: day(45)})
+	q3, err := a.CreateGoal(ctx, wang, CreateGoalInput{Title: "Q3：把新版官网上线", Description: "包含登录页改版与支付页优化", Budget: &budget, Deadline: day(45), PlannedStart: day(-20), PlannedEnd: day(45),
+		Horizon: domain.HorizonNow, Confidence: domain.ConfidenceMedium, Outcome: "新版官网全量上线，登录与支付两条主路径的转化率都不低于旧版"})
 	if err != nil {
 		return "", err
 	}
-	login, err := a.CreateGoal(ctx, wang, CreateGoalInput{ParentID: q3.ID, Title: "登录页改版", PlannedStart: day(-20), PlannedEnd: day(10)})
+	login, err := a.CreateGoal(ctx, wang, CreateGoalInput{ParentID: q3.ID, Title: "登录页改版", PlannedStart: day(-20), PlannedEnd: day(10),
+		Horizon: domain.HorizonNow, Confidence: domain.ConfidenceHigh, Outcome: "登录成功率从 62% 提到 70%，手机号验证码登录可用"})
 	if err != nil {
 		return "", err
 	}
-	pay, err := a.CreateGoal(ctx, wang, CreateGoalInput{ParentID: q3.ID, Title: "支付页优化", PlannedStart: day(-5), PlannedEnd: day(30)})
+	pay, err := a.CreateGoal(ctx, wang, CreateGoalInput{ParentID: q3.ID, Title: "支付页优化", PlannedStart: day(-5), PlannedEnd: day(30),
+		Horizon: domain.HorizonNext, Confidence: domain.ConfidenceMedium, Outcome: "支付页放弃率从 28% 降到 18%"})
 	if err != nil {
 		return "", err
 	}
-	admin, err := a.CreateGoal(ctx, zhao, CreateGoalInput{Title: "行政：季度例行事项", PlannedStart: day(-10), PlannedEnd: day(60)})
+	admin, err := a.CreateGoal(ctx, zhao, CreateGoalInput{Title: "行政：季度例行事项", PlannedStart: day(-10), PlannedEnd: day(60),
+		Horizon: domain.HorizonLater, Confidence: domain.ConfidenceHigh, Outcome: "季度合同、报销、采购三项例行事务在季度内全部办结"})
 	if err != nil {
 		return "", err
 	}

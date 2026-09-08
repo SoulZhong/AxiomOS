@@ -2,6 +2,7 @@
 import { api, type LoadRow } from "@/lib/api";
 import { useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
+import { agentStateTitle } from "@/lib/terms";
 import { IconAgent } from "@/components/icons";
 import { Avatar, ProgressBar, StatusLED, Table, TableSkeleton, Tip, cx } from "@/components/ui";
 import { BlockPanel, CompactList, type BlockProps } from "./BlockPanel";
@@ -82,9 +83,9 @@ export function LoadTable({ rows }: { rows: LoadRow[] }) {
                       <span className="truncate text-ink" title={r.executor.name}>
                         {r.executor.name}
                       </span>
-                      {agent && (
-                        <Tip tip={r.online ? t("overview.online") : t("overview.offline")}>
-                          <StatusLED tone={r.online ? "online" : "dark"} />
+                      {agent && r.state && (
+                        <Tip tip={agentStateTitle(r.state)}>
+                          <StatusLED tone={r.state === "running" ? "accent" : r.state === "ready" ? "online" : "dark"} />
                         </Tip>
                       )}
                     </span>

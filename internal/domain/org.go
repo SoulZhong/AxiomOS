@@ -182,9 +182,55 @@ type Agent struct {
 	LastToolAt *time.Time `json:"last_tool_at,omitempty"`
 }
 
-// Online 判断 Agent 最近是否有心跳（仅用于展示）。
+// AgentState 是 Agent 对外的状态（CONTEXT.md「Agent 状态」）。
+// HTTP MCP 的 Agent 不是一条常连着的线：没活干的时候它本来就不说话，
+// 所以「最近有没有心跳」不是给人看的信号，只是「此刻忙不忙」的一个来源。
+type AgentState string
+
+const (
+	// AgentRunning 执行中：名下有打开的执行记录，或刚刚还在说话。
+	AgentRunning AgentState = "running"
+	// AgentReady 可用：令牌有效、没被注销、所有者在职，只是这会儿没在干活。这是正常的休息状态。
+	AgentReady AgentState = "ready"
+	// AgentInactive 已停用：已注销，或所有者已停用。
+	AgentInactive AgentState = "inactive"
+)
+
+// AgentBusyWindow 是「刚刚还在说话」的窗口：这段时间内有过请求就算执行中。
+const AgentBusyWindow = 3 * time.Minute
+
+// AgentStates 是三个状态的固定顺序（界面上的筛选与统计按它排）。
+var AgentStates = []AgentState{AgentRunning, AgentReady, AgentInactive}
+
+// State 算出 Agent 的状态：activeRuns 是它名下打开的执行记录数，ownerActive 是所有者是否在职。
+func (a *Agent) State(now time.Time, activeRuns int, ownerActive bool) AgentState {
+	switch {
+	case a.RevokedAt != nil || !ownerActive:
+		return AgentInactive
+	case activeRuns > 0 || (a.LastSeenAt != nil && now.Sub(*a.LastSeenAt) < AgentBusyWindow):
+		return AgentRunning
+	default:
+		return AgentReady
+	}
+}
+
+// LastActiveAt 是最近一次活动：心跳与最近一次工具调用里更晚的那个（都没有时为空）。
+func (a *Agent) LastActiveAt() *time.Time {
+	switch {
+	case a.LastToolAt == nil:
+		return a.LastSeenAt
+	case a.LastSeenAt == nil:
+		return a.LastToolAt
+	case a.LastToolAt.After(*a.LastSeenAt):
+		return a.LastToolAt
+	default:
+		return a.LastSeenAt
+	}
+}
+
+// Online 判断 Agent 最近是否有心跳。内部口径，不再是对外的产品信号（见 State）。
 func (a *Agent) Online(now time.Time) bool {
-	return a.RevokedAt == nil && a.LastSeenAt != nil && now.Sub(*a.LastSeenAt) < 3*time.Minute
+	return a.RevokedAt == nil && a.LastSeenAt != nil && now.Sub(*a.LastSeenAt) < AgentBusyWindow
 }
 
 // GoalStatus 是目标的状态。
@@ -199,10 +245,12 @@ const (
 
 // Goal 是目标。
 type Goal struct {
-	ID               string     `json:"id"`
-	OrgID            string     `json:"org_id"`
-	ParentID         string     `json:"parent_id,omitempty"`
-	TeamID           string     `json:"team_id,omitempty"`
+	ID       string `json:"id"`
+	OrgID    string `json:"org_id"`
+	ParentID string `json:"parent_id,omitempty"`
+	TeamID   string `json:"team_id,omitempty"`
+	// TypeID 是目标类型（ADR 0023），可空：空表示「未分类」。类型只做分类与显示，不带任何行为。
+	TypeID           string     `json:"type_id,omitempty"`
 	OwnerMemberID    string     `json:"owner_member_id"`
 	Title            string     `json:"title"`
 	Description      string     `json:"description"`
@@ -212,9 +260,16 @@ type Goal struct {
 	PlannedStart     *time.Time `json:"planned_start,omitempty"`
 	PlannedEnd       *time.Time `json:"planned_end,omitempty"`
 	ProgressOverride *int       `json:"progress_override,omitempty"`
-	Visibility       string     `json:"visibility"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	// 路线图三字段（ADR 0021）：时间桶、信心度、一句话成果指标，都可空。
+	Horizon    GoalHorizon    `json:"horizon,omitempty"`
+	Confidence GoalConfidence `json:"confidence,omitempty"`
+	Outcome    string         `json:"outcome,omitempty"`
+	// 时间线两字段（ADR 0022）：时间粒度（空等于到周）与排序权重（空表示没手工排过）。
+	DatePrecision DatePrecision `json:"date_precision,omitempty"`
+	Rank          *float64      `json:"rank,omitempty"`
+	Visibility    string        `json:"visibility"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
 }
 
 // Price 是价格表里的一条：每百万 token 的价格。

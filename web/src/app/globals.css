@@ -2,6 +2,7 @@
 @import "./instruments.css";
 @import "./gantt.css";
 @import "./board.css";
+@import "./timeline.css";
 
 /*
  * AxiomOS 设计 token v2（web/DESIGN.md）。
@@ -712,6 +713,34 @@ tr:focus-within .row-actions,
 li:hover .row-actions,
 li:focus-within .row-actions {
   opacity: 1;
+}
+
+/* 拖动排序的把手（组织设置 · 目标类型）：平时隐形，行悬停或聚焦时才露出来；抓着的时候是 grabbing */
+.gt-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 20px;
+  color: var(--c-ink-tertiary);
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  transition: opacity 80ms ease;
+}
+tr:hover .gt-grip,
+tr:focus-within .gt-grip {
+  opacity: 1;
+}
+.gt-grip:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--c-accent-focus);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+.gt-grip:active {
+  cursor: grabbing;
+  color: var(--c-ink-subtle);
 }
 
 /* 新建后原地高亮：停 1.2s，再用强 ease-out 在 0.8s 内褪去（一次性，只在新建后播） */
@@ -1651,9 +1680,9 @@ dialog.palette[data-closing] {
   animation: sig-glow 700ms var(--ease-out);
 }
 
-/* C. Agent 状态语言（提案 §四）：视窗 + 双点 + 外环。
-   在线 = 双点常亮、环 success 3s 呼吸；执行中 = 双点交替（永不同步）、环 accent 常亮；等待输入 = 双点偏暖、环静止；
-   离线 = 双点 25%、环灰静止。上线时外环顺时针充满 520ms、双点随后 200ms 点亮；离线时 400ms 变灰（过渡）。 */
+/* C. Agent 状态语言（提案 §四，状态见 CONTEXT.md「Agent 状态」）：视窗 + 双点 + 外环。
+   可用 = 双点常亮、环 success 3s 呼吸；执行中 = 双点交替（永不同步）、环 accent 常亮；等待输入 = 双点偏暖、环静止；
+   已停用 = 双点 25%、环灰静止。开始干活时外环顺时针充满 520ms、双点随后 200ms 点亮；停用时 400ms 变灰（过渡）。 */
 .visor {
   position: relative;
   display: inline-flex;
@@ -1683,16 +1712,16 @@ dialog.palette[data-closing] {
   transform: rotate(-90deg);
   transition: stroke 400ms ease;
 }
-.visor[data-state="online"],
-.visor[data-state="busy"],
+.visor[data-state="ready"],
+.visor[data-state="running"],
 .visor[data-state="waiting"] {
   color: var(--c-ink);
 }
-.visor[data-state="online"] .visor-ring {
+.visor[data-state="ready"] .visor-ring {
   stroke: var(--c-success);
   animation: led-breathe 3s ease-in-out infinite;
 }
-.visor[data-state="busy"] .visor-ring {
+.visor[data-state="running"] .visor-ring {
   stroke: var(--c-accent);
 }
 @keyframes sig-blink {
@@ -1704,10 +1733,10 @@ dialog.palette[data-closing] {
     opacity: 0.3;
   }
 }
-.visor[data-state="busy"] .ax-eye-l {
+.visor[data-state="running"] .ax-eye-l {
   animation: sig-blink 1.4s ease-in-out infinite;
 }
-.visor[data-state="busy"] .ax-eye-r {
+.visor[data-state="running"] .ax-eye-r {
   animation: sig-blink 1.4s ease-in-out 0.7s infinite;
 }
 .visor[data-state="waiting"] .ax-eye {
@@ -1716,7 +1745,7 @@ dialog.palette[data-closing] {
 .visor[data-state="waiting"] .visor-ring {
   stroke: var(--c-warning);
 }
-.visor[data-state="offline"] .ax-eye {
+.visor[data-state="inactive"] .ax-eye {
   opacity: 0.25;
 }
 @keyframes sig-fillring {
@@ -1936,7 +1965,7 @@ li[data-motion="unlink"] {
   .visor[data-motion="charge"] .ax-eye {
     opacity: 1;
   }
-  .visor[data-state="offline"] .ax-eye {
+  .visor[data-state="inactive"] .ax-eye {
     opacity: 0.25;
   }
   [data-motion="scan"]::after {

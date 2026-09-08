@@ -70,6 +70,12 @@ func (a *App) ListMilestones(ctx context.Context, sess *Session, goalID string) 
 
 // CreateMilestone 在目标上新增一条里程碑。
 func (a *App) CreateMilestone(ctx context.Context, sess *Session, in CreateMilestoneInput) (*MilestoneView, error) {
+	return idempotent(ctx, a, sess, "create_milestone", in, func() (*MilestoneView, error) {
+		return a.createMilestone(ctx, sess, in)
+	})
+}
+
+func (a *App) createMilestone(ctx context.Context, sess *Session, in CreateMilestoneInput) (*MilestoneView, error) {
 	m := &domain.Milestone{OrgID: sess.OrgID, GoalID: in.GoalID, Title: strings.TrimSpace(in.Title), Description: in.Description, CreatedBy: sess.Actor.ID}
 	if in.DueOn != nil {
 		m.DueOn = dateOnly(*in.DueOn)
@@ -95,6 +101,9 @@ func (a *App) CreateMilestone(ctx context.Context, sess *Session, in CreateMiles
 		}
 		if !a.canEditGoal(ctx, tx, sess, g) {
 			return Forbidden("err.milestone_edit_forbidden")
+		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.milestone.create", g.Title, m.Title, i18n.Date(m.DueOn)))
 		}
 		if err := a.Store.InsertMilestone(ctx, tx, m); err != nil {
 			return err
@@ -141,6 +150,9 @@ func (a *App) UpdateMilestone(ctx context.Context, sess *Session, id string, in 
 		if err := a.validMilestone(sess, m); err != nil {
 			return err
 		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.milestone.update", g.Title, m.Title, i18n.Date(m.DueOn)))
+		}
 		if err := a.Store.UpdateMilestone(ctx, tx, m); err != nil {
 			return err
 		}
@@ -173,6 +185,9 @@ func (a *App) DeleteMilestone(ctx context.Context, sess *Session, id string) err
 		if !a.canEditGoal(ctx, tx, sess, g) {
 			return Forbidden("err.milestone_edit_forbidden")
 		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.milestone.delete", g.Title, m.Title, i18n.Date(m.DueOn)))
+		}
 		if err := a.insertEvents(ctx, tx, sess, []domain.Event{milestoneEvent("MilestoneDeleted", sess, g, m)}); err != nil {
 			return err
 		}
@@ -182,12 +197,16 @@ func (a *App) DeleteMilestone(ctx context.Context, sess *Session, id string) err
 
 // ReachMilestone 确认里程碑已达到。由人（或经授权的 Agent）确认，系统不自动判定（ADR 0016）。
 func (a *App) ReachMilestone(ctx context.Context, sess *Session, id string) (*MilestoneView, error) {
-	return a.setReached(ctx, sess, id, true)
+	return idempotent(ctx, a, sess, "reach_milestone", map[string]any{"milestone_id": id}, func() (*MilestoneView, error) {
+		return a.setReached(ctx, sess, id, true)
+	})
 }
 
 // UnreachMilestone 撤销「已达到」的确认。
 func (a *App) UnreachMilestone(ctx context.Context, sess *Session, id string) (*MilestoneView, error) {
-	return a.setReached(ctx, sess, id, false)
+	return idempotent(ctx, a, sess, "unreach_milestone", map[string]any{"milestone_id": id}, func() (*MilestoneView, error) {
+		return a.setReached(ctx, sess, id, false)
+	})
 }
 
 func (a *App) setReached(ctx context.Context, sess *Session, id string, reached bool) (*MilestoneView, error) {
@@ -219,6 +238,13 @@ func (a *App) setReached(ctx context.Context, sess *Session, id string, reached 
 		}
 		if err := checkReachable(m, reached); err != nil {
 			return err
+		}
+		if sess.Write.DryRun {
+			key := "will.milestone.reach"
+			if !reached {
+				key = "will.milestone.unreach"
+			}
+			return dryRun(sess, i18n.M(key, g.Title, m.Title, i18n.Date(m.DueOn)))
 		}
 		if reached {
 			now := time.Now()

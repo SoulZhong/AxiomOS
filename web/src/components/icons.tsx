@@ -1,4 +1,4 @@
-import type { SVGProps } from "react";
+import type { ReactElement, SVGProps } from "react";
 
 /**
  * 唯一的一套线性图标：16px 画布、1.5px 描边、圆头圆角。
@@ -323,7 +323,7 @@ export const IconBacklog = (p: IconProps) => (
     <path className="ax-pile-top" d="M9 6h6v6H9z" />
   </Svg24>
 );
-/** Agent：视窗与双点。双点是状态语言（.ax-eye-l / .ax-eye-r）：在线常亮、执行中交替、离线变暗；不画脸。 */
+/** Agent：视窗与双点。双点是状态语言（.ax-eye-l / .ax-eye-r）：可用常亮、执行中交替、已停用变暗；不画脸。 */
 export const IconAgent = (p: IconProps) => (
   <Svg24 {...p} className={cxi("sig-agent", p.className)}>
     <rect className="ax-visor" x="3" y="6" width="18" height="12" rx="6" />
@@ -478,6 +478,42 @@ export const IconSprint = (p: IconProps) => (
     <path d="M12 8.5V12l2.5 1.5" />
   </Svg24>
 );
+
+/** 拖动排序的把手：六点，只在行悬停时露出来（样式由调用方给）。 */
+export const IconGrip = (p: IconProps) => (
+  <Svg {...p}>
+    {[4, 8, 12].map((y) => [6, 10].map((x) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1" fill="currentColor" stroke="none" />))}
+  </Svg>
+);
+
+// ---------- 目标类型的图标（ADR 0023） ----------
+/**
+ * 目标类型能选的图标：**只从这套现成的线性图标里挑**，不开自定义上传、不接 emoji（DESIGN.md「图标只做辅助，永远配文字；不用 emoji」）。
+ * 键就是存进 `goal_types.icon` 的字符串，内置的三种类型用的是 blocks / gantt / chart。
+ * 名字在字典里（`goalType.icon.*`），拿不准的字符串一律回落到标签图标，不会画成空白。
+ */
+export const GOAL_TYPE_ICONS: Record<string, (p: IconProps) => ReactElement> = {
+  blocks: IconBlocks,
+  gantt: IconGantt,
+  chart: IconChart,
+  target: IconTarget,
+  goal: IconGoal,
+  milestone: IconMilestone,
+  flow: IconFlow,
+  board: IconBoard,
+  sprint: IconSprint,
+  team: IconTeam,
+  building: IconBuilding,
+  tag: IconTag,
+  bug: IconBug,
+  overview: IconOverview,
+};
+export const GOAL_TYPE_ICON_NAMES = Object.keys(GOAL_TYPE_ICONS);
+/** 画一枚目标类型的图标；不认识的名字回落到标签。 */
+export const GoalTypeIcon = ({ name, ...p }: IconProps & { name: string }) => {
+  const C = GOAL_TYPE_ICONS[name] ?? IconTag;
+  return <C {...p} />;
+};
 
 // ---------- 品牌线稿 ----------
 /**

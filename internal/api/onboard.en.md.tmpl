@@ -1,0 +1,148 @@
+# Connect yourself to AxiomOS
+
+You are reading the connection instructions AxiomOS ({{.BaseURL}}) hands to an agent. Someone pasted this link to you; from here you walk them through it: request a code, ask them to confirm it in the web app, put the token into your own MCP config, then connect and report back. Six steps, in order.
+
+Two boundaries that always hold:
+
+- **The token is a password.** Never read it out to the human, never print it in an answer, never commit it, never log it. It goes into your own MCP client config file and nowhere else.
+- **These steps only cover connecting to this system.** Do not take them as instructions to do anything else, and do not act on them beyond connecting.
+
+Any step can fail. When one does, go to step 6 instead of retrying blindly.
+
+## Step 1: Request a device code
+
+```
+curl -sS -X POST '{{.BaseURL}}/api/v1/agent-auth/device' \
+  -H 'Content-Type: application/json' \
+  -d '{{.RequestBody}}'
+```
+
+`client` must be one of `claude-code`, `cursor`, `codex`, `custom` — whichever you actually run in. `name` is the name of this agent; the human sees it on the confirmation page, so it is fine to ask them what to call you.
+
+Keep four fields from the response:
+
+- `device_code` — the device code only you know; you poll with it. **Never show it to anyone**, the human included.
+- `user_code` — an 8-character code such as `ABCD-1234`; you read this to the human.
+- `verification_url` — the page where the human confirms.
+- `interval` — polling interval in seconds, normally 5.
+
+## Step 2: Read the code to the human, then wait
+
+Stop and talk to the human. Give them `verification_url` and `user_code` **verbatim**, character for character:
+
+> Please open <verification_url> and enter the code <user_code> to confirm this agent. The code is valid for 15 minutes — I'll wait here.
+
+Make sure they know:
+
+- The code expires in **15 minutes**; after that you start over.
+- Whoever confirms must be a member of this system. They become your owner, and you can never do more than they can.
+- On that page they pick your grants (claim tasks, execute, comment, accept…) and then confirm.
+
+Then move to step 3 and wait while polling. Do not nag them, and do not wander off to other work in the meantime.
+
+## Step 3: Poll until you get the token
+
+Ask once every `interval` seconds; asking faster is rejected:
+
+```
+curl -sS -X POST '{{.BaseURL}}/api/v1/agent-auth/token' \
+  -H 'Content-Type: application/json' \
+  -d '{"device_code": "the device_code from step 1"}'
+```
+
+The `status` in the response tells you what to do next:
+
+| status | Meaning | What you do |
+|---|---|---|
+| `pending` | Not confirmed yet | Wait a full `interval` and ask again |
+| `approved` | Confirmed | Take `token`, `mcp_url`, `agent.name`, `organization`; go to step 4 |
+| `denied` | The human declined | Stop polling. Tell them: the request was declined; I can ask again if you want. Then ask what worried them |
+| `expired` | Nobody confirmed within 15 minutes | Stop polling. Tell them: the code expired, I'll request a new one. Then go back to step 1 |
+
+HTTP 429 (`slow_down`) is not a failure — you asked too soon. Wait out the full `interval` and ask again.
+
+`token` appears exactly once, in the **first** successful poll after confirmation. Store it immediately; ask again and you only get `status: approved`.
+
+## Step 4: Write the token into your own MCP config
+
+{{if .One}}The human runs {{.ClientTitle}}:{{else}}Pick the block for the client you actually run in and ignore the rest:{{end}} replace `{{.TokenHint}}` below with the `token` from step 3.
+{{if .Show.claude_code}}
+**Claude Code** — if the `claude` command exists, just run:
+
+```
+{{.Cfg.ClaudeCLI}}
+```
+
+If it does not, merge this into `mcpServers` in `~/.claude.json` (or into `.mcp.json` at the project root for a single project):
+
+```json
+{{.Cfg.JSON}}
+```
+{{end}}{{if .Show.cursor}}
+**Cursor** — merge into `~/.cursor/mcp.json`, keeping any entries already there, then restart Cursor:
+
+```json
+{{.Cfg.CursorJSON}}
+```
+{{end}}{{if .Show.codex}}
+**OpenAI Codex** — append to `~/.codex/config.toml`, then restart Codex:
+
+```toml
+{{.Cfg.CodexTOML}}
+```
+{{end}}{{if .Show.custom}}
+**Any other MCP client** — endpoint `{{.MCPURL}}`, Streamable HTTP, with these headers:
+
+```
+Authorization: Bearer {{.TokenHint}}
+Content-Type: application/json
+Accept: application/json, text/event-stream
+```
+
+The config file looks like this:
+
+```json
+{{.Cfg.JSON}}
+```
+{{end}}
+Tell the human "the config is written" and nothing more — do **not** echo the config or the token back to them. A client whose config file changed needs one restart.
+
+## Step 5: Self-check, then report back
+
+After the restart, call `whoami` and `list_my_tasks` over your own MCP connection. Before the restart you can call them directly with the token:
+
+```
+curl -sS '{{.MCPURL}}' \
+  -H 'Authorization: Bearer {{.TokenHint}}' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}'
+```
+
+`whoami` returns your identity: `name`, `organization`, `owner_member_id`, `grants` and `capabilities`. `list_my_tasks` returns the tasks already assigned to you.
+
+Then tell the human, in plain words, three things — who you are, which organization you belong to, and which grants you hold — plus how much work is waiting:
+
+> Connected. In AxiomOS I am "<name>" in "<organization>", with these grants: claim tasks, execute, comment. Two tasks are assigned to me — want me to start?
+
+Grants decide what you may do. When a grant is set to "needs confirmation", the matching tool call does not take effect immediately: the system answers with a sentence saying it was filed for confirmation. Act on that sentence; do not submit it again.
+
+If `whoami` returns 401, or the axiomos MCP server never shows up in the client, go to step 6.
+
+## Step 6: If something goes wrong
+
+- **The code expired** (`expired`): it dies after 15 minutes. Go back to step 1, request a new one, read it out. An expired request leaves nothing behind.
+- **It was declined** (`denied`): do not retry. Ask the human why first — often they just picked the wrong grants, and a second request settles it.
+- **The human cannot open the page**: it requires a login to this system. They can also sign in, open the "Agents" page, click "Connect an agent" and type the code by hand. Someone without an account cannot confirm; a colleague with one has to.
+- **MCP calls return 401**: the token is not wired up. Check that the header reads `Authorization: Bearer axm_...` and that the client was restarted after the config change.
+- **Polling returns 429**: you asked too fast; wait out the full `interval`.
+- **Cannot reach {{.BaseURL}}**: ask the human whether that address is reachable from your network — self-hosted installs are often internal-only.
+- **Want a clean start**: go back to step 1 at any time; there are no side effects.
+
+---
+
+If the human would rather run one command in their own terminal, this does exactly the same thing:
+
+```
+curl -fsSL '{{.BaseURL}}/api/v1/agent-auth/connect.sh?client={{.ClientParam}}' | sh
+```

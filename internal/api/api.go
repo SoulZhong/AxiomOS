@@ -50,6 +50,8 @@ func (s *Server) Handler() http.Handler {
 
 	auth("GET /api/v1/goals", s.goals)
 	auth("POST /api/v1/goals", s.createGoal)
+	auth("PUT /api/v1/goals/horizon", s.goalsHorizonBulk)
+	auth("PUT /api/v1/goals/rank", s.goalsRank)
 	auth("GET /api/v1/goals/{id}", s.goal)
 	auth("PATCH /api/v1/goals/{id}", s.updateGoal)
 	auth("DELETE /api/v1/goals/{id}", s.deleteGoal)
@@ -170,6 +172,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.Handler {
 		if sc := r.URL.Query().Get("scope"); sc != "" {
 			sess = sess.WithScope(sc)
 		}
+		// 只看不做与幂等键（ADR 0025）：写接口接受 ?dry_run=1 与 ?idempotency_key=
+		// （幂等键也可以放在 Idempotency-Key 头里）。读接口收到也无妨，它们本来就不写。
+		sess = sess.WithWrite(writeOptionsOf(r))
 		sess.ClientIP = clientIP(r)
 		next(w, r.WithContext(context.WithValue(r.Context(), sessKey, sess)))
 	})
@@ -206,8 +211,33 @@ func localeOf(r *http.Request) i18n.Locale {
 	return i18n.Default
 }
 
+// writeOptionsOf 从请求里取出这次写操作的两个开关。
+func writeOptionsOf(r *http.Request) app.WriteOptions {
+	q := r.URL.Query()
+	o := app.WriteOptions{IdempotencyKey: strings.TrimSpace(q.Get("idempotency_key"))}
+	switch strings.ToLower(strings.TrimSpace(q.Get("dry_run"))) {
+	case "1", "true", "yes":
+		o.DryRun = true
+	}
+	if o.IdempotencyKey == "" {
+		o.IdempotencyKey = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
+	return o
+}
+
 func writeErr(w http.ResponseWriter, r *http.Request, err error) {
 	loc := localeOf(r)
+	// 只看不做（ADR 0025）：不是错误，是"我将要做什么"的一句话，一行也没写
+	if d, ok := app.AsDryRun(err); ok {
+		writeJSON(w, 200, map[string]any{"dry_run": true, "will": d.Will})
+		return
+	}
+	// 命中幂等键（ADR 0025）：没有再写一次，返回的是第一次的结果
+	if rp, ok := app.AsRepeated(err); ok {
+		writeJSON(w, 200, map[string]any{"repeated": true, "message": rp.Message,
+			"result": json.RawMessage(rp.Result), "first_result_ref": rp.Ref, "first_called_at": rp.CreatedAt})
+		return
+	}
 	// 命中「需要人确认」的授权：这次写操作没有执行，而是记成了一条待确认操作（ADR 0003）
 	if pp, ok := app.AsProposalPending(err); ok {
 		writeJSON(w, http.StatusAccepted, map[string]any{"proposal": proposalView(pp.Proposal), "message": pp.Message})
@@ -342,7 +372,9 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 // ---------- 目标 ----------
 
 func (s *Server) goalTree(r *http.Request) ([]GoalV, error) {
-	tree, err := s.App.GoalTree(r.Context(), sessionOf(r))
+	// 路线图按时间桶筛选（ADR 0021）：?horizon=now|next|later|none，none 是还没排期
+	// 按类型筛选（ADR 0023）：?type=<类型编号>|none，none 是未分类
+	tree, err := s.App.GoalTreeFiltered(r.Context(), sessionOf(r), app.GoalFilter{Horizon: r.URL.Query().Get("horizon"), Type: r.URL.Query().Get("type")})
 	if err != nil {
 		return nil, err
 	}
@@ -355,11 +387,34 @@ func (s *Server) goalTree(r *http.Request) ([]GoalV, error) {
 		return nil, err
 	}
 	spans := actualSpans(tree, tasks)
+	loc := sessionOf(r).Loc()
 	out := []GoalV{}
 	for _, g := range tree {
-		out = append(out, goalView(g, rf, spans))
+		out = append(out, goalView(g, rf, spans, loc))
 	}
 	return out, nil
+}
+
+// goalsHorizonBulk 批量把目标放进同一个时间桶：路线图上拖一次卡片就是一次请求（ADR 0021）。
+func (s *Server) goalsHorizonBulk(w http.ResponseWriter, r *http.Request) {
+	var in app.BulkGoalHorizonInput
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out, err := s.App.BulkGoalHorizon(r.Context(), sessionOf(r), in)
+	respond(w, r, out, err)
+}
+
+// goalsRank 按给定顺序重排一串目标：时间线上把一条泳道里的目标上下拖一次就是一次请求（ADR 0022）。
+func (s *Server) goalsRank(w http.ResponseWriter, r *http.Request) {
+	var in app.GoalRankInput
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out, err := s.App.SetGoalRanks(r.Context(), sessionOf(r), in)
+	respond(w, r, out, err)
 }
 
 func (s *Server) goals(w http.ResponseWriter, r *http.Request) {
@@ -396,7 +451,9 @@ func (s *Server) createGoal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	ci := app.CreateGoalInput{ParentID: str(in.ParentID), TeamID: str(in.TeamID), OwnerMemberID: str(in.OwnerID), Title: str(in.Title), Description: str(in.Description), Budget: in.Budget.V}
+	ci := app.CreateGoalInput{ParentID: str(in.ParentID), TeamID: str(in.TeamID), TypeID: str(in.TypeID), OwnerMemberID: str(in.OwnerID), Title: str(in.Title), Description: str(in.Description), Budget: in.Budget.V,
+		Horizon: domain.GoalHorizon(str(in.Horizon)), Confidence: domain.GoalConfidence(str(in.Confidence)), Outcome: str(in.Outcome),
+		DatePrecision: domain.DatePrecision(str(in.DatePrecision)), Rank: in.Rank.V}
 	if in.PlannedStart.Set {
 		ci.PlannedStart = in.PlannedStart.T
 	}
@@ -853,11 +910,29 @@ func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	sess := sessionOf(r)
+	states := s.agentStates(r, out...)
 	views := []AgentV{}
 	for _, a := range out {
-		views = append(views, agentView(a, rf, now, sess.CanManageAgent(a)))
+		views = append(views, agentView(a, rf, now, sess.CanManageAgent(a), states[a.ID]))
 	}
 	writeJSON(w, 200, views)
+}
+
+// agentStates 取这些 Agent 的状态（CONTEXT.md「Agent 状态」）；算不出来时按「没有执行记录、所有者在职」兜底，
+// 这样一行也不会变成空状态。
+func (s *Server) agentStates(r *http.Request, agents ...*domain.Agent) map[string]app.AgentStatus {
+	sess := sessionOf(r)
+	m, err := s.App.AgentStates(r.Context(), sess, agents)
+	if err != nil || m == nil {
+		m = map[string]app.AgentStatus{}
+	}
+	now := time.Now()
+	for _, ag := range agents {
+		if _, ok := m[ag.ID]; !ok {
+			m[ag.ID] = app.NewAgentStatus(sess.Loc(), ag, now, 0, true)
+		}
+	}
+	return m
 }
 
 func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
@@ -872,7 +947,7 @@ func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rf, _ := s.refsFor(r)
-	writeJSON(w, 200, map[string]any{"agent": agentView(ag, rf, time.Now(), true), "token": token})
+	writeJSON(w, 200, map[string]any{"agent": agentView(ag, rf, time.Now(), true, s.agentStates(r, ag)[ag.ID]), "token": token})
 }
 
 func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
@@ -887,7 +962,7 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rf, _ := s.refsFor(r)
-	writeJSON(w, 200, agentView(ag, rf, time.Now(), true))
+	writeJSON(w, 200, agentView(ag, rf, time.Now(), true, s.agentStates(r, ag)[ag.ID]))
 }
 
 func (s *Server) revokeAgent(w http.ResponseWriter, r *http.Request) {

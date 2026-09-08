@@ -39,9 +39,16 @@ export interface GanttScale {
   canShorten: boolean;
 }
 
-export function useGanttScale(chart: RefObject<GanttHandle | null>, initial: Scale = "day"): GanttScale {
+/**
+ * allowed 是这张图开放的档位（由细到粗），默认六档全开。
+ * 路线图只开周 / 月 / 季度 / 年（ADR 0022）：连续缩放也被夹在这四档的范围内，滚轮再怎么放大也到不了天。
+ */
+export function useGanttScale(chart: RefObject<GanttHandle | null>, initial: Scale = "day", allowed: readonly Scale[] = SCALES): GanttScale {
   const [dayW, setDayW] = useState<number>(SCALE_DAY_W[initial]);
-  const scale = scaleFor(dayW);
+  const finest = allowed[0] ?? SCALES[0];
+  const coarsest = allowed[allowed.length - 1] ?? SCALES[SCALES.length - 1];
+  const clamp = useCallback((w: number) => Math.min(SCALE_DAY_W[finest], Math.max(SCALE_DAY_W[coarsest], clampDayW(w))), [finest, coarsest]);
+  const scale = scaleFor(dayW, allowed);
   const [range, setRange] = useState(defaultRange);
 
   const from = useMemo(() => parseDate(range.from) ?? today(), [range.from]);
@@ -71,19 +78,19 @@ export function useGanttScale(chart: RefObject<GanttHandle | null>, initial: Sca
   );
   const onZoom = useCallback(
     (next: number, anchor: { time: number }) => {
-      const w = clampDayW(next);
-      const s = scaleFor(w);
+      const w = clamp(next);
+      const s = scaleFor(w, allowed);
       setDayW(w);
-      if (s !== scaleFor(dayW)) centerRange(s, anchor.time);
+      if (s !== scaleFor(dayW, allowed)) centerRange(s, anchor.time);
     },
-    [dayW, centerRange],
+    [dayW, centerRange, clamp, allowed],
   );
   const zoomStep = useCallback(
     (dir: 1 | -1) => {
-      const i = SCALES.indexOf(scale);
-      setScale(SCALES[Math.min(SCALES.length - 1, Math.max(0, i - dir))]);
+      const i = allowed.indexOf(scale);
+      setScale(allowed[Math.min(allowed.length - 1, Math.max(0, i - dir))]);
     },
-    [scale, setScale],
+    [scale, setScale, allowed],
   );
   const fitTo = useCallback((dates: Array<ISODate | null | undefined>) => {
     const sorted = dates.filter((d): d is string => !!d).sort();
@@ -97,9 +104,9 @@ export function useGanttScale(chart: RefObject<GanttHandle | null>, initial: Sca
     const total = diffDays(nf, nt) + 1;
     const vw = (chart.current?.viewportWidth() ?? 800) - 8;
     setRange({ from: toISODate(nf), to: toISODate(nt) });
-    setDayW(clampDayW(vw / total));
+    setDayW(clamp(vw / total));
     requestAnimationFrame(() => chart.current?.scrollToTime(nf.getTime(), 0));
-  }, [chart]);
+  }, [chart, clamp]);
   const shift = useCallback(
     (dir: 1 | -1) => {
       const n = NAV_STEP_DAYS[scale] * dir;

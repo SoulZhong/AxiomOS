@@ -305,6 +305,9 @@ type ApproveResult struct {
 // ApproveProposal 确认并立即执行：以发起的 Agent 身份、把那项授权当作「直接生效」重新执行一次。
 // 执行失败时保持 pending，并把失败理由（完整句子）返回给确认人。
 func (a *App) ApproveProposal(ctx context.Context, sess *Session, id string) (*ApproveResult, error) {
+	if err := refuseDryRun(sess); err != nil {
+		return nil, err
+	}
 	var p *domain.Proposal
 	if err := a.tx(ctx, sess, func(tx pgx.Tx) (err error) {
 		p, err = a.loadPendingProposal(ctx, tx, sess, id)
@@ -353,6 +356,9 @@ func (a *App) ApproveProposal(ctx context.Context, sess *Session, id string) (*A
 
 // RejectProposal 拒绝一条待确认操作。理由必填，且必须是给人和 Agent 直接读的完整句子。
 func (a *App) RejectProposal(ctx context.Context, sess *Session, id, reason string) (*ProposalView, error) {
+	if err := refuseDryRun(sess); err != nil {
+		return nil, err
+	}
 	reason = strings.TrimSpace(reason)
 	// 与界面同一条规则：太短的理由（"不行"）对 Agent 没有信息量
 	if len([]rune(reason)) < 6 {
@@ -558,6 +564,10 @@ func (a *App) proposeOrFail(ctx context.Context, sess *Session, build func(tx pg
 		if err != nil {
 			return err
 		}
+		// 只看不做：待确认操作也是一次写入，不能落库；照实说「真做的时候会挂起等谁确认」。
+		if sess.Write.DryRun {
+			return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), d.Summary)
+		}
 		v, err = a.createProposal(ctx, tx, sess, d)
 		return err
 	})
@@ -571,45 +581,63 @@ func (a *App) proposeOrFail(ctx context.Context, sess *Session, build func(tx pg
 type taskDraft func(tx pgx.Tx, c *domain.Context, g domain.Grant) (proposalDraft, error)
 
 // taskCommand 执行一次任务命令；命中「需要人确认」时改记一条待确认操作，什么都不改。
-func (a *App) taskCommand(ctx context.Context, sess *Session, taskID string, draft taskDraft,
+// op 是这次操作的名字与归一化参数，只给幂等键用（ADR 0025）。
+func (a *App) taskCommand(ctx context.Context, sess *Session, op writeOp, taskID string, draft taskDraft,
 	fn func(c *domain.Context) (*domain.Outcome, error)) (*domain.Task, error) {
-	var task *domain.Task
-	var v *ProposalView
-	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
-		c, err := a.loadContext(ctx, tx, sess, taskID)
-		if err != nil {
-			return err
-		}
-		o, err := fn(c)
-		if err != nil {
-			var na *domain.ErrNeedsApproval
-			if draft != nil && errors.As(err, &na) {
-				d, err := draft(tx, c, na.Grant)
-				if err != nil {
-					return err
-				}
-				v, err = a.createProposal(ctx, tx, sess, d)
+	return idempotent(ctx, a, sess, op.Name, op.Args, func() (*domain.Task, error) {
+		var task *domain.Task
+		var v *ProposalView
+		err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+			c, err := a.loadContext(ctx, tx, sess, taskID)
+			if err != nil {
 				return err
 			}
-			return err
+			o, err := fn(c)
+			if err != nil {
+				var na *domain.ErrNeedsApproval
+				if draft != nil && errors.As(err, &na) {
+					d, err := draft(tx, c, na.Grant)
+					if err != nil {
+						return err
+					}
+					if sess.Write.DryRun {
+						return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), d.Summary)
+					}
+					v, err = a.createProposal(ctx, tx, sess, d)
+					return err
+				}
+				return err
+			}
+			if err := a.persist(ctx, tx, sess, c, o); err != nil {
+				return err
+			}
+			task = o.Task
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		if err := a.persist(ctx, tx, sess, c, o); err != nil {
-			return err
+		if v != nil {
+			return nil, pending(sess, v)
 		}
-		task = o.Task
-		return nil
+		return task, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if v != nil {
-		return nil, pending(sess, v)
-	}
-	return task, nil
+}
+
+// writeOp 是一次写操作的身份：名字（工具名 / 接口）与归一化后的参数，用来算幂等键的指纹。
+type writeOp struct {
+	Name string
+	Args any
 }
 
 // insertEvents 写动态；正在执行一条被确认的待确认操作时，给每条动态带上「经<确认人>确认」。
 func (a *App) insertEvents(ctx context.Context, tx pgx.Tx, sess *Session, events []domain.Event) error {
+	// 只看不做的兜底（ADR 0025 第 2 条）：硬规则是"任何写操作都要产生动态"，所以这里就是所有写路径
+	// 的必经之处。走到这里还带着"只看不做"，说明这条路径忘了在写回之前停住——宁可整笔回滚并照实说
+	// 一句"还不支持"，也不能一边说"只是看看"一边把东西写进去。
+	if sess != nil && sess.Write.DryRun {
+		return Bad("err.dry_run_unsupported")
+	}
 	if sess != nil && sess.ApprovedByName != "" {
 		for i := range events {
 			if events[i].Data == nil {

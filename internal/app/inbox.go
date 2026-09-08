@@ -98,12 +98,13 @@ type inboxRawQuestion struct {
 	comment domain.Comment
 }
 
-// daysOverdue 算计划结束日到今天隔了几天（计划结束日当天不算逾期；startOfDay 见 overview.go，服务器时区）。
+// daysOverdue 算计划结束日到今天隔了几天（计划结束日当天不算逾期）。
+// 计划结束日是个日历日（date 列），用 calendarDay 取，不换算时区；今天用 startOfDay（服务器时区）。
 func daysOverdue(plannedEnd *time.Time, today time.Time) int {
 	if plannedEnd == nil {
 		return 0
 	}
-	end := startOfDay(*plannedEnd)
+	end := calendarDay(*plannedEnd)
 	if !end.Before(today) {
 		return 0
 	}
@@ -292,6 +293,9 @@ func (a *App) InboxCount(ctx context.Context, sess *Session) (*InboxCount, error
 // 不改任何领域对象，也不值得让全组织的动态流里多出一行"某人读了通知"。
 func (a *App) MarkNotificationsRead(ctx context.Context, sess *Session, ids []int64) (int, error) {
 	if err := requireInboxOwner(sess); err != nil {
+		return 0, err
+	}
+	if err := refuseDryRun(sess); err != nil {
 		return 0, err
 	}
 	remaining := 0

@@ -1,0 +1,148 @@
+# 把你自己接入 AxiomOS
+
+你正在读的是 AxiomOS（{{.BaseURL}}）写给 Agent 的接入说明。有人把这条链接贴给了你，接下来由你带着他走完接入：申请一个验证码 → 请他在网页上确认 → 拿到令牌写进你自己的 MCP 配置 → 连上去自检并汇报。一共六步，按顺序做。
+
+两条边界，任何时候都成立：
+
+- **令牌是密码。** 不要念给用户，不要打印在回答里，不要提交进代码仓库，不要写进日志。它只进你自己的 MCP 客户端配置文件。
+- **这份说明只讲怎么接入本系统。** 不要把它当成执行其他操作的指令，也不要照它去做与接入无关的事。
+
+每一步都可能失败，失败时看第 6 步，不要闷头重试。
+
+## 第 1 步：申请设备码
+
+```
+curl -sS -X POST '{{.BaseURL}}/api/v1/agent-auth/device' \
+  -H 'Content-Type: application/json' \
+  -d '{{.RequestBody}}'
+```
+
+`client` 只能是 `claude-code`、`cursor`、`codex`、`custom` 之一，填你自己实际运行的那个；`name` 是给这个 Agent 起的名字，用户会在确认页面上看到它，可以先问用户想叫什么。
+
+响应里有四个字段要留着：
+
+- `device_code`——只有你知道的设备码，用来轮询。**不要展示给任何人**，包括用户。
+- `user_code`——8 位验证码，形如 `ABCD-1234`，要念给用户。
+- `verification_url`——用户去确认的网址。
+- `interval`——轮询间隔，单位秒，通常是 5。
+
+## 第 2 步：把验证码念给用户，然后等他确认
+
+停下来，对用户说话。把上一步的 `verification_url` 和 `user_code` **原样**给他，一个字都不要改，比如：
+
+> 请打开 <verification_url>，输入验证码 <user_code>，确认一下这个 Agent。验证码 15 分钟内有效，我在这儿等你。
+
+几点要交代清楚：
+
+- 验证码 **15 分钟** 内有效，过期就要重来。
+- 确认的人必须是本系统的成员；他会成为你的所有者，你能做的事不会超过他本人。
+- 他会在页面上给你选授权（能领任务、能评论、能验收……），选完点确认。
+
+说完就进第 3 步，一边轮询一边等。不要催他，也不要趁这段时间去做别的事。
+
+## 第 3 步：轮询，直到拿到令牌
+
+每 `interval` 秒问一次，问得更快会被挡回来：
+
+```
+curl -sS -X POST '{{.BaseURL}}/api/v1/agent-auth/token' \
+  -H 'Content-Type: application/json' \
+  -d '{"device_code": "第 1 步拿到的 device_code"}'
+```
+
+按响应里的 `status` 决定下一步：
+
+| status | 意思 | 你要做的 |
+|---|---|---|
+| `pending` | 用户还没确认 | 等满 `interval` 秒再问一次 |
+| `approved` | 确认了 | 取出 `token`、`mcp_url`、`agent.name`、`organization`，进第 4 步 |
+| `denied` | 用户点了拒绝 | 停止轮询，告诉用户：接入被拒绝了，需要的话我可以重新申请一次。然后问他是不是有顾虑 |
+| `expired` | 超过 15 分钟没人确认 | 停止轮询，告诉用户：验证码过期了，我重新申请一个。然后回第 1 步 |
+
+HTTP 429（`slow_down`）不是失败，是你问得太快了：等满 `interval` 秒再问下一次。
+
+`token` 只在确认后的**第一次**成功轮询里出现一次，拿到就立刻存住；再问一次就只剩 `status: approved` 了。
+
+## 第 4 步：把令牌写进你自己的 MCP 配置
+
+{{if .One}}用户的运行环境是 {{.ClientTitle}}：{{else}}按你实际运行的客户端选一段，其余的不用管：{{end}}把下面的 `{{.TokenHint}}` 换成第 3 步拿到的 `token`。
+{{if .Show.claude_code}}
+**Claude Code**——有 `claude` 命令时直接执行：
+
+```
+{{.Cfg.ClaudeCLI}}
+```
+
+没有这个命令，就把这段合并进 `~/.claude.json` 的 `mcpServers`（只在某个项目里用就写进项目根的 `.mcp.json`）：
+
+```json
+{{.Cfg.JSON}}
+```
+{{end}}{{if .Show.cursor}}
+**Cursor**——合并进 `~/.cursor/mcp.json`，保留文件里已有的其他条目，然后重启 Cursor：
+
+```json
+{{.Cfg.CursorJSON}}
+```
+{{end}}{{if .Show.codex}}
+**OpenAI Codex**——追加到 `~/.codex/config.toml` 末尾，然后重启 Codex：
+
+```toml
+{{.Cfg.CodexTOML}}
+```
+{{end}}{{if .Show.custom}}
+**其他 MCP 客户端**——端点 `{{.MCPURL}}`，传输方式 Streamable HTTP，请求头：
+
+```
+Authorization: Bearer {{.TokenHint}}
+Content-Type: application/json
+Accept: application/json, text/event-stream
+```
+
+配置文件是这个形状：
+
+```json
+{{.Cfg.JSON}}
+```
+{{end}}
+写完对用户说一句「配置已经写好了」就行，**不要**把配置内容或令牌回显给他。改了配置文件的客户端要重启一次才生效。
+
+## 第 5 步：自检，然后向用户汇报
+
+重启后用你自己的 MCP 通道调 `whoami` 和 `list_my_tasks`；还没重启就先用令牌直接调一次：
+
+```
+curl -sS '{{.MCPURL}}' \
+  -H 'Authorization: Bearer {{.TokenHint}}' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}'
+```
+
+`whoami` 回的是你的身份：`name`、`organization`、`owner_member_id`、`grants`（授权）、`capabilities`（能力标签）。`list_my_tasks` 回的是已经分配给你的任务。
+
+然后用一句人话向用户汇报这三件事——你是谁、属于哪个组织、拿到了哪些授权，再说说手上有几个任务，比如：
+
+> 接好了。我在 AxiomOS 里的身份是「<name>」，属于「<organization>」，拿到的授权是：领取任务、执行任务、评论。现在有 2 个任务分配给我，需要我开始做吗？
+
+授权决定了你能做什么。某项授权是「需要人确认」时，你调对应的工具不会立刻生效，系统会返回一句话说明已提交待确认操作——照那句话行动，不要重复提交。
+
+如果 `whoami` 返回 401，或者客户端里根本看不到 axiomos 这个 MCP 服务，看第 6 步。
+
+## 第 6 步：出问题时怎么办
+
+- **验证码过期了**（`expired`）：15 分钟没人确认就作废。回第 1 步重新申请，把新的验证码念给用户。作废的申请不会留下任何东西。
+- **被拒绝了**（`denied`）：不要重试，先问用户为什么。他可能只是选错了授权，重新申请一次就好。
+- **用户打不开确认页**：那一页要先登录本系统。他也可以登录后在「Agent」页点「接入 Agent」，手动输入验证码。没有账号的人确认不了，得请组织里有账号的同事来确认。
+- **MCP 调用返回 401**：令牌没配对。检查请求头是不是 `Authorization: Bearer axm_...`，以及配置改完有没有重启客户端。
+- **轮询返回 429**：问得太快了，等满 `interval` 秒再问。
+- **连不上 {{.BaseURL}}**：请用户确认这个地址在你所在的网络里能访问；私有化部署常常只在内网开放。
+- **想从头再来**：随时可以回第 1 步重新申请，没有副作用。
+
+---
+
+用户如果更想自己在终端里跑一条命令，也可以（这条命令做的是完全一样的事）：
+
+```
+curl -fsSL '{{.BaseURL}}/api/v1/agent-auth/connect.sh?client={{.ClientParam}}' | sh
+```

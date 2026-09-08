@@ -2,10 +2,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
-import { api, type Goal, type GoalInput } from "@/lib/api";
+import { api, effectivePrecision, GOAL_CONFIDENCES, GOAL_DATE_PRECISIONS, GOAL_HORIZONS, type Goal, type GoalConfidence, type GoalDatePrecision, type GoalHorizon, type GoalInput, type GoalType } from "@/lib/api";
 import { fmtDate, fmtMoney, fmtNumber } from "@/lib/format";
 import { useAction, useExecutors, useLoad, useRouteId, useSprout } from "@/lib/hooks";
-import { t } from "@/lib/i18n";
+import { t, type Key } from "@/lib/i18n";
 import { useSession } from "@/components/AppShell";
 import { isAcceptanceWait, useTaskTypeIndex } from "@/lib/states";
 import { goalSummary, tallyGoals } from "../goalStatus";
@@ -13,7 +13,7 @@ import { BriefSection } from "@/components/BriefSection";
 import { EventList } from "@/components/EventList";
 import { flattenGoals } from "@/components/GoalDrawer";
 import { IconCancel, IconCheck, IconGoal, IconLog, IconPlus, IconTask, IconTrash } from "@/components/icons";
-import { InlineDate, InlineField, InlineNumber, InlineSelect, InlineTable, InlineText, InlineTitle, useInlineSaves } from "@/components/inline";
+import { InlineDate, InlineField, InlineNumber, InlineSelect, InlineTable, InlineText, InlineTextInput, InlineTitle, useInlineSaves } from "@/components/inline";
 import { ArcGauge } from "@/components/instruments/ArcGauge";
 import { Odometer } from "@/components/instruments/Odometer";
 import { TaskTable } from "@/components/TaskTable";
@@ -27,6 +27,12 @@ export function GoalDetail() {
 
 /** 货币符号（¥ / $ …）：预算输入框前缀 */
 const currencySymbol = (currency?: string) => fmtMoney(0, currency).replace(/[\d.,\s]/g, "");
+
+/** 时间桶与信心度（ADR 0021）：三档写死，不做成可配置词表 */
+const horizonOptions = () => GOAL_HORIZONS.map((h) => ({ value: h, label: t(`horizon.${h}` as Key) }));
+const confidenceOptions = () => GOAL_CONFIDENCES.map((c) => ({ value: c, label: t(`confidence.${c}` as Key) }));
+/** 时间粒度（ADR 0022）：日期填到多细为止，最细到周；空等价于「到周」，所以这一档不可空 */
+const precisionOptions = () => GOAL_DATE_PRECISIONS.map((p) => ({ value: p, label: t(`date_precision.${p}` as Key) }));
 
 /*
  * 目标详情 = 执行简报的目标版（DESIGN.md §17）：
@@ -45,6 +51,8 @@ function GoalDetailBody({ id }: { id: string | null }) {
   const events = useLoad(() => api.events.list({ limit: 200 }), [id]);
   // 整棵目标树：上级目标的下拉、负责人链（谁能改）、以及"上级目标"一行显示名字而不是 ID
   const tree = useLoad(() => api.goals.list().catch(() => [] as Goal[]), [id]);
+  // 目标类型词表（ADR 0023）：选择器只列启用的，本目标已有的停用类型照常列出
+  const goalTypes = useLoad(() => api.goals.types().catch(() => [] as GoalType[]), []);
   const flat = useMemo(() => flattenGoals(tree.data ?? []), [tree.data]);
   const byId = useMemo(() => new Map(flat.map((f) => [f.goal.id, f.goal])), [flat]);
   const ex = useExecutors();
@@ -69,6 +77,9 @@ function GoalDetailBody({ id }: { id: string | null }) {
     return false;
   }, [shown, session, byId, me]);
   const editPlan = canEdit && !shown?.achieved; // 标题与计划类字段：已达成的只剩描述
+  const typeList = useMemo(() => (goalTypes.data ?? []).filter((x) => x.active || x.id === shown?.type?.id), [goalTypes.data, shown?.type?.id]);
+  const typeOptions = useMemo(() => typeList.map((x) => ({ value: x.id, label: x.name })), [typeList]);
+  const typeRef = (idv: string) => typeList.find((x) => x.id === idv) ?? null;
   const editNotes = canEdit;
 
   const subtree = useMemo(() => {
@@ -208,6 +219,32 @@ function GoalDetailBody({ id }: { id: string | null }) {
                       display={g.parent_id ? <Link href={`/goals/${encodeURIComponent(g.parent_id)}/`} className="inl-text hover:text-accent-hover" onClick={(e) => editPlan && e.preventDefault()}>{parent?.title ?? g.parent_id}</Link> : <span className="text-ink-subtle">{t("inline.topGoal")}</span>}
                       onChange={(pid) => patch("parent", { parent_id: pid ?? "" }, { parent_id: pid })} />
                   </span>
+                </InlineField>
+                {/* 路线图三字段（ADR 0021）：成果指标说清达成时什么变了，时间桶是粗时间、与下面的精确日期互不覆盖，信心度只在路线图上呈现 */}
+                <InlineField label={t("goal.outcome")} status={st("outcome").status} error={st("outcome").error}>
+                  <InlineTextInput value={g.outcome ?? ""} editable={editNotes} placeholder={t("goal.outcomeUnset")} ariaLabel={t("goal.outcome")} onChange={(v) => patch("outcome", { outcome: v }, { outcome: v })} />
+                </InlineField>
+                <InlineField label={t("goal.horizon")} status={st("horizon").status} error={st("horizon").error}>
+                  <InlineSelect value={g.horizon || null} options={horizonOptions()} editable={editPlan} nullable nullLabel={t("horizon.none")} ariaLabel={t("goal.horizon")}
+                    display={g.horizon ? <span className="inl-text">{g.horizon_title || t(`horizon.${g.horizon}` as Key)}</span> : <span className="text-ink-subtle">{t("horizon.none")}</span>}
+                    onChange={(v) => patch("horizon", { horizon: (v ?? "") as GoalHorizon }, { horizon: (v ?? "") as GoalHorizon, horizon_title: v ? t(`horizon.${v}` as Key) : "" })} />
+                </InlineField>
+                <InlineField label={t("goal.confidence")} status={st("confidence").status} error={st("confidence").error}>
+                  <InlineSelect value={g.confidence || null} options={confidenceOptions()} editable={editPlan} nullable nullLabel={t("confidence.none")} ariaLabel={t("goal.confidence")}
+                    display={g.confidence ? <span className="inl-text">{g.confidence_title || t(`confidence.${g.confidence}` as Key)}</span> : <span className="text-ink-subtle">{t("confidence.none")}</span>}
+                    onChange={(v) => patch("confidence", { confidence: (v ?? "") as GoalConfidence }, { confidence: (v ?? "") as GoalConfidence, confidence_title: v ? t(`confidence.${v}` as Key) : "" })} />
+                </InlineField>
+                {/* 目标类型（ADR 0023）：组织自己维护的词表，只做分类不带流程。选择器只列启用的，本目标已有的停用类型照常列出，改不动的人看到的是只读文字 */}
+                <InlineField label={t("goal.type")} status={st("type_id").status} error={st("type_id").error}>
+                  <InlineSelect value={g.type?.id ?? null} options={typeOptions} editable={editPlan} nullable nullLabel={t("goalType.none")} ariaLabel={t("goal.type")} loading={goalTypes.loading && !goalTypes.data}
+                    display={g.type ? <span className="inl-text inline-flex items-center gap-1.5"><i className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: g.type.color }} aria-hidden="true" />{g.type.name}</span> : <span className="text-ink-subtle">{t("goalType.none")}</span>}
+                    onChange={(v) => patch("type_id", { type_id: v ?? "" }, { type: v ? typeRef(v) : null })} />
+                </InlineField>
+                {/* 时间粒度（ADR 0022）：决定路线图上这根条怎么画，也决定对外分享时显示到什么精度；在时间线上拖过条会落实成「到周」 */}
+                <InlineField label={t("goal.datePrecision")} status={st("date_precision").status} error={st("date_precision").error}>
+                  <InlineSelect value={effectivePrecision(g.date_precision)} options={precisionOptions()} editable={editPlan} ariaLabel={t("goal.datePrecision")}
+                    display={<span className="inl-text">{g.date_precision_title || t(`date_precision.${effectivePrecision(g.date_precision)}` as Key)}</span>}
+                    onChange={(v) => patch("date_precision", { date_precision: (v ?? "week") as GoalDatePrecision }, { date_precision: (v ?? "week") as GoalDatePrecision, date_precision_title: t(`date_precision.${v ?? "week"}` as Key) })} />
                 </InlineField>
                 <InlineField label={t("goal.plannedStart")} status={st("planned_start").status} error={st("planned_start").error}>
                   <InlineDate value={g.planned_start} editable={editPlan} withYear ariaLabel={t("goal.plannedStart")} onChange={(d) => patch("planned_start", { planned_start: d }, { planned_start: d })} />

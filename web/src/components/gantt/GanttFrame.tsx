@@ -120,6 +120,8 @@ export interface GanttFrameProps {
   bodyH: number;
   /** 图区允许拖拽新建时给十字光标 */
   creatable?: boolean;
+  /** 表头的最小格：默认到天；路线图传 "week"（它永远不画某一天，ADR 0022） */
+  minUnit?: "day" | "week";
   scrollRef: RefObject<HTMLDivElement | null>;
   /** 左上角（左列表头）的内容：通常是一行等宽读数 */
   corner?: ReactNode;
@@ -131,7 +133,7 @@ export interface GanttFrameProps {
   overlay?: (ctx: GanttFrameCtx) => ReactNode;
 }
 
-export function GanttFrame({ ref, from, days, dayW, scale, onZoom, labelW: labelWProp, narrow, onLabelW, onNarrow, density, bodyH, creatable, scrollRef, corner, repaintKey, children, overlay }: GanttFrameProps) {
+export function GanttFrame({ ref, from, days, dayW, scale, onZoom, labelW: labelWProp, narrow, onLabelW, onNarrow, density, bodyH, creatable, minUnit = "day", scrollRef, corner, repaintKey, children, overlay }: GanttFrameProps) {
   const width = Math.max(1, days * dayW);
   const labelW = narrow ? LABEL_NARROW : Math.min(LABEL_MAX, Math.max(LABEL_MIN, labelWProp));
   const [now, setNow] = useState(() => Date.now());
@@ -251,7 +253,7 @@ export function GanttFrame({ ref, from, days, dayW, scale, onZoom, labelW: label
   }, [from, dayW, labelW, onZoom, scrollRef]);
 
   // ---------- 表头 ----------
-  const header = useMemo(() => buildHeader(scale, from, days, dayW, new Date(now)), [scale, from, days, dayW, now]);
+  const header = useMemo(() => buildHeader(scale, from, days, dayW, new Date(now), minUnit), [scale, from, days, dayW, now, minUnit]);
 
   // ---------- 左列拖宽 ----------
   const resize = useRef<{ x: number; w: number } | null>(null);
