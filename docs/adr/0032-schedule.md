@@ -49,7 +49,7 @@
 
 ### 6. 界面
 
-- 「我的工作」下新增页签**「日程」**：顶部日 / 周 / 月三档（记住上次）、今天按钮、前后翻页；四类各有画法与颜色；点一条跳到对应详情；「我的 / 团队」切换，团队按成员一人一行。空态一句「这周还没有安排」。窄屏只留日与周。
+- 侧栏新增入口**「我的日程」**（与「我的工作」同级，第七个入口；起初做成「我的工作」的页签，所有者当天就要求独立出来——日程是人每天要看的东西，不该藏在页签里；旧地址 `/?tab=schedule` 自动跳到 `/schedule/`）：顶部日 / 周 / 月三档（记住上次）、今天按钮、前后翻页；四类各有画法与颜色；点一条跳到对应详情；「我的 / 团队」切换，团队按成员一人一行。空态一句「这周还没有安排」。窄屏只留日与周。
 - 组织设置下新增页签**「外部日历」**：三家提供方的连接、同步状态、手动同步、断开，走接入向导那套自诊断分步（DESIGN.md §「引导式接入」）。
 - 个人设置里一枚「连接我的 Google 日历」。
 
@@ -72,6 +72,6 @@
 - `internal/directory`：`Calendar` / `OAuthCalendar` / `CalendarDiagnoser` 接口、`Provider.NewCalendar` 与 `CalendarProviders()`（`calendar.go`）；飞书与企业微信在各自文件里加 `NewCalendar`，Google 是新文件 `googlecal.go`；测试用 `FakeCalendar`。
 - `internal/app/schedule.go`：聚合；`internal/app/calendar.go`：连接、同步、授权。
 - HTTP：`/schedule`、`/org/calendars/{provider}` 及其 `test` / `sync`、`/me/calendars`、`/me/calendars/google/callback`；MCP：`get_my_schedule`（`docs/api.md`「日程与外部日历」）。
-- 网页：「我的工作 · 日程」、「组织设置 · 外部日历」、个人设置的连接入口；DESIGN.md 新节。
+- 网页：「我的日程」、「组织设置 · 外部日历」、个人设置的连接入口；DESIGN.md 新节；快捷键 `g s`。
 - 新词（CONTEXT.md）：日程、日程项、外部日历。
 - 编号说明：0029–0031 已被 ADR 0028 的后续（决定在客户端里答、用量与成本观测、身份与交付物真实性）预留，所以日程用 0032。

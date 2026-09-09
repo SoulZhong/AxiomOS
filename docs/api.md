@@ -510,7 +510,7 @@ Agent 侧：任何写操作若命中「需要人确认」的授权，HTTP 返回
 | DELETE | `/me/calendars/{provider}` | 解除我的绑定（Google 的令牌一并删，同步来的会议删掉）→ 204 |
 | GET | `/me/calendars/google/callback?state=&code=` | Google 授权回调（公开）：换刷新令牌、按成员加密存下、立刻同步一次，然后 303 回 `/settings/?tab=me&calendar=connected`；失败带 `calendar=failed&reason=` |
 
-MCP：`get_my_schedule(from?, to?)` 给 Agent 看它所有者的日程，只读。
+MCP：`get_my_schedule(from?, to?)` 给 Agent 看它所有者的日程，只读。网页入口是侧栏的「我的日程」（`/schedule/`）。
 
 ## 代码平台与外部事件（ADR 0020）
 
