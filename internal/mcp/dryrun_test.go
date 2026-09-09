@@ -225,6 +225,7 @@ func TestEveryMCPWriteToolDryRunWritesNothing(t *testing.T) {
 		"create_sprint":           {"name": "不该出现的迭代", "starts_on": dayFrom(30).Format("2006-01-02"), "ends_on": dayFrom(43).Format("2006-01-02")},
 		"update_sprint":           {"sprint_id": sp.ID, "name": "改过的迭代"},
 		"unlink_tasks":            {"task_id": linked.ID, "type": "blocks", "other_id": other.ID},
+		"propose_goal_plan":       {"goal_id": goal.ID, "tasks": []any{map[string]any{"title": "不该出现的方案任务"}}},
 		"delete_milestone":        {"milestone_id": ms.ID},
 		"unreach_milestone":       {"milestone_id": reached.ID},
 		"claim_task":              {"task_id": free.ID},
@@ -269,6 +270,10 @@ func TestEveryMCPWriteToolDryRunWritesNothing(t *testing.T) {
 		}
 	}
 
+	// 目标方案只有 Agent 能提（ADR 0026）：这一个工具用甲的 Agent 调，其余仍用甲本人
+	_, planner := w.agent(t, w.jia, "提方案的 Agent", map[domain.Grant]domain.GrantMode{domain.GrantCreateTask: domain.GrantDirect}, 1)
+	sessionFor := map[string]*app.Session{"propose_goal_plan": planner}
+
 	for _, name := range tools {
 		in := map[string]any{}
 		for k, v := range args[name] {
@@ -276,7 +281,11 @@ func TestEveryMCPWriteToolDryRunWritesNothing(t *testing.T) {
 		}
 		in["dry_run"] = true
 		before := orgRowCounts(t, w)
-		text, isErr := callMCP(t, a, w.jia, name, in)
+		by := w.jia
+		if s := sessionFor[name]; s != nil {
+			by = s
+		}
+		text, isErr := callMCP(t, a, by, name, in)
 		if isErr {
 			t.Errorf("%s 的只看不做报错了：%s", name, text)
 		} else if !strings.HasPrefix(text, "会") && !strings.Contains(text, "不会立刻生效") {

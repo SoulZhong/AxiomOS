@@ -166,7 +166,7 @@ func TestOnboardNoOrgData(t *testing.T) {
 // ?client= 白名单：认得的四个各给自己的配置写法，其余 400。
 func TestOnboardClientBlocks(t *testing.T) {
 	blocks := map[string]string{
-		"claude-code": "claude mcp add --transport http axiomos",
+		"claude-code": "claude mcp add --transport http --scope user axiomos",
 		"cursor":      "~/.cursor/mcp.json",
 		"codex":       "~/.codex/config.toml",
 		"custom":      "Streamable HTTP",
@@ -213,6 +213,24 @@ func TestConfigShapesShared(t *testing.T) {
 	script := getOnboard(t, "/api/v1/agent-auth/connect.sh?client=cursor", nil)
 	if !strings.Contains(script.Body.String(), cfgCursorJSON) {
 		t.Fatalf("接入脚本里的配置写法与常量对不上")
+	}
+	// PowerShell 版也取同一批常量（here-string 里直接是多行文本，$MCP / $TOKEN 由脚本运行时展开）
+	ps := getOnboard(t, "/api/v1/agent-auth/connect.ps1?client=cursor", nil)
+	if ps.Code != 200 || !strings.Contains(ps.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("PowerShell 脚本应 200 且是纯文本，实际 %d %s", ps.Code, ps.Header().Get("Content-Type"))
+	}
+	// Cursor 那段是程序化合并（ConvertFrom-Json），嵌进脚本文本的是通用 JSON 与 Codex 的 TOML 两种写法
+	if body := ps.Body.String(); !strings.Contains(body, renderConfig(cfgJSON, "$MCP", "$TOKEN")) || !strings.Contains(body, "Invoke-RestMethod") {
+		t.Fatalf("PowerShell 脚本里的配置写法与常量对不上")
+	}
+	if body := getOnboard(t, "/api/v1/agent-auth/connect.ps1?client=codex", nil).Body.String(); !strings.Contains(body, renderConfig(cfgCodexTOML, "$MCP", "$TOKEN")) {
+		t.Fatalf("PowerShell 脚本的 Codex 写法与常量对不上")
+	}
+	if !strings.Contains(getOnboard(t, "/api/v1/agent-auth/connect.ps1?client=claude-code", nil).Body.String(), "claude mcp add --transport http --scope user axiomos $MCP") {
+		t.Fatalf("PowerShell 脚本的 Claude Code 写法应带 --scope user")
+	}
+	if getOnboard(t, "/api/v1/agent-auth/connect.ps1?client=evil", nil).Code != 400 {
+		t.Fatalf("未知 client 应 400")
 	}
 }
 

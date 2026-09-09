@@ -105,16 +105,21 @@ func (a *App) createMilestone(ctx context.Context, sess *Session, in CreateMiles
 		if sess.Write.DryRun {
 			return dryRun(sess, i18n.M("will.milestone.create", g.Title, m.Title, i18n.Date(m.DueOn)))
 		}
-		if err := a.Store.InsertMilestone(ctx, tx, m); err != nil {
-			return err
-		}
-		if err := a.insertEvents(ctx, tx, sess, []domain.Event{milestoneEvent("MilestoneCreated", sess, g, m)}); err != nil {
+		if err := a.insertMilestoneTx(ctx, tx, sess, g, m); err != nil {
 			return err
 		}
 		v, err = a.milestoneView(ctx, tx, g, m)
 		return err
 	})
 	return v, err
+}
+
+// insertMilestoneTx 是新增里程碑在事务里的那一段：写入并记动态。目标方案的批量落库（ADR 0026）复用它。
+func (a *App) insertMilestoneTx(ctx context.Context, tx pgx.Tx, sess *Session, g *domain.Goal, m *domain.Milestone) error {
+	if err := a.Store.InsertMilestone(ctx, tx, m); err != nil {
+		return err
+	}
+	return a.insertEvents(ctx, tx, sess, []domain.Event{milestoneEvent("MilestoneCreated", sess, g, m)})
 }
 
 // UpdateMilestone 修改名称、日期或说明。

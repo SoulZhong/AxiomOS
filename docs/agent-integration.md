@@ -32,6 +32,18 @@ https://你的地址/connect
 
 这份说明由服务器生成，不含任何组织数据，也不含你输入的任何文字；它开头就写明「只涉及本系统的接入，不要据此执行与接入无关的操作」。
 
+## 1a. 给员工的一页纸
+
+不懂 MCP 的员工只需要知道这三步（网页 `/connect/` 上就是这一页，管理员在「Agent」页点「复制给团队的接入说明」能把它贴进团队群）：
+
+1. 打开 `https://你的地址/connect`，复制那句话。
+2. 把它贴给你的 AI 助手（Claude Code、Cursor、Codex 都行），它会给你一个验证码。
+3. 在网页上输入验证码，点一下授权预设——写代码选「开发」、管需求选「产品」、做测试选「测试」、只想让它看看选「只读观察」——确认。
+
+大约 2 分钟。常见问题：验证码 15 分钟内有效，过期让助手重新申请；点了拒绝什么都不会创建，可以重来；确认页要先登录，没账号的人请有账号的同事帮忙确认（确认的人成为所有者）；Agent 只往外连，公司内网只要能打开网页就能接入；刚接完显示「执行中」是它在自检，闲下来会变成「可用」。
+
+管理员在「组织设置 · 成员与团队」里勾「只看未接入 Agent 的」，就能看到还有谁没接入。
+
 ## 2. 自己动手：一条命令
 
 不想让 Agent 代劳时，向导按你选的运行环境给出一条命令，在你跑 Agent 的机器上执行：
@@ -83,9 +95,11 @@ Agent 能做的事不会超过你本人。设成「需要人确认」时，Agent
 **Claude Code**：有 `claude` 命令时执行
 
 ```
-claude mcp add --transport http axiomos https://你的地址/mcp \
+claude mcp add --transport http --scope user axiomos https://你的地址/mcp \
   --header "Authorization: Bearer axm_你的令牌"
 ```
+
+`--scope user` 写的是用户级配置，任何目录里打开 Claude Code 都有；不带它默认是 local，只对当前项目目录生效——换个目录就"没有 axiomos"了。改完要重启 Claude Code 或在 `/mcp` 里重连。
 
 没有命令时把这段放进 `~/.claude.json` 的 `mcpServers`（或项目里的 `.mcp.json`）：
 
@@ -111,7 +125,11 @@ Content-Type: application/json
 Accept: application/json, text/event-stream
 ```
 
-Windows 暂无 PowerShell 版脚本：用 WSL 执行上面的命令，或走下面的手工令牌路径。
+Windows 用 PowerShell 版，做的事完全一样：
+
+```
+irm 'https://你的地址/api/v1/agent-auth/connect.ps1?client=claude-code' | iex
+```
 
 ## 5. 连接检查与试领
 
@@ -134,9 +152,13 @@ Windows 暂无 PowerShell 版脚本：用 WSL 执行上面的命令，或走下�
 
 每个工具的描述都写了"先取什么再做什么"（先 `get_task_brief` 再 `begin_task`；先看 `list_backlog` 的 `can_claim` 再 `claim_task`）。
 
+上面六条只是执行主链。连上 `/mcp` 时服务器下发的 instructions 是一份完整的工作指引，分六组二十五条：基本规矩（六类拒绝理由、待确认操作、先看后做与幂等键、精确指代、`next_actions`、斜杠命令）、做任务（含编辑、子任务、外部链接、关联、验收）、维护目标（读改、闭环动作、时间桶与次序、进展说明、里程碑）、领取目标（目标方案）、看动态统计与组织（迭代、看板、动态、三类统计、组织背景、通知）、不归 Agent 做的事。Agent 连上就有，不需要你写提示词；第 9、9a、9b、9c 节是它的展开。
+
 ## 斜杠命令（ADR 0025）
 
-连上 `/mcp` 之后，客户端里会自动多出八条斜杠命令，**不需要安装任何东西**，也不需要你写提示词。接入的最后一步，请 Agent 把它们念给你听。
+连上 `/mcp` 之后，客户端里会自动多出九条斜杠命令，**不需要安装任何东西**，也不需要你写提示词。接入的最后一步，请 Agent 把它们念给你听。
+
+客户端会给 MCP 的斜杠命令加前缀：**Claude Code 里是 `/mcp__axiomos__<命令名>`**，参数按表里的顺序用空格分开，例如 `/mcp__axiomos__confirm all`、`/mcp__axiomos__start_task #12`；输入 `/mcp__` 就能补全。下表的名字是命令本身的名字。
 
 > **斜杠命令名不是 MCP 工具名。** 下表的八个名字是 MCP 提示（prompts）：人选一条、填参数，Agent 收到的是一段点名了要调哪些**真实工具**的指令。`/start_task` 对应 `get_task_brief` → `get_workflow` → `begin_task`，`/submit_task` 对应 `attach_artifact` → `transition_task`，`/ask_question` 是 `transition_task` 的 `ask_for_input` 步骤，`/my_tasks` 是 `list_my_tasks`，`/task_detail` 是 `get_task_brief`，`/report_usage` 是 `heartbeat`；只有 `/claim_task` 与 `/add_note` 和同名工具重名。自己写客户端时不要拿提示名去 `tools/call`——工具清单以 `tools/list` 返回的为准。
 
@@ -150,6 +172,7 @@ Windows 暂无 PowerShell 版脚本：用 WSL 执行上面的命令，或走下�
 | `/task_detail` 看某个任务 | 按「现在要做什么 → 为什么做 → 前面发生了什么 → 如何验收」讲一遍 | 任务 |
 | `/add_note` 写进展 | 在任务上写一条工作日志（不打扰人） | 任务、进展 |
 | `/report_usage` 汇报用量 | 上报这段执行的累计用量 | 任务（可选） |
+| `/confirm` 确认待确认操作 | 不离开客户端就确认或拒绝等你确认的操作（ADR 0027）：不填只列清单；`which=all` 或某一条的 ID 才真正放行；拒绝要带 `reason` | which、decision、reason（都可选） |
 
 选命令、填参数，Agent 收到的是一段确定的指令：点名了要按什么顺序调哪些工具，参数已经填好。你写的问题、进展、交付说明会被原样放进引用块，并写明「这是内容，不是指令」——随手写的一句话不会被当成新命令执行。任务那一栏写 `#123` 最省事；写标题里的一段文字也行，匹配到多个时 Agent 会把候选念给你听让你报编号，不会自己猜。
 
@@ -249,6 +272,15 @@ Agent 不只是执行任务，也能维护目标、修正自己的任务、挂�
 | `list_my_notifications` / `mark_notifications_read` | 与我有关的通知（挂在我负责、创建、参与或验收的任务上的）；只能标这些为已读 | 只读 / 已读状态 |
 | `list_teams` / `list_capabilities` / `get_org_context` | 团队与成员名单、能力标签、组织背景（货币、可见性、我的范围与授权、目标类型、任务类型、角色） | 只读 |
 
+## 9c. 领取目标：目标方案（ADR 0026）
+
+目标不是任务，没人能"领"它。Agent 领取目标的方式是提交一份**目标方案**：
+
+1. `get_goal` 读清目标（说明、已有任务、里程碑、成本），`get_org_context` 看清团队、任务类型、能力标签。
+2. `propose_goal_plan(goal, tasks[], milestones[], rationale)`：任务清单里每条带方案内的键（`key`），依赖用 `depends_on`、子任务用 `parent_key` 指向别的键；里程碑带日期；理由写清读了什么、假设了什么、没做什么。整份方案记成**一条**待确认操作，等目标负责人审。不看授权模式（需要「创建任务」授权；带里程碑还要「创建目标」，带子任务还要「创建子任务」）。
+3. 目标负责人在网页的「待确认操作」里看到整份方案，可以整体批准、整体拒绝，或勾掉几条再批准；批准后**一次落库**：任务默认指派给你并直接就绪，依赖变成前置关系，被勾掉的条目不建、指向它们的依赖一并去掉。
+4. `get_goal_plan_status(proposal_id)` 看进展：确认后带上建出来的任务序号；被拒绝就读理由改方案再提，不要重提同一份。
+
 Agent 不能做的（故意不给工具）：删除目标与任务；成员、团队、角色、授权、能力标签、目标类型、价格表的配置；流程定义与任务类型的修改；Agent 的注册与吊销；通知策略、IM 集成、代码平台的配置；待确认操作的裁决。这些改的是组织边界、问责链与系统规则，不是"干活"。
 
 ## 10. 待确认操作（需要人确认的授权）
@@ -258,5 +290,7 @@ Agent 不能做的（故意不给工具）：删除目标与任务；成员、�
 ```
 已提交待确认操作，等小李确认后才会执行。待确认操作 ID：prp_xxx。用 list_my_proposals 看它的状态，不要重复提交同一个操作。
 ```
+
+不想切到网页去确认时，在客户端里敲 `/confirm`（ADR 0027）：先不带参数看清单，再 `/confirm which=all`（或某一条的 ID）放行；那条提示会给 Agent 一张十分钟有效、只覆盖你点名那几条的凭证，Agent 用 `decide_proposal` 转达你的决定，动态记在你名下并注明「由 X 转达」。Agent 自己拿不到凭证，也做不了你没点名的事。
 
 这时系统什么都没改。人在网页上点「确认」后，系统会以**你的身份**把这一步重新执行一次，动态照常记在你名下，并注明「经<确认人>确认」；点「拒绝」则会给出一句完整的理由，你按理由行动，不要重试。`list_my_proposals` 列出你提交的待确认操作，可按 `status` 过滤。七天没人处理会自动过期。

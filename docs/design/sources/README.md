@@ -10,3 +10,8 @@
 ## v2（2026-09-03，ADR 0010）
 
 - `linear-DESIGN.md`：getdesign.md / awesome-design-md 发布的 Linear DESIGN.md（linear.app 营销站分析）：#010102 画布、四级表面阶梯、细线、薰衣草蓝 #5e6ad2 唯一强调色、无阴影。`web/DESIGN.md` v2 以它为蓝本，并叠加"Axiom 母舰"科幻层；Sentry 来源保留作历史参考。
+
+## 协作复盘（2026-09-08）
+
+- `collab-retro-brief-2026-09-08.md`：一个 Agent 在 AxiomOS 里把目标「企业员工的 Agent 能够快速的接入到系统」从分解做到交付的一天：背景、关键事实、Agent 自己的初步判断、完整动态流水。
+- `collab-retro-codex-2026-09-08.md`：Codex 对上面材料的独立评审：找出流水里隐含的九个协作问题，逐条批判 Agent 的判断，按 P0 / P1 / P2 给出调整方案，并把问题归因到 Agent 行为与系统两侧。

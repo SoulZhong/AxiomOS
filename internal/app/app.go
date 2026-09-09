@@ -30,6 +30,9 @@ type App struct {
 	failCodeEvent bool
 
 	syncing sync.Map // org id → 正在同步
+	// confirmGrants 是「在 Agent 里确认」的一次性凭证（ADR 0027）：nonce → *confirmGrant，十分钟过期。
+	// 放在进程内存里：凭证只活十分钟、只对发它的那条连接有意义；多实例部署要把它挪进表里。
+	confirmGrants sync.Map
 }
 
 func New(s *store.Store) *App {
@@ -63,6 +66,9 @@ type Session struct {
 	// 正在执行一条被确认的待确认操作时，这里是确认人；动态摘要会带上「经<确认人>确认」。
 	ApprovedByID   string
 	ApprovedByName string
+	// 人在 Agent 客户端里裁决待确认操作时（ADR 0027），这里是转达的 Agent；动态里记「由 <Agent> 转达」。
+	ViaAgentID   string
+	ViaAgentName string
 
 	// Write 是这次写操作的两个开关：只看不做、幂等键（ADR 0025）。由 HTTP 与 MCP 层填。
 	Write WriteOptions

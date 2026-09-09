@@ -47,7 +47,15 @@ func (s *Server) proposal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) approveProposal(w http.ResponseWriter, r *http.Request) {
-	res, err := s.App.ApproveProposal(r.Context(), sessionOf(r), r.PathValue("id"))
+	// 目标方案（ADR 0026）可以带选择：跳过哪些键、把全部任务改派给谁；别的动作请求体为空或 {}
+	var opts app.ApproveOptions
+	if r.ContentLength != 0 {
+		if err := decode(r, &opts); err != nil {
+			writeErr(w, r, err)
+			return
+		}
+	}
+	res, err := s.App.ApproveProposalWith(r.Context(), sessionOf(r), r.PathValue("id"), opts)
 	if err != nil {
 		writeErr(w, r, err)
 		return

@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
-import { api, type ExecutorRef, type Goal, type Priority, type Proposal, type ProposalStatus, type ProposalTarget, type Sprint, type Task, type TaskType } from "@/lib/api";
+import { api, isGoalPlan, type ExecutorRef, type Goal, type GoalPlanPayload, type Priority, type Proposal, type ProposalStatus, type ProposalTarget, type Sprint, type Task, type TaskType } from "@/lib/api";
 import { fmtDate, fmtDateTime, parseDate } from "@/lib/format";
 import { errorMessage, useCapabilityTitles, useExecutors, useLoad, useQueryParam } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
@@ -10,6 +10,7 @@ import { useTaskTypeIndex } from "@/lib/states";
 import { capabilityTitle, grantTitle, PROPOSAL_STATUSES, priorityTitle, proposalFieldTitle, proposalStatusOf, proposalStatusTitle, proposalTargetHref, proposalTargetKindTitle } from "@/lib/terms";
 import { usePersisted } from "@/lib/usePersisted";
 import { useSession } from "@/components/AppShell";
+import { PlanReview } from "@/components/proposals/PlanReview";
 import { HELM_MS, RejectDialog } from "@/components/proposals/RejectDialog";
 import { IconApprove, IconChevronDown, IconChevronRight, IconClose } from "@/components/icons";
 import { refreshShipTelemetry } from "@/components/ship-status/telemetry";
@@ -50,6 +51,8 @@ export default function ProposalsPage() {
   const [rejecting, setRejecting] = useState<Proposal | null>(null);
   // 刚处理过的那几条先留在原位（让人看见结果），换一次筛选就按新条件重新排
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  // 目标方案（ADR 0026）：每条方案里被勾掉的键，确认时作为 skip[] 送给后端
+  const [skips, setSkips] = useState<Record<string, string[]>>({});
   const [recent, setRecent] = useState<string[]>([]);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -86,7 +89,7 @@ export default function ProposalsPage() {
     const me = session ? { id: session.member.id, name: session.member.name, kind: "member" as const } : null;
     const flip = window.setTimeout(() => put({ ...p, status: "approved", decided_at: new Date().toISOString(), decided_by: me }), wait);
     try {
-      const r = await api.proposals.approve(p.id);
+      const r = await api.proposals.approve(p.id, isGoalPlan(p) ? { skip: skips[p.id] ?? [] } : {});
       await played;
       window.clearTimeout(flip);
       put(r.proposal);
@@ -165,8 +168,10 @@ export default function ProposalsPage() {
                 types={types}
                 caps={caps}
                 executors={executors}
-                open={!!open[p.id]}
-                onToggle={() => setOpen((m) => ({ ...m, [p.id]: !m[p.id] }))}
+                open={open[p.id] ?? (isGoalPlan(p) && proposalStatusOf(p, now) === "pending")}
+                onToggle={() => setOpen((m) => ({ ...m, [p.id]: !(m[p.id] ?? (isGoalPlan(p) && proposalStatusOf(p, now) === "pending")) }))}
+                skipped={skips[p.id] ?? []}
+                onSkip={(key, skip) => setSkips((m) => { const cur = new Set(m[p.id] ?? []); if (skip) cur.add(key); else cur.delete(key); return { ...m, [p.id]: [...cur] }; })}
                 helm={helm === p.id}
                 busy={busy === p.id}
                 onApprove={() => void approve(p)}
@@ -182,7 +187,7 @@ export default function ProposalsPage() {
 }
 
 /** 一条待确认操作。展开后才去读对象现在的状态（读不到就直说读不到，不假装）。 */
-function Row({ p, now, types, caps, executors, open, onToggle, helm, busy, onApprove, onReject }: {
+function Row({ p, now, types, caps, executors, open, onToggle, skipped, onSkip, helm, busy, onApprove, onReject }: {
   p: Proposal;
   now: number;
   types: Record<string, TaskType>;
@@ -190,6 +195,8 @@ function Row({ p, now, types, caps, executors, open, onToggle, helm, busy, onApp
   executors: ExecutorRef[];
   open: boolean;
   onToggle: () => void;
+  skipped: string[];
+  onSkip: (key: string, skip: boolean) => void;
   helm: boolean;
   busy: boolean;
   onApprove: () => void;
@@ -199,6 +206,12 @@ function Row({ p, now, types, caps, executors, open, onToggle, helm, busy, onApp
   const pending = status === "pending";
   // can_decide 是后端算好的"这条轮不轮得到我拍板"；老后端没有这个字段时按能处理算
   const mayDecide = p.can_decide !== false;
+  // 目标方案：剩下的条数（任务全勾掉就不让确认——只剩里程碑后端也会拒，方案至少要有一个任务）
+  const plan = isGoalPlan(p) ? (p.payload as unknown as GoalPlanPayload) : null;
+  const skippedSet = new Set(skipped);
+  const tasksLeft = plan ? (plan.tasks ?? []).filter((x) => !skippedSet.has(x.key)).length : 0;
+  const planLeft = plan ? tasksLeft + (plan.milestones ?? []).filter((m) => !skippedSet.has(m.key)).length : 0;
+  const canApprove = mayDecide && (!plan || tasksLeft > 0);
   const href = proposalTargetHref(p.target);
   return (
     <li className="px-4 py-3.5">
@@ -244,8 +257,8 @@ function Row({ p, now, types, caps, executors, open, onToggle, helm, busy, onApp
             <Tip tip={mayDecide ? null : t("proposals.cannotDecide")} className="inline-flex items-center gap-1.5">
               {/* 转舵：确认按钮上的舵轮转四分之一圈（DESIGN.md §7 F.），240ms 后这一行才翻成已确认 */}
               <span className="helm-turn inline-flex" data-motion={helm ? "helm" : undefined}>
-                <Button variant="primary" size="sm" icon={<IconApprove />} disabled={busy || !mayDecide} onClick={onApprove}>
-                  {t("proposals.approve")}
+                <Button variant="primary" size="sm" icon={<IconApprove />} disabled={busy || !canApprove} onClick={onApprove}>
+                  {plan && skipped.length > 0 ? t("proposals.plan.approveCount", { n: planLeft }) : t("proposals.approve")}
                 </Button>
               </span>
               <Button variant="ghost" size="sm" className="text-danger hover:!text-danger" disabled={busy || !mayDecide} onClick={onReject}>
@@ -267,8 +280,12 @@ function Row({ p, now, types, caps, executors, open, onToggle, helm, busy, onApp
       </div>
       {open && (
         <div className="mt-3 ml-9 rounded-md border border-hairline bg-surface-2 p-3">
-          <h3 className="eyebrow mb-2 text-ink-subtle">{t("proposals.payload")}</h3>
-          <Payload payload={p.payload} types={types} caps={caps} executors={executors} target={p.target} />
+          <h3 className="eyebrow mb-2 text-ink-subtle">{plan ? t("proposals.plan.title") : t("proposals.payload")}</h3>
+          {plan ? (
+            <PlanReview plan={plan} executors={executors} skipped={new Set(skipped)} onToggle={onSkip} readOnly={!pending || !mayDecide} />
+          ) : (
+            <Payload payload={p.payload} types={types} caps={caps} executors={executors} target={p.target} />
+          )}
           {p.grant && (
             <p className="mt-2 text-caption text-ink-subtle">
               {t("proposals.viaGrant", { grant: grantTitle(p.grant) })}

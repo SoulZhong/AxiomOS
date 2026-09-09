@@ -106,6 +106,10 @@ func EventSummary(e *store.EventRow, names map[string]string, taskTitle map[stri
 		return fieldChangeSummary(e, names, loc, who, "goal", i18n.Trf(loc, "ev.obj.goal", s("title")))
 	case "GoalNoteAdded":
 		return i18n.Trf(loc, "ev.GoalNoteAdded", who, s("title"), s("text"))
+	case "GoalPlanApplied":
+		tc, _ := NumOf(e.Data["task_count"])
+		mc, _ := NumOf(e.Data["milestone_count"])
+		return i18n.Trf(loc, "ev.GoalPlanApplied", who, s("title"), tc, mc)
 	case "TaskFieldChanged":
 		return fieldChangeSummary(e, names, loc, who, "task", i18n.Trf(loc, "ev.obj.task", task))
 	case "MilestoneCreated", "MilestoneUpdated", "MilestoneReached", "MilestoneUnreached", "MilestoneDeleted":
@@ -336,10 +340,14 @@ func EventSummary(e *store.EventRow, names map[string]string, taskTitle map[stri
 		if n := names[agent]; n != "" {
 			agent = n
 		}
-		if e.Type == "ProposalRejected" {
-			return i18n.Trf(loc, "ev.ProposalRejected", who, agent, ProposalSummaryText(s("summary")), s("reason"))
+		via := ""
+		if n := s("via_agent_name"); n != "" {
+			via = i18n.Trf(loc, "ev.via_agent", n)
 		}
-		return i18n.Trf(loc, "ev.ProposalApproved", who, agent, ProposalSummaryText(s("summary")))
+		if e.Type == "ProposalRejected" {
+			return i18n.Trf(loc, "ev.ProposalRejected", who, agent, ProposalSummaryText(s("summary")), s("reason")) + via
+		}
+		return i18n.Trf(loc, "ev.ProposalApproved", who, agent, ProposalSummaryText(s("summary"))) + via
 	case "ProposalExpired":
 		return i18n.Trf(loc, "ev.ProposalExpired", ProposalSummaryText(s("summary")))
 	}

@@ -8,6 +8,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teemo/axiomos/internal/app"
+	"github.com/teemo/axiomos/internal/domain"
 	"github.com/teemo/axiomos/internal/i18n"
 )
 
@@ -86,7 +87,7 @@ func (w *world) localeSession(t *testing.T, tok string, loc i18n.Locale) *app.Se
 func TestPromptsListedInBothLocales(t *testing.T) {
 	w := newWorld(t)
 	tok, _ := w.agent(t, w.yi, "提示 Agent", nil, 1)
-	want := []string{"claim_task", "start_task", "submit_task", "ask_question", "my_tasks", "task_detail", "add_note", "report_usage"}
+	want := []string{"claim_task", "start_task", "submit_task", "ask_question", "my_tasks", "task_detail", "add_note", "report_usage", "confirm"}
 
 	for _, loc := range []i18n.Locale{i18n.ZhCN, i18n.EnUS} {
 		sess := w.localeSession(t, tok, loc)
@@ -242,5 +243,63 @@ func TestPromptMissingRequiredArgAsksTheHuman(t *testing.T) {
 	text = getPrompt(t, w.a, sess, "task_detail", map[string]string{"task": "登录"})
 	if !strings.Contains(text, "不要猜") || !strings.Contains(text, "list_backlog") {
 		t.Fatalf("task 写标题片段时应要求先找候选再让人选：\n%s", text)
+	}
+}
+
+// /confirm（ADR 0027）：不点名只列清单、不发凭证；点名了才发凭证，凭证只对点名的那几条有效；
+// decide_proposal 拿凭证以所有者身份裁决。
+func TestConfirmPromptAndTool(t *testing.T) {
+	w := newWorld(t)
+	tok, ag := w.agent(t, w.yi, "转达 Agent", map[domain.Grant]domain.GrantMode{domain.GrantComment: domain.GrantWithApproval}, 1)
+	task := w.task(t, w.jia, "要评论的任务", w.yi.MemberID)
+	_, err := w.a.AddComment(w.ctx, ag, task.ID, "你好", false)
+	pp, ok := app.AsProposalPending(err)
+	if !ok {
+		t.Fatalf("应挂起，实际 %v", err)
+	}
+	sess, _ := w.a.SessionFromAgentToken(w.ctx, tok)
+	// 不点名：清单，没有凭证
+	text := getPrompt(t, w.a, sess, "confirm", nil)
+	if !strings.Contains(text, pp.Proposal.ID) || strings.Contains(text, "cfm_") || !strings.Contains(text, "不要调 decide_proposal") {
+		t.Fatalf("不点名应只列清单且不发凭证，实际 %q", text)
+	}
+	// 点名 all：带凭证
+	text = getPrompt(t, w.a, sess, "confirm", map[string]string{"which": "all"})
+	i := strings.Index(text, "cfm_")
+	if i < 0 || !strings.Contains(text, pp.Proposal.ID) {
+		t.Fatalf("点名后应带凭证与清单，实际 %q", text)
+	}
+	nonce := strings.Trim(strings.Fields(text[i:])[0], "\"。，")
+	out, isErr := callMCP(t, w.a, sess, "decide_proposal", map[string]any{"proposal_id": pp.Proposal.ID, "decision": "approve", "nonce": nonce})
+	if isErr {
+		t.Fatalf("转达确认失败：%s", out)
+	}
+	v, _ := w.a.GetProposal(w.ctx, w.jia, pp.Proposal.ID)
+	if v.Status != domain.ProposalApproved || v.DecidedBy != w.yi.MemberID {
+		t.Fatalf("应由所有者乙确认，实际 %+v", v.Proposal)
+	}
+	// 没凭证 / 用过的凭证：拒绝的是完整句子
+	out, isErr = callMCP(t, w.a, sess, "decide_proposal", map[string]any{"proposal_id": pp.Proposal.ID, "decision": "approve", "nonce": nonce})
+	if !isErr || !strings.Contains(out, "无效或已过期") && !strings.Contains(out, "不在这次确认的范围") {
+		t.Fatalf("用过的凭证应被拒，实际 %v %q", isErr, out)
+	}
+}
+
+// 客户端按位置传参时，人写「which=all」会变成 which="which=all"；解析要按名字归位。
+func TestParsePromptInputNamedValues(t *testing.T) {
+	args := []promptArg{{Name: "which"}, {Name: "decision"}}
+	req := &sdk.GetPromptRequest{Params: &sdk.GetPromptParams{Arguments: map[string]string{"which": "which=all"}}}
+	if got := parsePromptInput(args, req); got.get("which") != "all" {
+		t.Fatalf("which = %q, want all", got.get("which"))
+	}
+	req = &sdk.GetPromptRequest{Params: &sdk.GetPromptParams{Arguments: map[string]string{"which": "decision=reject", "decision": "prp_1"}}}
+	got := parsePromptInput(args, req)
+	if got.get("decision") != "reject" || got.get("which") != "" {
+		t.Fatalf("got %v, want decision=reject and which empty", got)
+	}
+	// 值里带等号但不是参数名的，原样保留
+	req = &sdk.GetPromptRequest{Params: &sdk.GetPromptParams{Arguments: map[string]string{"which": "a=b"}}}
+	if got := parsePromptInput(args, req); got.get("which") != "a=b" {
+		t.Fatalf("which = %q, want a=b", got.get("which"))
 	}
 }

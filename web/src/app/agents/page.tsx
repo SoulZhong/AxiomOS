@@ -5,13 +5,13 @@ import { fmtMoney, fmtRelative, parseDate, today } from "@/lib/format";
 import { errorMessage, useAction, useCapabilityTitles, useHighlight, useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { isAcceptanceWait, useTaskTypeIndex } from "@/lib/states";
-import { agentStateTitle, capabilityTitle, GRANT_ORDER, grantModeTitle, grantTitle } from "@/lib/terms";
+import { GRANT_ORDER, GRANT_PRESETS, GRANT_PRESET_MODES, type GrantPreset, agentStateTitle, capabilityTitle, grantModeTitle, grantPresetTitle, grantTitle, matchGrantPreset } from "@/lib/terms";
 import { useSession } from "@/components/AppShell";
 import { AgentVisor, type VisorState } from "@/components/AgentVisor";
 import { clientTitle, ConnectWizard } from "@/components/agents/ConnectWizard";
 import { IconAgent, IconApprove, IconEdit, IconKey, IconPlus, IconRun, IconTrash } from "@/components/icons";
 import { useToast } from "@/components/toast";
-import { Avatar, Button, Checkbox, ConsequenceDialog, CopyLine, Dialog, Drawer, Empty, ErrorBox, Field, FormSection, Input, PageHeader, Panel, Select, StatChips, StatusLED, Table, TableSkeleton, Tag, TagList, Tip, type LedTone, cx } from "@/components/ui";
+import { Avatar, Button, Checkbox, ConsequenceDialog, CopyButton, CopyLine, Dialog, Drawer, Empty, ErrorBox, Field, FormSection, Input, PageHeader, Panel, Segmented, Select, StatChips, StatusLED, Table, TableSkeleton, Tag, TagList, Tip, cx, type LedTone } from "@/components/ui";
 
 const POLL_MS = 30_000;
 
@@ -103,7 +103,9 @@ export default function AgentsPage() {
   const statOf = (id: string) => stats.data?.find((s) => s.agent.id === id);
   const dayStart = today().getTime();
   const todayRuns = (id: string) => events.data?.filter((e) => e.kind === "RunStarted" && e.actor?.id === id && new Date(e.created_at).getTime() >= dayStart).length ?? 0;
+  const toast = useToast();
   const [registering, setRegistering] = useState(false);
+  const [editing, setEditing] = useState<Agent | null>(null);
   const [connecting, setConnecting] = useState(false);
   // 「检查连接」：每行一份最近一次 GET /agents/{id}/check 的结果，显示在遥测行下面
   const [checks, setChecks] = useState<Record<string, AgentCheck | { error: string }>>({});
@@ -142,6 +144,8 @@ export default function AgentsPage() {
         description={seesAll ? t("agents.descriptionAll") : t("agents.descriptionMine")}
         actions={
           <>
+            {/* 推广接入（#19）：复制一段可直接贴进团队群的接入说明——链接 + 三步 + 授权预设建议 */}
+            <CopyButton text={api.agentAuth.rolloutText()} size="md" label={t("agents.copyRollout")} onCopied={() => toast.ok(t("agents.rolloutCopied"))} />
             <Button variant="primary" icon={<IconPlus />} onClick={() => setConnecting(true)}>{t("agents.connect")}</Button>
           </>
         }
@@ -235,7 +239,7 @@ export default function AgentsPage() {
                         <Button size="sm" variant="ghost" icon={<IconRun />} disabled={checking === a.id} onClick={() => void checkOne(a)}>{t("agents.checkConnection")}</Button>
                       {a.can_manage && <>
                         <Tip tip={t("agents.noTokenStored")}><Button size="sm" variant="ghost" icon={<IconKey />} disabled>{t("agents.viewToken")}</Button></Tip>
-                        <Tip tip={t("agents.editUnavailable")}><Button size="sm" variant="ghost" icon={<IconEdit />} disabled>{t("common.edit")}</Button></Tip>
+                        <Button size="sm" variant="ghost" icon={<IconEdit />} onClick={() => setEditing(a)}>{t("common.edit")}</Button>
                         <Button size="sm" variant="ghost" className="text-danger hover:!text-danger" icon={<IconTrash />} disabled={busy === a.id} onClick={() => setRemoving(a)}>{t("agents.remove")}</Button>
                       </>}
                       </span>
@@ -248,7 +252,11 @@ export default function AgentsPage() {
         )}
       </Panel>
       <ConnectWizard open={connecting} onClose={() => setConnecting(false)} onManual={() => setRegistering(true)} />
-      <RegisterDrawer open={registering} capabilities={session?.capabilities ?? []} capTitles={caps} onClose={() => setRegistering(false)} onCreated={(r) => { setToken(r); mark(r.agent.id); agents.reload(); }} />
+      {/* key 让抽屉在「新建」与不同的「编辑」之间重新装配，初始值直接取自被编辑的那个 Agent */}
+      <RegisterDrawer key={editing?.id ?? "new"} open={registering || !!editing} editing={editing} capabilities={session?.capabilities ?? []} capTitles={caps}
+        onClose={() => { setRegistering(false); setEditing(null); }}
+        onCreated={(r) => { setToken(r); mark(r.agent.id); agents.reload(); }}
+        onUpdated={(a) => { mark(a.id); agents.reload(); }} />
       <Dialog open={!!token} onClose={() => setToken(null)} title={t("agents.registered")} footer={<Button variant="primary" onClick={() => setToken(null)}>{t("agents.saved")}</Button>}>
         <p className="text-ink-muted">{t("agents.tokenHint", { name: token?.agent.name })}</p>
         <CopyLine text={token?.token ?? ""} />
@@ -271,13 +279,14 @@ export default function AgentsPage() {
   );
 }
 
-function RegisterDrawer({ open, capabilities, capTitles, onClose, onCreated }: { open: boolean; capabilities: string[]; capTitles: Record<string, string>; onClose: () => void; onCreated: (r: { agent: Agent; token: string }) => void }) {
+/** 注册与编辑共用一个抽屉：editing 非空就是编辑（令牌不变、改完立刻生效；公共与否改不了）。 */
+function RegisterDrawer({ open, editing, capabilities, capTitles, onClose, onCreated, onUpdated }: { open: boolean; editing?: Agent | null; capabilities: string[]; capTitles: Record<string, string>; onClose: () => void; onCreated: (r: { agent: Agent; token: string }) => void; onUpdated?: (a: Agent) => void }) {
   const toast = useToast();
-  const [name, setName] = useState("");
-  const [shared, setShared] = useState(false);
-  const [caps, setCaps] = useState<string[]>([]);
-  const [modes, setModes] = useState<Record<string, GrantMode | "">>({ execute: "direct", comment: "direct" });
-  const [max, setMax] = useState("1");
+  const [name, setName] = useState(editing?.name ?? "");
+  const [shared, setShared] = useState(editing?.shared ?? false);
+  const [caps, setCaps] = useState<string[]>(editing?.capabilities ?? []);
+  const [modes, setModes] = useState<Record<string, GrantMode | "">>(() => editing ? Object.fromEntries(editing.grants.map((g) => [g.name, g.mode])) : { execute: "direct", comment: "direct" });
+  const [max, setMax] = useState(String(editing?.max_concurrency ?? 1));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -286,6 +295,13 @@ function RegisterDrawer({ open, capabilities, capTitles, onClose, onCreated }: {
     setBusy(true); setError(null);
     try {
       const grants: Grant[] = GRANT_ORDER.filter((g) => modes[g]).map((g) => ({ name: g, mode: modes[g] as GrantMode }));
+      if (editing) {
+        const a = await api.agents.update(editing.id, { name, capabilities: caps, grants, max_concurrency: Number(max) || 1 });
+        toast.ok(t("toast.agentUpdated", { name: a.name }));
+        onClose();
+        onUpdated?.(a);
+        return;
+      }
       const r = await api.agents.create({ name, shared, capabilities: caps, grants, max_concurrency: Number(max) || 1 });
       toast.ok(t("toast.registered", { name: r.agent.name }));
       onClose();
@@ -295,14 +311,14 @@ function RegisterDrawer({ open, capabilities, capTitles, onClose, onCreated }: {
   };
 
   return (
-    <Drawer open={open} onClose={onClose} title={t("agents.register")} description={t("agents.registerHint")} footer={<><Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button><Button variant="primary" form="agent-form" type="submit" disabled={busy}>{t("agents.registerAndToken")}</Button></>}>
+    <Drawer open={open} onClose={onClose} title={editing ? t("agents.edit") : t("agents.register")} description={editing ? t("agents.editHint") : t("agents.registerHint")} footer={<><Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button><Button variant="primary" form="agent-form" type="submit" disabled={busy}>{editing ? t("common.save") : t("agents.registerAndToken")}</Button></>}>
       <form id="agent-form" onSubmit={submit} className="space-y-4">
         <FormSection title={t("form.basic")}>
           <Field label={t("common.name")}><Input value={name} onChange={(e) => setName(e.target.value)} required autoFocus /></Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label={t("agents.maxConcurrencyField")}><Input type="number" min={1} value={max} onChange={(e) => setMax(e.target.value)} /></Field>
           </div>
-          <Checkbox checked={shared} onChange={(e) => setShared(e.target.checked)} label={t("agents.sharedField")} />
+          <Checkbox checked={shared} onChange={(e) => setShared(e.target.checked)} label={t("agents.sharedField")} disabled={!!editing} title={editing ? t("agents.sharedLocked") : undefined} />
         </FormSection>
         <FormSection title={t("agents.capabilities")}>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5">
@@ -314,6 +330,17 @@ function RegisterDrawer({ open, capabilities, capTitles, onClose, onCreated }: {
         </FormSection>
         <FormSection title={t("form.access")}>
           <p className="text-caption text-ink-muted">{t("agents.grantsField")}</p>
+          <div className="flex flex-wrap items-center gap-2" data-grant-presets="">
+            <span className="text-caption text-ink-subtle">{t("connect.presetLabel")}</span>
+            <Segmented
+              size="sm"
+              value={matchGrantPreset(modes) ?? "custom"}
+              onChange={(p) => { if (p !== "custom") setModes(Object.fromEntries(GRANT_ORDER.map((g) => [g, GRANT_PRESET_MODES[p][g] === "allow" ? "direct" : GRANT_PRESET_MODES[p][g] === "with_approval" ? "with_approval" : ""]))); }}
+              options={[...GRANT_PRESETS.map((p) => [p, grantPresetTitle(p)] as [GrantPreset | "custom", string]), ["custom", t("connect.presetCustom")]]}
+              aria-label={t("connect.presetLabel")}
+            />
+          </div>
+          <p className="text-caption text-ink-subtle">{t("connect.presetHint")}</p>
           <div className="space-y-1.5">
             {GRANT_ORDER.map((g: GrantName) => (
               <label key={g} className="flex items-center justify-between gap-3 text-body">

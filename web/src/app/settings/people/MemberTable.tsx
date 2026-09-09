@@ -105,6 +105,7 @@ export function MemberTable({ members, teams, roles, selected, onToggle, onToggl
                   {m.is_owner && <Tag tone="accent" className="shrink-0">{t("settings.members.owner")}</Tag>}
                   <span className="shrink-0 empty:hidden"><MemberStatusTag member={m} /></span>
                   <DuplicateDot member={m} onOpen={(otherId) => actions.merge(m, otherId)} />
+                  {(m.agent_count ?? 0) > 0 && <Tag className="shrink-0" title={t("settings.people.agentCountHint", { n: m.agent_count ?? 0 })}>{t("settings.people.agentCount", { n: m.agent_count ?? 0 })}</Tag>}
                 </span>
               </td>
               <td className="hidden whitespace-nowrap 2xl:table-cell">

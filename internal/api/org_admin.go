@@ -115,6 +115,8 @@ type orgMemberV struct {
 	Invitation  *invitationV `json:"invitation,omitempty"`
 	// PossibleDuplicateOf 是「可能与 X 重复」提示（ADR 0017 补记四），列表调用时算一次
 	PossibleDuplicateOf []app.DuplicateRef `json:"possible_duplicate_of,omitempty"`
+	// AgentCount 是名下没被吊销的 Agent 数（0 = 还没接入）
+	AgentCount int `json:"agent_count"`
 }
 
 func orgMemberView(m app.MemberDetail, loc i18n.Locale) orgMemberV {
@@ -124,7 +126,7 @@ func orgMemberView(m app.MemberDetail, loc i18n.Locale) orgMemberV {
 	}
 	status := m.DerivedStatus()
 	v := orgMemberV{ID: m.ID, Name: m.Name, Email: m.Email, Roles: roles, TeamID: nullable(m.TeamID), TeamIDs: orEmpty(m.TeamIDs), Active: m.Active, IsOwner: m.IsOwner, Locale: string(m.Locale), CreatedAt: m.CreatedAt,
-		Source: m.Source, SourceTitle: app.SourceTitle(m.Source, loc), Status: status, StatusTitle: i18n.Tr(loc, "member.status."+status), PossibleDuplicateOf: m.PossibleDuplicateOf}
+		Source: m.Source, SourceTitle: app.SourceTitle(m.Source, loc), Status: status, StatusTitle: i18n.Tr(loc, "member.status."+status), PossibleDuplicateOf: m.PossibleDuplicateOf, AgentCount: m.AgentCount}
 	if m.Invitation != nil {
 		iv := invitationView(app.InvitationView{Invitation: m.Invitation})
 		v.Invitation = &iv

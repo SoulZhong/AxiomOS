@@ -96,7 +96,24 @@ func (a *App) createTask(ctx context.Context, sess *Session, in CreateTaskInput)
 		}
 	}
 	var task *domain.Task
-	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+	err := a.tx(ctx, sess, func(tx pgx.Tx) (err error) {
+		task, err = a.createTaskTx(ctx, tx, sess, in)
+		return err
+	})
+	return task, err
+}
+
+// createTaskTx 是创建任务在事务里的那一段：校验类型 / 上级 / 目标 / 迭代 / 参与角色，写入，记动态，通知，
+// 要求就绪时再走第一步。目标方案的批量落库（ADR 0026）在一个事务里逐个调它。授权在调用方判。
+func (a *App) createTaskTx(ctx context.Context, tx pgx.Tx, sess *Session, in CreateTaskInput) (*domain.Task, error) {
+	if in.Title == "" {
+		return nil, Bad("err.title_required")
+	}
+	if in.TypeName == "" {
+		in.TypeName = "generic"
+	}
+	var task *domain.Task
+	err := func() error {
 		tt, err := a.Store.CurrentTaskType(ctx, tx, in.TypeName)
 		if err != nil {
 			return Bad("err.type_missing", in.TypeName)
@@ -203,7 +220,7 @@ func (a *App) createTask(ctx context.Context, sess *Session, in CreateTaskInput)
 			}
 		}
 		return nil
-	})
+	}()
 	return task, err
 }
 

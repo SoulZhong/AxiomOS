@@ -36,6 +36,8 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
   const [selectedTeam, setSelectedTeam] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>("all");
   const [directOnly, setDirectOnly] = useState(false);
+  // 推广接入（#19）：只看还没接入 Agent 的正常成员
+  const [noAgentOnly, setNoAgentOnly] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [highlight, setHighlight] = useState<string | null>(null);
   const [expanded, setExpanded] = usePersisted<Record<string, boolean>>("axiomos.people.tree", {});
@@ -79,8 +81,10 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
     const base = membersIn(allMembers, allTeams, team ? team.id : null, directOnly && !!team);
     return base
       .filter((m) => status === "all" || statusOf(m) === status)
+      .filter((m) => !noAgentOnly || (statusOf(m) === "active" && (m.agent_count ?? 0) === 0))
       .sort((a, b) => STATUS_RANK[statusOf(a)] - STATUS_RANK[statusOf(b)] || Number(b.is_owner) - Number(a.is_owner) || a.name.localeCompare(b.name, "zh-Hans-CN"));
-  }, [allMembers, allTeams, team, directOnly, status]);
+  }, [allMembers, allTeams, team, directOnly, status, noAgentOnly]);
+  const noAgentCount = inScope.filter((m) => statusOf(m) === "active" && (m.agent_count ?? 0) === 0).length;
   const selectedVisible = visible.filter((m) => selected.has(m.id));
   const inactiveView = status === "inactive";
 
@@ -237,6 +241,7 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline px-4 py-2">
               {!inactiveView && <Segmented size="sm" value={status} onChange={(v) => { setStatus(v); setSelected(new Set()); }} options={[["all", t("settings.people.status.all")], ["active", t("settings.people.status.active")], ["pending_activation", t("settings.people.status.pending")], ["inactive", t("settings.people.status.inactive")]]} aria-label={t("settings.people.status")} />}
               {team && <Checkbox checked={directOnly} onChange={(e) => setDirectOnly(e.target.checked)} label={t("settings.people.directOnly")} title={t("settings.people.directOnlyHint")} className="text-[13px]" />}
+              {!inactiveView && <Checkbox checked={noAgentOnly} onChange={(e) => { setNoAgentOnly(e.target.checked); setSelected(new Set()); }} label={<>{t("settings.people.noAgentOnly")} <span className="telemetry text-ink-subtle">{noAgentCount}</span></>} title={t("settings.people.noAgentOnlyHint")} className="text-[13px]" />}
               <div className="ml-auto flex flex-wrap items-center gap-2">
                 {selectedVisible.length > 0 && (
                   <span className="inline-flex items-center gap-1.5 text-caption text-ink-subtle">

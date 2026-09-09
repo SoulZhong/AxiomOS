@@ -40,6 +40,37 @@ type promptInput map[string]string
 
 func (p promptInput) get(name string) string { return strings.TrimSpace(p[name]) }
 
+// parsePromptInput 把客户端送来的参数整理成 promptInput。
+// 有的客户端（如 Claude Code）按位置传参：人敲「/confirm which=all」时，送来的是 which="which=all"。
+// 所以一个值若写成「已声明的参数名=值」，就按名字归位，让人怎么写都对。
+func parsePromptInput(args []promptArg, req *sdk.GetPromptRequest) promptInput {
+	in := promptInput{}
+	if req == nil || req.Params == nil {
+		return in
+	}
+	known := map[string]bool{}
+	for _, ar := range args {
+		known[ar.Name] = true
+	}
+	named := func(v string) (string, string, bool) {
+		name, val, ok := strings.Cut(v, "=")
+		name = strings.TrimSpace(name)
+		return name, strings.TrimSpace(val), ok && known[name]
+	}
+	// 先放普通值，再让「名字=值」覆盖：同名时以人明确写的名字为准。
+	for k, v := range req.Params.Arguments {
+		if _, _, ok := named(v); !ok {
+			in[k] = v
+		}
+	}
+	for _, v := range req.Params.Arguments {
+		if name, val, ok := named(v); ok {
+			in[name] = val
+		}
+	}
+	return in
+}
+
 // ---------- 文本零件 ----------
 
 // tr 是行内的中英二选一。
@@ -397,12 +428,7 @@ func addPrompts(s *sdk.Server, sess *app.Session) {
 		build := spec.Text
 		title := spec.Title.In(loc)
 		s.AddPrompt(p, func(ctx context.Context, req *sdk.GetPromptRequest) (*sdk.GetPromptResult, error) {
-			in := promptInput{}
-			if req != nil && req.Params != nil {
-				for k, v := range req.Params.Arguments {
-					in[k] = v
-				}
-			}
+			in := parsePromptInput(spec.Args, req)
 			return &sdk.GetPromptResult{
 				Description: title,
 				Messages: []*sdk.PromptMessage{{

@@ -24,6 +24,7 @@ export default function OnboardPage() {
   const [selfOpen, setSelfOpen] = useState(false);
   const prompt = api.agentAuth.onboardPrompt();
   const command = `curl -fsSL '${api.agentAuth.scriptUrl("claude-code")}' | sh`;
+  const commandPS = `irm '${api.agentAuth.scriptUrlPS("claude-code")}' | iex`;
   const copied = () => toast.ok(t("onboard.copied"));
 
   return (
@@ -63,6 +64,23 @@ export default function OnboardPage() {
           </ol>
         </section>
 
+        {/* 给员工的一页纸（#14）：确认时选哪个预设、常见问题。都是大白话，不出现 MCP 之类的词 */}
+        <section className="mt-8 border-t border-hairline pt-4">
+          <h2 className="text-body font-medium text-ink">{t("onboard.presets")}</h2>
+          <p className="mt-2 text-body text-ink-muted">{t("onboard.presetsHint")}</p>
+        </section>
+        <section className="mt-6">
+          <h2 className="text-body font-medium text-ink">{t("onboard.faq")}</h2>
+          <dl className="mt-3 space-y-3">
+            {([1, 2, 3, 4, 5] as const).map((i) => (
+              <div key={i}>
+                <dt className="text-body text-ink">{t(`onboard.faq${i}q` as const)}</dt>
+                <dd className="mt-0.5 text-body text-ink-muted">{t(`onboard.faq${i}a` as const)}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+
         {/* 我想自己动手：默认收起，里面是原来的 curl 一行与手工注册的入口 */}
         <section className="mt-8 border-t border-hairline pt-4">
           <button type="button" className="pressable inline-flex items-center gap-1 text-caption text-ink-muted hover:text-ink" onClick={() => setSelfOpen((v) => !v)} aria-expanded={selfOpen}>
@@ -72,7 +90,10 @@ export default function OnboardPage() {
           {selfOpen && (
             <div className="mt-3 space-y-2" data-onboard-self="">
               <p className="text-caption text-ink-subtle">{t("onboard.selfHint")}</p>
+              <p className="text-caption text-ink-subtle">{t("connect.cmdUnix")}</p>
               <CopyLine text={command} />
+              <p className="text-caption text-ink-subtle">{t("connect.cmdWindows")}</p>
+              <CopyLine text={commandPS} />
               <p className="text-caption text-ink-subtle">{t("onboard.selfNote")}</p>
               <p className="pt-1 text-caption text-ink-subtle">{t("onboard.manual")}</p>
               <Link href="/agents/" className="inline-flex"><Button size="sm" icon={<IconAgent />} tabIndex={-1}>{t("onboard.manualLink")}</Button></Link>

@@ -44,7 +44,9 @@ const (
 	// 摘外部链接与挂外部链接同一套规则（ADR 0003 第 35 条）
 	ActionTaskExternalLinkRemove = "task.external_link_remove"
 	// 解除关联（前置关系对 Agent 一律待确认）；迭代的创建与修改按「创建任务」授权
-	ActionTaskUnlink   = "task.unlink"
+	ActionTaskUnlink = "task.unlink"
+	// 目标方案（ADR 0026）：整套拆解一条待确认操作，目标负责人审
+	ActionGoalPlan     = "goal.plan"
 	ActionSprintCreate = "sprint.create"
 	ActionSprintUpdate = "sprint.update"
 	ActionTaskTypeSave = "task_type.save"
@@ -74,6 +76,8 @@ type proposalDraft struct {
 	TargetTitle string
 	Payload     any      // 会序列化成 JSON，确认时按同样的结构反序列化回来
 	Summary     i18n.Msg // 完整句子：确认后会发生什么
+	// DeciderID 是除所有者与组织负责人之外还能拍板的人（目标方案：目标负责人）；记进载荷的 decider_id，通知也发给他。
+	DeciderID string
 }
 
 // ProposalView 是待确认操作 + 已解析的名字与已渲染的句子。
@@ -157,6 +161,9 @@ func (a *App) createProposal(ctx context.Context, tx pgx.Tx, sess *Session, d pr
 	if p.Payload == nil {
 		p.Payload = map[string]any{}
 	}
+	if d.DeciderID != "" {
+		p.Payload["decider_id"] = d.DeciderID
+	}
 	if errs := domain.ValidateProposal(p); len(errs) > 0 {
 		return nil, Bad("err.proposal_invalid", strings.Join(domain.RenderErrors(sess.Loc(), errs), "；"))
 	}
@@ -181,7 +188,26 @@ func (a *App) createProposal(ctx context.Context, tx pgx.Tx, sess *Session, d pr
 	if err := a.notifyAndDeliver(ctx, tx, sess.OrgID, domain.NotifyProposal, n, a.deliveryLink("", "")); err != nil {
 		return nil, err
 	}
+	// 另有确认人（目标方案的目标负责人）时也通知他
+	if d.DeciderID != "" && d.DeciderID != p.OwnerID {
+		loc := a.localeOfMember(ctx, tx, sess.OrgID, d.DeciderID)
+		n := domain.Notification{MemberID: d.DeciderID, Title: i18n.Trf(loc, "notif.proposal", sess.Actor.Name), Body: p.Summary.In(loc)}
+		if err := a.notifyAndDeliver(ctx, tx, sess.OrgID, domain.NotifyProposal, n, a.deliveryLink("", "")); err != nil {
+			return nil, err
+		}
+	}
 	return a.proposalView(ctx, tx, sess, p)
+}
+
+// PendingOf 把一条已记下的待确认操作变成「已提交待确认操作」的返回值（接口层用）。
+func PendingOf(sess *Session, v *ProposalView) error { return pending(sess, v) }
+
+// viaAgent 在动态数据里记下「由哪个 Agent 转达」（ADR 0027）；不是转达的就什么都不加。
+func (s *Session) viaAgent(data map[string]any) {
+	if s != nil && s.ViaAgentID != "" {
+		data["via_agent"] = s.ViaAgentID
+		data["via_agent_name"] = s.ViaAgentName
+	}
 }
 
 // pending 把一条刚记下的待确认操作变成给调用方的返回值。
@@ -225,6 +251,10 @@ func canDecideProposal(sess *Session, p *domain.Proposal) bool {
 		return true
 	}
 	if perm := proposalPermission[p.Action]; perm != "" && sess.Can(perm) {
+		return true
+	}
+	// 目标方案（ADR 0026）：目标负责人拍板
+	if d := payloadStr(p.Payload, "decider_id"); d != "" && sess.MemberID == d {
 		return true
 	}
 	return false
@@ -320,6 +350,11 @@ type ApproveResult struct {
 // ApproveProposal 确认并立即执行：以发起的 Agent 身份、把那项授权当作「直接生效」重新执行一次。
 // 执行失败时保持 pending，并把失败理由（完整句子）返回给确认人。
 func (a *App) ApproveProposal(ctx context.Context, sess *Session, id string) (*ApproveResult, error) {
+	return a.ApproveProposalWith(ctx, sess, id, ApproveOptions{})
+}
+
+// ApproveProposalWith 是带选择的确认：目标方案可以跳过几条、改派负责人（ADR 0026）；别的动作不收选择。
+func (a *App) ApproveProposalWith(ctx context.Context, sess *Session, id string, opts ApproveOptions) (*ApproveResult, error) {
 	if err := refuseDryRun(sess); err != nil {
 		return nil, err
 	}
@@ -339,7 +374,10 @@ func (a *App) ApproveProposal(ctx context.Context, sess *Session, id string) (*A
 	agentSess.ApprovedByID, agentSess.ApprovedByName = sess.MemberID, sess.Actor.Name
 	agentSess.Locale = sess.Loc()
 
-	result, err := a.runProposal(ctx, agentSess, p)
+	if (len(opts.Skip) > 0 || opts.AssigneeID != "") && p.Action != ActionGoalPlan {
+		return nil, Bad("err.approve_options_unsupported")
+	}
+	result, err := a.runProposal(ctx, agentSess, p, opts)
 	if err != nil {
 		// 保持 pending：把失败理由原样交给确认人
 		return nil, err
@@ -354,6 +392,7 @@ func (a *App) ApproveProposal(ctx context.Context, sess *Session, id string) (*A
 		}
 		ev := domain.Event{Type: "ProposalApproved", ActorID: sess.Actor.ID, At: now,
 			Data: map[string]any{"proposal_id": p.ID, "action": p.Action, "summary": p.Summary, "agent_id": p.AgentID}}
+		sess.viaAgent(ev.Data)
 		if p.TargetKind == "task" {
 			ev.TaskID = p.TargetID
 		}
@@ -392,6 +431,7 @@ func (a *App) RejectProposal(ctx context.Context, sess *Session, id, reason stri
 		}
 		ev := domain.Event{Type: "ProposalRejected", ActorID: sess.Actor.ID, At: now,
 			Data: map[string]any{"proposal_id": p.ID, "action": p.Action, "summary": p.Summary, "agent_id": p.AgentID, "reason": reason}}
+		sess.viaAgent(ev.Data)
 		if p.TargetKind == "task" {
 			ev.TaskID = p.TargetID
 		}
@@ -483,8 +523,10 @@ func withDirectGrants(e *domain.Executor) *domain.Executor {
 }
 
 // runProposal 按记录下来的动作与输入重新执行一次。
-func (a *App) runProposal(ctx context.Context, sess *Session, p *domain.Proposal) (any, error) {
+func (a *App) runProposal(ctx context.Context, sess *Session, p *domain.Proposal, opts ApproveOptions) (any, error) {
 	switch p.Action {
+	case ActionGoalPlan:
+		return a.applyGoalPlan(ctx, sess, p, opts)
 	case ActionTaskTransition:
 		return a.Transition(ctx, sess, p.TargetID, payloadStr(p.Payload, "transition"),
 			TransitionPayload{Comment: payloadStr(p.Payload, "comment"), Result: payloadMap(p.Payload, "result")})

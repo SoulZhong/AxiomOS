@@ -103,6 +103,8 @@ func main() {
 					log.Printf("组织 %s：清掉 %d 个过期的幂等键", id, n)
 				}
 			}
+			// 在 Agent 里确认的凭证（ADR 0027）：十分钟过期，清掉
+			a.SweepConfirmTickets(time.Now())
 			// 通知外发（ADR 0019）：刚逾期的任务、刚到期的里程碑排一次提醒（同一事项只一次）
 			for _, id := range orgs {
 				if err := a.EnqueueDueReminders(ctx, id, time.Now()); err != nil {

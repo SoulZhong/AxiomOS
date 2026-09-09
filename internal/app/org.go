@@ -187,6 +187,8 @@ type MemberDetail struct {
 	Invitation *domain.Invitation `json:"invitation,omitempty"`
 	// PossibleDuplicateOf 是用同一套认法找到的疑似重复（ADR 0017 补记四）：手工成员与同步成员之间；列表调用时算一次。
 	PossibleDuplicateOf []DuplicateRef `json:"possible_duplicate_of,omitempty"`
+	// AgentCount 是这个人名下没被吊销的 Agent 数：管理员推广接入时靠它看谁还没接入（目标「Agent 快速接入」#19）。
+	AgentCount int `json:"agent_count"`
 }
 
 // DuplicateRef 是「可能与 X 重复」提示里的 X。
@@ -236,13 +238,21 @@ func (a *App) OrgMembers(ctx context.Context, sess *Session) ([]MemberDetail, er
 				}
 			}
 		}
+		agentsOf := map[string]int{}
+		if ags, err := a.Store.ListAgents(ctx, tx); err == nil {
+			for _, ag := range ags {
+				if ag.RevokedAt == nil {
+					agentsOf[ag.OwnerMemberID]++
+				}
+			}
+		}
 		emails := map[string]string{}
 		for _, m := range ms {
 			ids := memberships[m.ID]
 			if ids == nil {
 				ids = []string{}
 			}
-			d := MemberDetail{Member: m, TeamID: primaryTeam(parents, ids), TeamIDs: ids, IsOwner: org.OwnerMemberID == m.ID, Locale: a.localeOfMember(ctx, tx, sess.OrgID, m.ID)}
+			d := MemberDetail{Member: m, TeamID: primaryTeam(parents, ids), TeamIDs: ids, IsOwner: org.OwnerMemberID == m.ID, Locale: a.localeOfMember(ctx, tx, sess.OrgID, m.ID), AgentCount: agentsOf[m.ID]}
 			if acc, err := a.Store.AccountByID(ctx, tx, m.AccountID); err == nil {
 				d.Email = acc.Email
 				emails[m.ID] = strings.ToLower(acc.Email)
