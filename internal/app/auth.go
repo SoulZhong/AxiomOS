@@ -163,11 +163,13 @@ type Me struct {
 	Permissions  []string             `json:"permissions"`
 	Scopes       []ScopeOption        `json:"scopes"`
 	DefaultScope string               `json:"default_scope"`
+	// TeamIDs 是本人直接所属的团队（不含下级）；团队日程默认选其中层级最深的那个（ADR 0032）。
+	TeamIDs []string `json:"team_ids"`
 }
 
 // Me 返回当前身份。
 func (a *App) Me(ctx context.Context, sess *Session) (*Me, error) {
-	me := &Me{OrgID: sess.OrgID}
+	me := &Me{OrgID: sess.OrgID, TeamIDs: append([]string{}, sess.TeamIDs...)}
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
 		org, err := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
 		if err != nil {

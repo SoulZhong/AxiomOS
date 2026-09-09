@@ -223,6 +223,8 @@ type SessionV struct {
 	IsOwner       bool              `json:"is_owner"`
 	Scopes        []ScopeV          `json:"scopes"`
 	DefaultScope  string            `json:"default_scope"`
+	// 本人直接所属的团队 id；团队日程默认选其中层级最深的那个
+	MyTeamIDs []string `json:"my_team_ids"`
 	// 组织的两项可见性策略（ADR 0013），前端据此措辞"为什么看不到成本"
 	Settings *VisibilityV `json:"settings,omitempty"`
 }
@@ -284,6 +286,7 @@ func sessionView(me *app.Me, email string, teams []*domain.Team, teamOf map[stri
 	return SessionV{
 		Scopes:        scopes,
 		DefaultScope:  me.DefaultScope,
+		MyTeamIDs:     append([]string{}, me.TeamIDs...),
 		Settings:      &VisibilityV{CollaborationVisibility: string(me.Organization.CollaborationVisibility), FinanceVisibility: string(me.Organization.FinanceVisibility)},
 		Member:        m,
 		Organization:  OrganizationV{ID: me.Organization.ID, Slug: me.Organization.Slug, Name: me.Organization.Name, OwnerID: me.Organization.OwnerMemberID, Currency: me.Organization.Currency, DefaultLocale: me.Organization.DefaultLocale, CreatedAt: me.Organization.CreatedAt},

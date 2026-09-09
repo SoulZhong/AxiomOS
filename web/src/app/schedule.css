@@ -162,17 +162,13 @@
 }
 
 /* ---------- 周 / 日 ---------- */
-.sc-week,
-.sc-team {
+.sc-week {
   display: grid;
   grid-template-columns: 56px repeat(var(--cols), minmax(0, 1fr));
   border: 1px solid var(--c-hairline);
   border-radius: 10px;
   background: var(--c-surface-1);
   overflow: hidden;
-}
-.sc-team {
-  grid-template-columns: 140px repeat(var(--cols), minmax(0, 1fr));
 }
 .sc-head {
   display: flex;
@@ -339,90 +335,26 @@
   font-size: 11px;
 }
 
-/* ---------- 团队 ---------- */
-.sc-member {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--c-hairline);
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--c-ink);
-}
-.sc-me {
+/* 团队视图：每条前面带谁的名字 */
+.sc-who {
   flex: none;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--c-surface-3);
-  font-size: 10px;
-  font-weight: 400;
+  max-width: 5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10.5px;
+  color: var(--c-ink-subtle);
+}
+.sc-who::after {
+  content: "·";
+  margin-left: 4px;
   color: var(--c-ink-tertiary);
 }
-.sc-team-cell {
-  min-height: 44px;
+.sc-legend-members {
+  color: var(--c-ink-muted);
 }
 
 @media (max-width: 767px) {
   .sc-title { font-size: 14px; }
   .sc-week { grid-template-columns: 40px repeat(var(--cols), minmax(0, 1fr)); }
-  .sc-team { grid-template-columns: 96px repeat(var(--cols), minmax(0, 1fr)); }
-  .sc-src, .sc-time { display: none; }
-}
-
-/* ---------- 团队 · 月：负载格 ---------- */
-.sc-team-month {
-  grid-template-columns: 140px repeat(var(--cols), minmax(18px, 1fr));
-}
-.sc-head-tiny {
-  padding: 6px 0 4px;
-}
-.sc-head-tiny .sc-dn {
-  font-size: 11px;
-  font-weight: 500;
-}
-.sc-head-tiny.sc-today .sc-dn {
-  width: 20px;
-  height: 20px;
-  line-height: 20px;
-}
-.sc-load {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  min-height: 34px;
-  padding: 0;
-  border: 0;
-  border-left: 1px solid var(--c-hairline);
-  border-bottom: 1px solid var(--c-hairline);
-  background: transparent;
-  cursor: pointer;
-}
-.sc-load.sc-weekend {
-  background: var(--c-surface-2);
-}
-.sc-load.sc-today {
-  background: color-mix(in srgb, var(--c-accent) 4%, transparent);
-}
-.sc-load:hover {
-  background: var(--c-surface-3);
-}
-.sc-load-heavy {
-  background: var(--c-warning-bg);
-}
-.sc-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--c-neutral);
-}
-.sc-dot-task { background: var(--c-accent); }
-.sc-dot-milestone { background: var(--c-ink-muted); transform: rotate(45deg); border-radius: 1px; }
-.sc-dot-event { background: var(--c-ink-tertiary); }
-.sc-load-n {
-  font-family: var(--font-jetbrains), "SF Mono", Menlo, monospace;
-  font-size: 11px;
-  color: var(--c-ink);
+  .sc-src, .sc-time, .sc-who { display: none; }
 }

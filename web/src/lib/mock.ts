@@ -1082,6 +1082,7 @@ function session(): Session {
     is_owner: ORG.owner_id === me.id,
     scopes: scopeOptions(),
     default_scope: me.team_id ?? "all",
+    my_team_ids: me.team_id ? [me.team_id] : [],
     settings: { ...ORG_SETTINGS },
   };
 }

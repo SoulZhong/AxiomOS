@@ -125,6 +125,8 @@ export interface Session {
   scopes?: ScopeOption[];
   /** 进来默认选中的那一档：团队 id 或 "all" */
   default_scope?: string;
+  /** 本人直接所属的团队 id（不含下级）；团队日程默认选其中层级最深的那个 */
+  my_team_ids?: ID[];
   /** 组织的可见范围策略；界面用它决定"看不到成本"时说哪一句理由 */
   settings?: OrgSettings;
 }

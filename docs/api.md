@@ -263,7 +263,7 @@ MCP 的 `instructions` 另加两条：人的话说不清时先调 `next_actions`
 
 请求超出允许范围时返回 403，理由是完整中文句子并说明是哪条策略导致的。
 
-`GET /auth/me` 增加 `scopes[{id,title,depth,financial}]`（当前登录者可切的范围，`financial` 表示这一档能否看财务数据；范围 ID 除团队 ID 外还有 `all` 全公司与 `mine` 自己的可见域）、`default_scope`（默认选中的那一档），以及 `settings{collaboration_visibility, finance_visibility}`（组织的两项策略，前端据此措辞）。概览的 `units[].kind` 取值 `team | self（本级直属成员）| unassigned`。统计周期是滚动窗口（周 = 最近 7 天，月 = 30 天，季 = 90 天）。
+`GET /auth/me` 增加 `scopes[{id,title,depth,financial}]`（当前登录者可切的范围，`financial` 表示这一档能否看财务数据；范围 ID 除团队 ID 外还有 `all` 全公司与 `mine` 自己的可见域）、`default_scope`（默认选中的那一档）、`my_team_ids`（本人直接所属的团队，团队日程默认选其中层级最深的那个），以及 `settings{collaboration_visibility, finance_visibility}`（组织的两项策略，前端据此措辞）。概览的 `units[].kind` 取值 `team | self（本级直属成员）| unassigned`。统计周期是滚动窗口（周 = 最近 7 天，月 = 30 天，季 = 90 天）。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
