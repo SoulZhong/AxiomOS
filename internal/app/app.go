@@ -72,6 +72,8 @@ type Session struct {
 
 	// Write 是这次写操作的两个开关：只看不做、幂等键（ADR 0025）。由 HTTP 与 MCP 层填。
 	Write WriteOptions
+	// baseActor 是会话最初的执行者；loadContext 按任务把 Actor 换成带委托的副本时把原件留在这里（ADR 0028）。
+	baseActor *domain.Executor
 }
 
 // WithScope 返回一个带范围参数的会话副本（HTTP / MCP 层用）。
@@ -198,7 +200,20 @@ func (a *App) loadContext(ctx context.Context, tx pgx.Tx, sess *Session, taskID 
 			return nil, err
 		}
 	}
-	return &domain.Context{Task: t, Type: tt, Predecessors: pre, Bugs: bugs, Types: types, ActiveRun: run, ActorRuns: actorRuns, Now: time.Now(), NewID: store.NewID}, nil
+	// 委托的唯一装载点（ADR 0028）：Agent 在这个任务上有活动中的委托时，换上带委托范围与授权快照的执行者副本
+	if sess.baseActor == nil {
+		sess.baseActor = sess.Actor
+	}
+	actor, m, err := a.executorFor(ctx, tx, sess, t)
+	if err != nil {
+		return nil, err
+	}
+	sess.Actor = actor
+	c := &domain.Context{Task: t, Type: tt, Predecessors: pre, Bugs: bugs, Types: types, ActiveRun: run, ActorRuns: actorRuns, Now: time.Now(), NewID: store.NewID}
+	if m != nil {
+		c.MandateID = m.ID
+	}
+	return c, nil
 }
 
 // requireTaskVisible 按组织的协作数据可见性策略判断这个任务在不在请求者的可见域里（ADR 0013）：
@@ -228,9 +243,31 @@ func (a *App) persist(ctx context.Context, tx pgx.Tx, sess *Session, c *domain.C
 	if sess != nil && sess.Write.DryRun {
 		return dryRun(sess, a.willClauses(ctx, tx, sess, c, o)...)
 	}
+	if err := a.persistOutcome(ctx, tx, sess, c, o); err != nil {
+		return err
+	}
+	// 写回之后的连带效果（ADR 0028）：发委托、核对失效、自动验收、方案验收
+	return a.afterWrite(ctx, tx, sess, c, o)
+}
+
+// persistOutcome 只写回内核的结果：任务、交付物、评论、关联、执行记录、动态、通知。
+func (a *App) persistOutcome(ctx context.Context, tx pgx.Tx, sess *Session, c *domain.Context, o *domain.Outcome) error {
 	t := o.Task
 	if err := a.Store.UpdateTask(ctx, tx, t); err != nil {
 		return err
+	}
+	// 推进类动态记下写回后的版本与委托（撤回与失效判断用，ADR 0028）
+	for i := range o.Events {
+		switch o.Events[i].Type {
+		case "TaskTransitioned", "TaskReverted", "TaskAutoAccepted", "TaskAssigned", "TaskClaimed":
+			if o.Events[i].Data == nil {
+				o.Events[i].Data = map[string]any{}
+			}
+			o.Events[i].Data["version"] = t.Version
+			if c.MandateID != "" {
+				o.Events[i].Data["mandate_id"] = c.MandateID
+			}
+		}
 	}
 	relationsChanged := false
 	for _, e := range o.Events {

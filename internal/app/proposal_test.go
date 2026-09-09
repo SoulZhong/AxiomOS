@@ -182,18 +182,24 @@ func TestProposalLifecycle(t *testing.T) {
 	if _, err := a.Transition(ctx, yi, task.ID, "ask_for_input", TransitionPayload{Comment: "先等一下"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ApproveProposal(ctx, yi, sp.Proposal.ID); err == nil {
-		t.Fatal("现在走不了这一步，确认应失败")
+	// ADR 0028：对象被别人改过，这条待确认操作失效，不再重放
+	if _, err := a.ApproveProposal(ctx, yi, sp.Proposal.ID); err == nil || !strings.Contains(err.Error(), "失效") {
+		t.Fatalf("对象已被别人改过，确认应报失效，实际 %v", err)
 	}
 	still, err := a.GetProposal(ctx, yi, sp.Proposal.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if still.Status != domain.ProposalPending {
-		t.Fatalf("执行失败应保持等人确认，实际 %s", still.Status)
+	if still.Status != domain.ProposalStale {
+		t.Fatalf("对象被改过的待确认操作应失效，实际 %s", still.Status)
+	}
+	if evs, _ := a.Events(ctx, jia, task.ID, 40); !hasEvent(evs, "ProposalStale") {
+		t.Fatal("失效也应留下动态")
 	}
 
 	// ---- 过期：超过有效期的自动作废 ----
+	_, err = a.AddComment(ctx, agent, task.ID, "还有一个问题", false)
+	sp = mustPending(t, err)
 	if err := a.Store.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `update proposals set expires_at = now() - interval '1 day' where id=$1`, sp.Proposal.ID)
 		return err

@@ -411,6 +411,12 @@ func (a *App) UpdateAgent(ctx context.Context, sess *Session, id string, in Regi
 			return err
 		}
 		ag = cur
+		// 授权被收回时，用到它的委托失效（ADR 0028 第 1.4 条）
+		if in.Grants != nil {
+			if err := a.endMandatesOfAgent(ctx, tx, sess, cur.ID, "mandate.stale.grants", cur.Grants); err != nil {
+				return err
+			}
+		}
 		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "AgentUpdated", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"agent_id": cur.ID}}})
 	})
 	return ag, err
@@ -427,6 +433,9 @@ func (a *App) RevokeAgent(ctx context.Context, sess *Session, id string) error {
 			return Forbidden("err.agent_not_yours")
 		}
 		if err := a.Store.RevokeAgent(ctx, tx, id); err != nil {
+			return err
+		}
+		if err := a.endMandatesOfAgent(ctx, tx, sess, id, "mandate.stale.agent", nil); err != nil {
 			return err
 		}
 		tasks, err := a.Store.ListTasks(ctx, tx, store.TaskFilter{AssigneeID: id})

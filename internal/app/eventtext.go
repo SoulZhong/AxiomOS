@@ -110,6 +110,31 @@ func EventSummary(e *store.EventRow, names map[string]string, taskTitle map[stri
 		tc, _ := NumOf(e.Data["task_count"])
 		mc, _ := NumOf(e.Data["milestone_count"])
 		return i18n.Trf(loc, "ev.GoalPlanApplied", who, s("title"), tc, mc)
+	case "MandateIssued":
+		return i18n.Trf(loc, "ev.MandateIssued", who, task, nameOr(names, s("agent_id")))
+	case "MandateRevoked":
+		return i18n.Trf(loc, "ev.MandateRevoked", who, nameOr(names, s("agent_id")), task)
+	case "MandateStale":
+		return i18n.Trf(loc, "ev.MandateStale", nameOr(names, s("agent_id")), task, i18n.Tr(loc, s("reason")))
+	case "TaskAutoAccepted":
+		return i18n.Trf(loc, "ev.TaskAutoAccepted", task)
+	case "TaskReverted":
+		to := s("to_title")
+		if to == "" {
+			to = s("to")
+		}
+		return i18n.Trf(loc, "ev.TaskReverted", who, task, to, s("reason"))
+	case "PlanReviewRequested":
+		tc, _ := NumOf(e.Data["task_count"])
+		hc, _ := NumOf(e.Data["human_count"])
+		return i18n.Trf(loc, "ev.PlanReviewRequested", s("title"), tc, hc)
+	case "PlanReviewed":
+		ac, _ := NumOf(e.Data["accepted"])
+		mc, _ := NumOf(e.Data["milestones"])
+		sk, _ := NumOf(e.Data["skipped"])
+		return i18n.Trf(loc, "ev.PlanReviewed", who, s("title"), ac, mc, sk)
+	case "ProposalStale":
+		return i18n.Trf(loc, "ev.ProposalStale", nameOr(names, s("agent_id")), ProposalSummaryText(s("summary")))
 	case "TaskFieldChanged":
 		return fieldChangeSummary(e, names, loc, who, "task", i18n.Trf(loc, "ev.obj.task", task))
 	case "MilestoneCreated", "MilestoneUpdated", "MilestoneReached", "MilestoneUnreached", "MilestoneDeleted":
@@ -595,4 +620,12 @@ func EnumTitle(loc i18n.Locale, kind, v string) string {
 // proposalSummary 去掉待确认操作摘要句末的句号：摘要本身是一句完整的话，嵌进动态句子里时由模板负责标点，避免出现「。。」。
 func ProposalSummaryText(sum string) string {
 	return strings.TrimRight(strings.TrimSpace(sum), "。.")
+}
+
+// nameOr 按 ID 查名字，查不到就原样返回。
+func nameOr(names map[string]string, id string) string {
+	if n := names[id]; n != "" {
+		return n
+	}
+	return id
 }

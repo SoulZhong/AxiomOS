@@ -92,8 +92,12 @@ func TestAgentGoalUpdateGating(t *testing.T) {
 	if _, err := a.ChangeGoalStatus(ctx, yi, goal.ID, domain.GoalAchieved, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ApproveProposal(ctx, yi, pp.Proposal.ID); err == nil || !strings.Contains(errText(err), "现在是「已达成」") {
-		t.Fatalf("状态已变的待确认操作确认时应被拒并说明现状，实际 %v", err)
+	// ADR 0028：对象在等待期间被别人改过，这条待确认操作失效，不再重放
+	if _, err := a.ApproveProposal(ctx, yi, pp.Proposal.ID); err == nil || !strings.Contains(errText(err), "失效") {
+		t.Fatalf("状态已变的待确认操作确认时应失效，实际 %v", err)
+	}
+	if pv, _ := a.GetProposal(ctx, yi, pp.Proposal.ID); pv == nil || pv.Status != domain.ProposalStale {
+		t.Fatalf("失效的待确认操作状态应是 stale，实际 %+v", pv)
 	}
 	if g, _ := a.GetGoal(ctx, jia, goal.ID); g.Status != domain.GoalAchieved {
 		t.Fatalf("被拒的确认不该改动状态，实际 %s", g.Status)

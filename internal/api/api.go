@@ -73,6 +73,11 @@ func (s *Server) Handler() http.Handler {
 	auth("POST /api/v1/tasks/{id}/comments", s.comment)
 	auth("POST /api/v1/tasks/{id}/relations", s.relation)
 	auth("DELETE /api/v1/tasks/{id}/relations/{type}/{other_id}", s.unlink)
+	// 委托与撤回（ADR 0028）
+	auth("GET /api/v1/tasks/{id}/mandates", s.taskMandates)
+	auth("POST /api/v1/tasks/{id}/mandates", s.issueMandate)
+	auth("DELETE /api/v1/mandates/{id}", s.revokeMandate)
+	auth("POST /api/v1/tasks/{id}/revert", s.revertTask)
 	auth("POST /api/v1/tasks/{id}/heartbeat", s.heartbeat)
 
 	auth("GET /api/v1/backlog", s.backlog)
@@ -1189,4 +1194,74 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
 	out, err := s.App.Notifications(r.Context(), sessionOf(r), r.URL.Query().Get("read") == "1")
 	respond(w, r, out, err)
+}
+
+// taskMandates 列出任务上的委托（GET /tasks/{id}/mandates）。
+func (s *Server) taskMandates(w http.ResponseWriter, r *http.Request) {
+	sess := sessionOf(r)
+	id, err := s.App.ResolveTaskRef(r.Context(), sess, r.PathValue("id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	ms, err := s.App.TaskMandates(r.Context(), sess, id)
+	respond(w, r, ms, err)
+}
+
+// issueMandate 人把任务委托给它的负责人 Agent（POST /tasks/{id}/mandates）。
+func (s *Server) issueMandate(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AgentID string `json:"agent_id"`
+		app.MandateOptions
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	sess := sessionOf(r)
+	id, err := s.App.ResolveTaskRef(r.Context(), sess, r.PathValue("id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	m, err := s.App.IssueMandate(r.Context(), sess, id, in.AgentID, in.MandateOptions)
+	respond(w, r, m, err)
+}
+
+// revokeMandate 收回委托（DELETE /mandates/{id}，请求体可带 reason）。
+func (s *Server) revokeMandate(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if r.ContentLength != 0 {
+		if err := decode(r, &in); err != nil {
+			writeErr(w, r, err)
+			return
+		}
+	}
+	m, err := s.App.RevokeMandate(r.Context(), sessionOf(r), r.PathValue("id"), in.Reason)
+	respond(w, r, m, err)
+}
+
+// revertTask 撤回委托内最近一步推进（POST /tasks/{id}/revert，请求体 {reason}）。
+func (s *Server) revertTask(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	sess := sessionOf(r)
+	id, err := s.App.ResolveTaskRef(r.Context(), sess, r.PathValue("id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if _, err := s.App.RevertTask(r.Context(), sess, id, in.Reason); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	v, err := s.taskDetail(r, id)
+	respond(w, r, v, err)
 }

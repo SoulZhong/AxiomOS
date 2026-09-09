@@ -468,6 +468,17 @@ func TestEveryHTTPWriteEndpointDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 委托：人指派给 Agent 即发委托；Agent 在委托内走一步，才有撤回可撤；收回委托之后再发才有得发
+	_, delegateAgent := w.agent(t, w.jia, "受委托的 Agent", map[domain.Grant]domain.GrantMode{domain.GrantExecute: domain.GrantWithApproval}, 1)
+	delegated := w.task(t, w.jia, "委托出去的任务", delegateAgent.Actor.ID)
+	if _, err := a.Transition(ctx, delegateAgent, delegated.ID, "start", app.TransitionPayload{}); err != nil {
+		t.Fatalf("委托内开始不该问人：%v", err)
+	}
+	mandates, err := a.TaskMandates(ctx, w.jia, delegated.ID)
+	if err != nil || len(mandates) != 1 {
+		t.Fatalf("应有一份委托：%v %+v", err, mandates)
+	}
+	mandate := mandates[0]
 	// 一条任务关联，解除才有东西可解
 	linked := w.task(t, w.jia, "接口层有关联的任务", w.jia.MemberID)
 	if _, err := a.Link(ctx, w.jia, linked.ID, domain.RelationBlocks, other.ID); err != nil {
@@ -507,6 +518,10 @@ func TestEveryHTTPWriteEndpointDryRunWritesNothing(t *testing.T) {
 		"POST /api/v1/sprints/{id}/close":                       {"/sprints/" + sp.ID + "/close", map[string]any{"unfinished": "backlog"}},
 		"POST /api/v1/sprints/{id}/tasks":                       {"/sprints/" + sp.ID + "/tasks", map[string]any{"task_ids": []string{mine.ID}}},
 		"DELETE /api/v1/sprints/{id}/tasks/{task_id}":           {"/sprints/" + sp.ID + "/tasks/" + other.ID, nil},
+		// 委托与撤回（ADR 0028）
+		"POST /api/v1/tasks/{id}/mandates": {"/tasks/" + delegated.ID + "/mandates", map[string]any{"agent_id": delegateAgent.Actor.ID}},
+		"DELETE /api/v1/mandates/{id}":     {"/mandates/" + mandate.ID, nil},
+		"POST /api/v1/tasks/{id}/revert":   {"/tasks/" + delegated.ID + "/revert", map[string]any{"reason": "先别开始"}},
 	}
 
 	// 名单要齐：路由表里每一条写路由，要么在这里走一遍，要么在 notDryRunnable 里写明为什么不走。

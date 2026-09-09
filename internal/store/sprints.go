@@ -150,7 +150,7 @@ func (s *Store) SprintNames(ctx context.Context, q Querier) (map[string]string, 
 
 // SetTaskSprint 只改任务的迭代归属。
 func (s *Store) SetTaskSprint(ctx context.Context, q Querier, taskID, sprintID string) error {
-	_, err := q.Exec(ctx, `update tasks set sprint_id=nullif($2,''),updated_at=now() where id=$1`, taskID, sprintID)
+	_, err := q.Exec(ctx, `update tasks set sprint_id=nullif($2,''),updated_at=now(),version=version+1 where id=$1`, taskID, sprintID)
 	return err
 }
 

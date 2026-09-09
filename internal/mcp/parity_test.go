@@ -203,6 +203,12 @@ func TestRejectionsSayTheSameThingOnBothSurfaces(t *testing.T) {
 	// 3. 需要确认：「执行任务」授权是需要人确认
 	tokApproval, agApproval := w.agent(t, w.yi, "需确认 Agent", map[domain.Grant]domain.GrantMode{domain.GrantExecute: domain.GrantWithApproval}, 1)
 	tApproval := w.task(t, w.jia, "需确认任务", agApproval.Actor.ID)
+	// 人指派给 Agent 即发委托（ADR 0028），委托内开始不问人；这里要的是「需要人确认」，先把委托收回
+	if ms, err := a.TaskMandates(ctx, w.jia, tApproval.ID); err != nil || len(ms) != 1 {
+		t.Fatalf("指派给 Agent 应发一份委托：%v %+v", err, ms)
+	} else if _, err := a.RevokeMandate(ctx, w.jia, ms[0].ID, "先逐条确认"); err != nil {
+		t.Fatal(err)
+	}
 
 	// 4. 前置未完成：前置任务还在待办
 	tPre := w.task(t, w.jia, "前置任务", w.yi.MemberID)

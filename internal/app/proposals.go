@@ -58,6 +58,9 @@ const (
 	ActionMilestoneDelete  = "milestone.delete"
 	ActionMilestoneReach   = "milestone.reach"
 	ActionMilestoneUnreach = "milestone.unreach"
+	// ADR 0028
+	ActionMandateIssue = "mandate.issue" // 给 Agent 发委托（领取后问一次）
+	ActionPlanReview   = "plan.review"   // 方案验收：一捆里逐项验收与里程碑
 )
 
 // proposalPermission 是确认某个动作所需的组织权限；空表示只有 Agent 的所有者（和组织负责人）能确认。
@@ -90,6 +93,8 @@ type ProposalView struct {
 	SummaryText   string `json:"summary_text"`
 	StatusTitle   string `json:"status_title"`
 	CanDecide     bool   `json:"can_decide"`
+	// PlanChecks 只在等待中的目标方案上有：每个任务的负责人、参与角色、验收方式、首步能不能走（ADR 0028 第 4 条）。
+	PlanChecks []PlanTaskCheck `json:"plan_checks,omitempty"`
 }
 
 // ProposalPending 表示一次写操作没有执行，而是转成了待确认操作。
@@ -163,6 +168,30 @@ func (a *App) createProposal(ctx context.Context, tx pgx.Tx, sess *Session, d pr
 	}
 	if d.DeciderID != "" {
 		p.Payload["decider_id"] = d.DeciderID
+	}
+	// ADR 0028：授权快照、对象版本、捆
+	if base := sess.base(); base != nil && base.Kind == domain.ExecutorAgent {
+		p.GrantsSnapshot = map[domain.Grant]domain.GrantMode{}
+		for g, mode := range base.Grants {
+			p.GrantsSnapshot[g] = mode
+		}
+	}
+	p.ID = store.NewID("prp")
+	p.BundleID = p.ID
+	switch p.TargetKind {
+	case "task":
+		if t, err := a.Store.TaskByID(ctx, tx, p.TargetID); err == nil {
+			p.TargetVersion = t.Version
+		}
+		if prev, err := a.Store.PendingProposalOnTask(ctx, tx, p.AgentID, "task", p.TargetID); err != nil {
+			return nil, err
+		} else if prev != nil && prev.BundleID != "" {
+			p.BundleID = prev.BundleID
+		}
+	case "goal":
+		if g, err := a.Store.GoalByID(ctx, tx, p.TargetID); err == nil {
+			p.TargetVersion = g.Version
+		}
 	}
 	if errs := domain.ValidateProposal(p); len(errs) > 0 {
 		return nil, Bad("err.proposal_invalid", strings.Join(domain.RenderErrors(sess.Loc(), errs), "；"))
@@ -302,10 +331,28 @@ func (a *App) GetProposal(ctx context.Context, sess *Session, id string) (*Propo
 		if err != nil {
 			return NotFound("err.proposal_missing")
 		}
-		v, err = a.proposalView(ctx, tx, sess, p)
+		if v, err = a.proposalView(ctx, tx, sess, p); err != nil {
+			return err
+		}
+		if p.Action == ActionGoalPlan && p.Pending() {
+			v.PlanChecks, err = a.planChecksOf(ctx, tx, p)
+		}
 		return err
 	})
 	return v, err
+}
+
+// planChecksOf 给等待中的目标方案算可达性预检（以提方案的 Agent 的视角）。
+func (a *App) planChecksOf(ctx context.Context, tx pgx.Tx, p *domain.Proposal) ([]PlanTaskCheck, error) {
+	var in GoalPlanInput
+	if err := fromPayload(p.Payload, &in); err != nil {
+		return nil, nil
+	}
+	agentSess, err := a.agentSessionTx(ctx, tx, p.OrgID, p.AgentID)
+	if err != nil {
+		return nil, nil
+	}
+	return a.planChecks(ctx, tx, agentSess, in, in.Tasks, "")
 }
 
 // PendingProposalCount 返回等人确认的条数（侧栏提醒用）。
@@ -319,6 +366,117 @@ func (a *App) PendingProposalCount(ctx context.Context, sess *Session) (int, err
 }
 
 // ---------- 确认与拒绝 ----------
+
+// claimProposal 锁住一条待确认操作并把它标成已确认（ADR 0028 第 7 条）。
+// 对象在等待期间被别人改过就置为失效并通知提出它的 Agent 的所有者，不再重放。
+func (a *App) claimProposal(ctx context.Context, tx pgx.Tx, sess *Session, id string) (*domain.Proposal, error) {
+	p, err := a.Store.ProposalByIDForUpdate(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !canDecideProposal(sess, p) {
+		return nil, Forbidden("err.proposal_forbidden")
+	}
+	switch {
+	case p.Status == domain.ProposalExpired:
+		return nil, Bad("err.proposal_expired")
+	case p.Status == domain.ProposalStale:
+		return nil, Conflict("err.proposal_stale")
+	case !p.Pending():
+		return nil, Bad("err.proposal_decided")
+	case time.Now().After(p.ExpiresAt):
+		return nil, Bad("err.proposal_expired")
+	}
+	if stale, err := a.proposalStale(ctx, tx, p); err != nil {
+		return nil, err
+	} else if stale {
+		// 失效要落库（返回错误会让事务回滚），所以在这里标记，由调用方在事务提交后再报错
+		if err := a.markProposalStale(ctx, tx, sess, p); err != nil {
+			return nil, err
+		}
+		return p, nil
+	}
+	now := time.Now()
+	p.Status, p.DecidedBy, p.DecidedAt = domain.ProposalApproved, sess.MemberID, &now
+	if err := a.Store.UpdateProposalDecision(ctx, tx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// proposalStale 判断对象在这条待确认操作提出之后有没有被「别人」改过：版本变了，且期间的动态不全是
+// 提出它的 Agent 自己（或系统、或同一捆的重放）留下的。Agent 自己的写进展、同一捆前几条的重放都不算。
+func (a *App) proposalStale(ctx context.Context, tx pgx.Tx, p *domain.Proposal) (bool, error) {
+	if p.TargetVersion == 0 {
+		return false, nil
+	}
+	var rows []*store.EventRow
+	switch p.TargetKind {
+	case "task":
+		t, err := a.Store.TaskByID(ctx, tx, p.TargetID)
+		if err != nil {
+			return false, nil
+		}
+		if t.Version == p.TargetVersion {
+			return false, nil
+		}
+		rows, err = a.Store.ListEvents(ctx, tx, p.TargetID, 200)
+		if err != nil {
+			return false, err
+		}
+	case "goal":
+		g, err := a.Store.GoalByID(ctx, tx, p.TargetID)
+		if err != nil {
+			return false, nil
+		}
+		if g.Version == p.TargetVersion {
+			return false, nil
+		}
+		rows, err = a.Store.ListEventsByGoal(ctx, tx, p.TargetID, 200)
+		if err != nil {
+			return false, err
+		}
+	default:
+		return false, nil
+	}
+	for _, e := range rows {
+		if e.At.Before(p.CreatedAt) {
+			break
+		}
+		switch e.ActorID {
+		case "", p.AgentID, domain.SystemActorID:
+			continue
+		}
+		switch e.Type {
+		case "ProposalCreated", "ProposalApproved", "ProposalRejected", "ProposalExpired", "ProposalStale", "MandateIssued", "MandateStale", "MandateRevoked":
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// markProposalStale 置为失效、记动态、通知提出它的 Agent 的所有者。
+func (a *App) markProposalStale(ctx context.Context, tx pgx.Tx, sess *Session, p *domain.Proposal) error {
+	now := time.Now()
+	p.Status, p.DecidedAt = domain.ProposalStale, &now
+	if err := a.Store.UpdateProposalDecision(ctx, tx, p); err != nil {
+		return err
+	}
+	ev := domain.Event{Type: "ProposalStale", ActorID: "", At: now, Data: map[string]any{"proposal_id": p.ID, "action": p.Action, "summary": p.Summary, "agent_id": p.AgentID}}
+	if p.TargetKind == "task" {
+		ev.TaskID = p.TargetID
+	}
+	if err := a.Store.InsertEvents(ctx, tx, sess.OrgID, []domain.Event{ev}); err != nil {
+		return err
+	}
+	loc := a.localeOfMember(ctx, tx, sess.OrgID, p.OwnerID)
+	n := domain.Notification{MemberID: p.OwnerID, Title: i18n.Trf(loc, "notif.proposal_stale", a.executorName(ctx, tx, p.AgentID)), Body: p.Summary.In(loc)}
+	if p.TargetKind == "task" {
+		n.TaskID = p.TargetID
+	}
+	return a.notifyAndDeliver(ctx, tx, sess.OrgID, "", n, a.deliveryLink(n.TaskID, ""))
+}
 
 // loadPendingProposal 取出一条还能处理的待确认操作，并校验确认人身份。
 func (a *App) loadPendingProposal(ctx context.Context, tx pgx.Tx, sess *Session, id string) (*domain.Proposal, error) {
@@ -358,38 +516,47 @@ func (a *App) ApproveProposalWith(ctx context.Context, sess *Session, id string,
 	if err := refuseDryRun(sess); err != nil {
 		return nil, err
 	}
+	// 先锁行、核对版本、把这条标成「已确认」（ADR 0028 第 7 条）：同一条被两个人同时答只会成功一次。
+	// 重放失败时再放回等待中，把失败理由原样交给确认人。
 	var p *domain.Proposal
 	if err := a.tx(ctx, sess, func(tx pgx.Tx) (err error) {
-		p, err = a.loadPendingProposal(ctx, tx, sess, id)
+		p, err = a.claimProposal(ctx, tx, sess, id)
 		return
 	}); err != nil {
 		return nil, err
 	}
-	// 以 Agent 的身份执行，授权按直接生效处理，并在动态里记上「经<确认人>确认」
+	if p.Status == domain.ProposalStale {
+		return nil, Conflict("err.proposal_stale")
+	}
+	release := func() {
+		_ = a.tx(ctx, sess, func(tx pgx.Tx) error {
+			p.Status, p.DecidedBy, p.DecidedAt = domain.ProposalPending, "", nil
+			return a.Store.UpdateProposalDecision(ctx, tx, p)
+		})
+	}
+	// 以 Agent 的身份执行：授权用提出时的快照（快照里有的按直接生效），并在动态里记上「经<确认人>确认」
 	agentSess, err := a.agentSession(ctx, p.OrgID, p.AgentID)
 	if err != nil {
+		release()
 		return nil, err
 	}
-	agentSess.Actor = withDirectGrants(agentSess.Actor)
+	agentSess.Actor = replayGrants(agentSess.Actor, p.GrantsSnapshot)
 	agentSess.ApprovedByID, agentSess.ApprovedByName = sess.MemberID, sess.Actor.Name
 	agentSess.Locale = sess.Loc()
 
-	if (len(opts.Skip) > 0 || opts.AssigneeID != "") && p.Action != ActionGoalPlan {
+	if (len(opts.Skip) > 0 || opts.AssigneeID != "") && p.Action != ActionGoalPlan && p.Action != ActionPlanReview {
+		release()
 		return nil, Bad("err.approve_options_unsupported")
 	}
 	result, err := a.runProposal(ctx, agentSess, p, opts)
 	if err != nil {
-		// 保持 pending：把失败理由原样交给确认人
+		release()
 		return nil, err
 	}
 
 	var v *ProposalView
 	err = a.tx(ctx, sess, func(tx pgx.Tx) error {
 		now := time.Now()
-		p.Status, p.DecidedBy, p.DecidedAt = domain.ProposalApproved, sess.MemberID, &now
-		if err := a.Store.UpdateProposalDecision(ctx, tx, p); err != nil {
-			return err
-		}
 		ev := domain.Event{Type: "ProposalApproved", ActorID: sess.Actor.ID, At: now,
 			Data: map[string]any{"proposal_id": p.ID, "action": p.Action, "summary": p.Summary, "agent_id": p.AgentID}}
 		sess.viaAgent(ev.Data)
@@ -490,36 +657,55 @@ func (a *App) ExpireProposals(ctx context.Context, orgID string) (int, error) {
 // agentSession 构造某个 Agent 的会话（权限取自它的所有者）。
 func (a *App) agentSession(ctx context.Context, orgID, agentID string) (*Session, error) {
 	var sess *Session
-	err := a.Store.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
-		ag, err := a.Store.AgentByID(ctx, tx, agentID)
-		if err != nil {
-			return Bad("err.proposal_agent_gone")
-		}
-		if ag.RevokedAt != nil {
-			return Bad("err.proposal_agent_gone")
-		}
-		ex, err := a.Store.ExecutorOfAgent(ctx, tx, ag)
-		if err != nil {
-			return err
-		}
-		owner, err := a.Store.MemberByID(ctx, tx, ag.OwnerMemberID)
-		if err != nil {
-			return err
-		}
-		sess = &Session{OrgID: orgID, MemberID: ag.OwnerMemberID, AccountID: owner.AccountID, AgentID: ag.ID, Actor: ex}
-		return a.fillSession(ctx, tx, sess, owner)
+	err := a.Store.WithOrg(ctx, orgID, func(tx pgx.Tx) (err error) {
+		sess, err = a.agentSessionTx(ctx, tx, orgID, agentID)
+		return err
 	})
 	return sess, wrapErr(err)
 }
 
-// withDirectGrants 复制一个执行者，把它的全部授权当作「直接生效」。
-func withDirectGrants(e *domain.Executor) *domain.Executor {
+// agentSessionTx 在已有事务里构造某个 Agent 的会话。
+func (a *App) agentSessionTx(ctx context.Context, tx pgx.Tx, orgID, agentID string) (*Session, error) {
+	ag, err := a.Store.AgentByID(ctx, tx, agentID)
+	if err != nil {
+		return nil, Bad("err.proposal_agent_gone")
+	}
+	if ag.RevokedAt != nil {
+		return nil, Bad("err.proposal_agent_gone")
+	}
+	ex, err := a.Store.ExecutorOfAgent(ctx, tx, ag)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := a.Store.MemberByID(ctx, tx, ag.OwnerMemberID)
+	if err != nil {
+		return nil, err
+	}
+	sess := &Session{OrgID: orgID, MemberID: ag.OwnerMemberID, AccountID: owner.AccountID, AgentID: ag.ID, Actor: ex}
+	if err := a.fillSession(ctx, tx, sess, owner); err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
+// replayGrants 复制一个执行者，授权取提出时的快照并全部按「直接生效」处理（ADR 0028 第 7 条）：
+// 人确认的是那时候的那件事，之后所有者收回了的授权不会因为一次确认又回来；老记录没有快照时退回当前授权。
+func replayGrants(e *domain.Executor, snapshot map[domain.Grant]domain.GrantMode) *domain.Executor {
 	c := *e
 	c.Grants = map[domain.Grant]domain.GrantMode{}
-	for g := range e.Grants {
+	src := snapshot
+	if len(src) == 0 {
+		src = e.Grants
+	}
+	for g := range src {
 		c.Grants[g] = domain.GrantDirect
 	}
 	return &c
+}
+
+// withDirectGrants 复制一个执行者，把它的全部授权当作「直接生效」（只用于内核校验的探针）。
+func withDirectGrants(e *domain.Executor) *domain.Executor {
+	return replayGrants(e, nil)
 }
 
 // runProposal 按记录下来的动作与输入重新执行一次。
@@ -527,6 +713,10 @@ func (a *App) runProposal(ctx context.Context, sess *Session, p *domain.Proposal
 	switch p.Action {
 	case ActionGoalPlan:
 		return a.applyGoalPlan(ctx, sess, p, opts)
+	case ActionPlanReview:
+		return a.applyPlanReview(ctx, sess, p, opts)
+	case ActionMandateIssue:
+		return a.applyMandateIssue(ctx, sess, p.TargetID)
 	case ActionTaskTransition:
 		return a.Transition(ctx, sess, p.TargetID, payloadStr(p.Payload, "transition"),
 			TransitionPayload{Comment: payloadStr(p.Payload, "comment"), Result: payloadMap(p.Payload, "result")})

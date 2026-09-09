@@ -145,7 +145,11 @@ const (
 	ExecutorMember   ExecutorKind = "member"
 	ExecutorAgent    ExecutorKind = "agent"
 	ExecutorExternal ExecutorKind = "external" // 外部事件（代码平台的 PR / CI），ADR 0020
+	ExecutorSystem   ExecutorKind = "system"   // 系统本身：自动验收（ADR 0028）；不参与 by、不看授权、不开执行记录
 )
+
+// SystemActorID 是系统执行者在动态里的署名。
+const SystemActorID = "system"
 
 // Executor 是能被指派任务的对象：成员或 Agent。
 type Executor struct {
@@ -158,6 +162,8 @@ type Executor struct {
 	Capabilities  []string
 	MaxConcurrent int  // Agent 并发上限，0 视为 1
 	Shared        bool // 公共 Agent
+	// Mandate 是这次动作所在任务上活动中的委托（ADR 0028）；应用层装载，内核只据此放行白名单动作。
+	Mandate *MandateScope
 }
 
 // Principals 返回身份判定时代表的 ID：成员是自己；Agent 是自己和所有者。
@@ -245,6 +251,9 @@ type Task struct {
 	Artifacts            []Artifact        `json:"artifacts"`
 	Comments             []Comment         `json:"comments"`
 	Relations            []Relation        `json:"relations"`
+	AcceptanceMode       string            `json:"acceptance_mode,omitempty"` // human（默认）| auto，ADR 0028
+	PlanID               string            `json:"plan_id,omitempty"`         // 来自哪份目标方案
+	Version              int               `json:"version"`                   // 每次写入加一，待确认操作与委托据此判断是否过期
 	CreatedAt            time.Time         `json:"created_at"`
 	UpdatedAt            time.Time         `json:"updated_at"`
 }
@@ -284,6 +293,7 @@ type Run struct {
 	Outcome    RunOutcome `json:"outcome,omitempty"`
 	LastBeat   time.Time  `json:"last_heartbeat"`
 	Usage      []Usage    `json:"usage"`
+	MandateID  string     `json:"mandate_id,omitempty"` // 在哪份委托之下开的（ADR 0028）
 }
 
 func (r *Run) Active() bool { return r.EndedAt == nil }

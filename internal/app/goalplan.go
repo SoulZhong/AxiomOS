@@ -11,6 +11,7 @@ import (
 
 	"github.com/teemo/axiomos/internal/domain"
 	"github.com/teemo/axiomos/internal/i18n"
+	"github.com/teemo/axiomos/internal/store"
 )
 
 // 目标方案（ADR 0026）：Agent「领取目标」落为一条待确认操作，载荷是整套拆解；
@@ -30,6 +31,20 @@ type PlanTask struct {
 	AssigneeID           string     `json:"assignee_id,omitempty"` // 不填就是提案的 Agent
 	ParentKey            string     `json:"parent_key,omitempty"`  // 上级任务（方案内的键）
 	DependsOn            []string   `json:"depends_on,omitempty"`  // 前置任务（方案内的键）
+	// ADR 0028：验收方式（auto 默认 / human）与参与角色（槽位 → 执行者；不填由负责人填满所有槽）。
+	Acceptance   string            `json:"acceptance,omitempty"`
+	Participants map[string]string `json:"participants,omitempty"`
+}
+
+// PlanTaskCheck 是方案预览里一个任务的可达性预检（ADR 0028 第 4 条）：首步能不能走、走不了的原因。
+type PlanTaskCheck struct {
+	Key          string            `json:"key"`
+	AssigneeID   string            `json:"assignee_id"`
+	AssigneeName string            `json:"assignee_name"`
+	Acceptance   string            `json:"acceptance"`
+	Participants map[string]string `json:"participants"`
+	Reachable    bool              `json:"reachable"`
+	Reasons      []string          `json:"reasons,omitempty"`
 }
 
 // PlanMilestone 是方案里的一条里程碑。
@@ -201,6 +216,13 @@ func (a *App) ProposeGoalPlan(ctx context.Context, sess *Session, in GoalPlanInp
 		if in.Tasks[i].TypeName == "" {
 			in.Tasks[i].TypeName = "generic"
 		}
+		switch in.Tasks[i].Acceptance {
+		case "":
+			in.Tasks[i].Acceptance = domain.AcceptanceAuto
+		case domain.AcceptanceAuto, domain.AcceptanceHuman:
+		default:
+			return nil, Bad("err.plan_acceptance", i+1)
+		}
 	}
 	for i := range in.Milestones {
 		m := &in.Milestones[i]
@@ -233,12 +255,44 @@ func (a *App) ProposeGoalPlan(ctx context.Context, sess *Session, in GoalPlanInp
 			if err != nil {
 				return err
 			}
-			for _, t := range in.Tasks {
-				if _, err := a.Store.CurrentTaskType(ctx, tx, t.TypeName); err != nil {
+			for i := range in.Tasks {
+				t := &in.Tasks[i]
+				tt, err := a.Store.CurrentTaskType(ctx, tx, t.TypeName)
+				if err != nil {
 					return Bad("err.type_missing", t.TypeName)
 				}
 				if t.AssigneeID != "" && names[t.AssigneeID] == "" {
 					return Bad("err.member_missing")
+				}
+				// 参与角色：不填由负责人填满所有槽（显式写进方案，人看得见能改）
+				assignee := t.AssigneeID
+				if assignee == "" {
+					assignee = sess.Actor.ID
+				}
+				if len(tt.Participants) > 0 {
+					if t.Participants == nil {
+						t.Participants = map[string]string{}
+					}
+					for _, pt := range tt.Participants {
+						if t.Participants[pt.Slot] == "" {
+							t.Participants[pt.Slot] = assignee
+						}
+					}
+				}
+				for slot, who := range t.Participants {
+					pt := tt.Participant(slot)
+					if pt == nil {
+						return Bad("err.no_participant", tt.Title, slot)
+					}
+					if names[who] == "" {
+						return Bad("err.member_missing")
+					}
+					if who != assignee {
+						ex, err := a.Store.ExecutorByID(ctx, tx, who)
+						if err != nil || !hasRole(ex.Roles, pt.Role) {
+							return Bad("err.plan_participant_role", i+1, pt.Title.In(sess.Loc()), names[who])
+						}
+					}
 				}
 			}
 			in.DeciderID = g.OwnerMemberID
@@ -327,6 +381,20 @@ func (a *App) applyGoalPlan(ctx context.Context, sess *Session, p *domain.Propos
 			return NotFound("err.goal_missing")
 		}
 		res.GoalTitle = g.Title
+		// 首步走不了的任务不能批准（ADR 0028 第 4 条）：人得先改负责人或参与角色，或勾掉它
+		checks, err := a.planChecks(ctx, tx, sess, in, kept, opts.AssigneeID)
+		if err != nil {
+			return err
+		}
+		var unreachable []string
+		for _, ck := range checks {
+			if !ck.Reachable {
+				unreachable = append(unreachable, ck.Key+"「"+planTitle(kept, ck.Key)+"」："+strings.Join(ck.Reasons, "，"))
+			}
+		}
+		if len(unreachable) > 0 {
+			return Bad("err.plan_unreachable", strings.Join(unreachable, "；"))
+		}
 		// 确认时改派的负责人也要是本组织里的人或 Agent（提交时只校验了方案里逐条写的）
 		if opts.AssigneeID != "" {
 			names, err := a.Store.ExecutorNames(ctx, tx)
@@ -378,9 +446,20 @@ func (a *App) applyGoalPlan(ctx context.Context, sess *Session, p *domain.Propos
 			if assignee == "" {
 				assignee = sess.Actor.ID
 			}
+			participants := map[string]string{}
+			for slot, who := range t.Participants {
+				if opts.AssigneeID != "" && who == t.AssigneeID || who == "" {
+					who = assignee
+				}
+				participants[slot] = who
+			}
+			acceptance := t.Acceptance
+			if acceptance == "" {
+				acceptance = domain.AcceptanceAuto
+			}
 			ci := CreateTaskInput{GoalID: g.ID, TypeName: t.TypeName, Title: t.Title, Description: t.Description, AssigneeID: assignee,
 				RequiredCapabilities: t.RequiredCapabilities, EstimateHours: t.EstimateHours, PlannedStart: t.PlannedStart, PlannedEnd: t.PlannedEnd,
-				Priority: t.Priority, Ready: true}
+				Priority: t.Priority, Ready: true, Participants: participants, AcceptanceMode: acceptance, PlanID: p.ID}
 			if t.ParentKey != "" {
 				ci.ParentID = created[t.ParentKey].ID
 			}
@@ -389,6 +468,12 @@ func (a *App) applyGoalPlan(ctx context.Context, sess *Session, p *domain.Propos
 				return err
 			}
 			created[t.Key] = task
+			// 批准即委托（ADR 0028 第 4 条）：负责人是 Agent 时，确认人给它发一份这个任务的委托
+			if isAgentID(assignee) && sess.ApprovedByID != "" {
+				if _, err := a.issueMandate(ctx, tx, sess, task, assignee, sess.ApprovedByID, p.ID, MandateOptions{}); err != nil {
+					return err
+				}
+			}
 			res.Tasks = append(res.Tasks, PlanCreated{Key: t.Key, ID: task.ID, Number: task.Number, Title: task.Title})
 			// 前置关系：前置任务 blocks 这个任务
 			for _, d := range t.DependsOn {
@@ -471,4 +556,110 @@ func (a *App) GoalPlanStatusOf(ctx context.Context, sess *Session, proposalID st
 		return err
 	})
 	return out, err
+}
+
+func planTitle(tasks []PlanTask, key string) string {
+	for _, t := range tasks {
+		if t.Key == key {
+			return t.Title
+		}
+	}
+	return ""
+}
+
+// planChecks 做可达性预检（ADR 0028 第 4 条）：按方案把每个任务在内存里建出来（就绪后的状态），
+// 看负责人能不能走它的第一步——只看 by 规则、角色与授权持有，不看前置与交付物（那是做的时候的事）。
+func (a *App) planChecks(ctx context.Context, tx pgx.Tx, sess *Session, in GoalPlanInput, tasks []PlanTask, override string) ([]PlanTaskCheck, error) {
+	names, err := a.Store.ExecutorNames(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	var out []PlanTaskCheck
+	for _, t := range tasks {
+		assignee := t.AssigneeID
+		if override != "" {
+			assignee = override
+		}
+		if assignee == "" {
+			assignee = sess.Actor.ID
+		}
+		acceptance := t.Acceptance
+		if acceptance == "" {
+			acceptance = domain.AcceptanceAuto
+		}
+		ck := PlanTaskCheck{Key: t.Key, AssigneeID: assignee, AssigneeName: names[assignee], Acceptance: acceptance, Participants: map[string]string{}}
+		for slot, who := range t.Participants {
+			if who == "" || (override != "" && who == t.AssigneeID) {
+				who = assignee
+			}
+			ck.Participants[slot] = who
+		}
+		tt, err := a.Store.CurrentTaskType(ctx, tx, t.TypeName)
+		if err != nil {
+			ck.Reasons = []string{i18n.Trf(sess.Loc(), "err.type_missing", t.TypeName)}
+			out = append(out, ck)
+			continue
+		}
+		ex, err := a.Store.ExecutorByID(ctx, tx, assignee)
+		if err != nil {
+			ck.Reasons = []string{i18n.Tr(sess.Loc(), "err.member_missing")}
+			out = append(out, ck)
+			continue
+		}
+		// 在内存里过一遍「创建 + 就绪」：创建者是提方案的 Agent，就绪那一步由它走（同 applyGoalPlan）
+		task := &domain.Task{ID: "plan:" + t.Key, TypeName: tt.Name, TypeVersion: tt.Workflow.Version, Title: t.Title, CreatorID: sess.Actor.ID,
+			ReviewerID: sess.MemberID, AssigneeID: assignee, State: tt.Workflow.Initial, Participants: ck.Participants, RequiredCapabilities: t.RequiredCapabilities}
+		c := &domain.Context{Task: task, Type: tt, Now: time.Now(), NewID: store.NewID}
+		creator := *sess.base()
+		creator.Grants = map[domain.Grant]domain.GrantMode{}
+		for g := range sess.base().Grants {
+			creator.Grants[g] = domain.GrantDirect
+		}
+		creator.Grants[domain.GrantExecute] = domain.GrantDirect
+		for _, av := range domain.Available(c, &creator, domain.Payload{}) {
+			if to := tt.Workflow.State(av.Transition.To); av.Available && to != nil && to.Label == domain.LabelPending {
+				task.State = av.Transition.To
+				break
+			}
+		}
+		// 负责人能否走第一步：忽略前置与交付物等要求，只看 by、角色、授权
+		var reasons []string
+		reachable := false
+		for _, av := range domain.Available(c, ex, domain.Payload{}) {
+			blocking := []string{}
+			for _, r := range av.Reasons {
+				switch r.Key {
+				case "reject.missing_artifact", "reject.deps_open", "reject.need_comment", "reject.open_bugs", "reject.need_result", "reject.no_previous":
+					continue
+				}
+				blocking = append(blocking, i18n.Trf(sess.Loc(), r.Key, r.Args...))
+			}
+			if len(blocking) == 0 {
+				reachable = true
+				break
+			}
+			reasons = append(reasons, blocking...)
+		}
+		if !reachable && len(reasons) == 0 {
+			reasons = []string{i18n.Tr(sess.Loc(), "err.plan_no_first_step")}
+		}
+		ck.Reachable = reachable
+		if !reachable {
+			ck.Reasons = dedupe(reasons)
+		}
+		out = append(out, ck)
+	}
+	return out, nil
+}
+
+func dedupe(ss []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range ss {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }

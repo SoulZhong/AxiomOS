@@ -10,12 +10,12 @@ import (
 	"github.com/teemo/axiomos/internal/domain"
 )
 
-const taskCols = `id,org_id,coalesce(goal_id,''),coalesce(parent_id,''),type_name,type_version,title,description,creator_id,reviewer_id,coalesce(assignee_id,''),coalesce(required_role,''),coalesce(pending_slot,''),required_capabilities,human_only,state,coalesce(previous_state,''),last_weight,participants,fields,priority,estimate_hours,planned_start,planned_end,actual_start,actual_end,created_at,updated_at,points,coalesce(sprint_id,''),number`
+const taskCols = `id,org_id,coalesce(goal_id,''),coalesce(parent_id,''),type_name,type_version,title,description,creator_id,reviewer_id,coalesce(assignee_id,''),coalesce(required_role,''),coalesce(pending_slot,''),required_capabilities,human_only,state,coalesce(previous_state,''),last_weight,participants,fields,priority,estimate_hours,planned_start,planned_end,actual_start,actual_end,created_at,updated_at,points,coalesce(sprint_id,''),number,acceptance_mode,plan_id,version`
 
 func scanTask(r interface{ Scan(...any) error }) (*domain.Task, error) {
 	t := &domain.Task{}
 	var participants, fields []byte
-	err := r.Scan(&t.ID, &t.OrgID, &t.GoalID, &t.ParentID, &t.TypeName, &t.TypeVersion, &t.Title, &t.Description, &t.CreatorID, &t.ReviewerID, &t.AssigneeID, &t.RequiredRole, &t.PendingSlot, &t.RequiredCapabilities, &t.HumanOnly, &t.State, &t.PreviousState, &t.LastWeight, &participants, &fields, &t.Priority, &t.EstimateHours, &t.PlannedStart, &t.PlannedEnd, &t.ActualStart, &t.ActualEnd, &t.CreatedAt, &t.UpdatedAt, &t.Points, &t.SprintID, &t.Number)
+	err := r.Scan(&t.ID, &t.OrgID, &t.GoalID, &t.ParentID, &t.TypeName, &t.TypeVersion, &t.Title, &t.Description, &t.CreatorID, &t.ReviewerID, &t.AssigneeID, &t.RequiredRole, &t.PendingSlot, &t.RequiredCapabilities, &t.HumanOnly, &t.State, &t.PreviousState, &t.LastWeight, &participants, &fields, &t.Priority, &t.EstimateHours, &t.PlannedStart, &t.PlannedEnd, &t.ActualStart, &t.ActualEnd, &t.CreatedAt, &t.UpdatedAt, &t.Points, &t.SprintID, &t.Number, &t.AcceptanceMode, &t.PlanID, &t.Version)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -50,20 +50,35 @@ func (s *Store) InsertTask(ctx context.Context, q Querier, t *domain.Task) error
 	if t.RequiredCapabilities == nil {
 		t.RequiredCapabilities = []string{}
 	}
-	_, err := q.Exec(ctx, `insert into tasks(id,org_id,goal_id,parent_id,type_name,type_version,title,description,creator_id,reviewer_id,assignee_id,required_role,pending_slot,required_capabilities,human_only,state,previous_state,last_weight,participants,fields,priority,estimate_hours,planned_start,planned_end,actual_start,actual_end,created_at,updated_at,points,sprint_id,number)
-		values($1,$2,nullif($3,''),nullif($4,''),$5,$6,$7,$8,$9,$10,nullif($11,''),nullif($12,''),nullif($13,''),$14,$15,$16,nullif($17,''),$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,nullif($30,''),$31)`,
-		t.ID, t.OrgID, t.GoalID, t.ParentID, t.TypeName, t.TypeVersion, t.Title, t.Description, t.CreatorID, t.ReviewerID, t.AssigneeID, t.RequiredRole, t.PendingSlot, t.RequiredCapabilities, t.HumanOnly, t.State, t.PreviousState, t.LastWeight, participants, fields, t.Priority, t.EstimateHours, t.PlannedStart, t.PlannedEnd, t.ActualStart, t.ActualEnd, t.CreatedAt, t.UpdatedAt, t.Points, t.SprintID, t.Number)
+	if t.AcceptanceMode == "" {
+		t.AcceptanceMode = domain.AcceptanceHuman
+	}
+	t.Version = 1
+	_, err := q.Exec(ctx, `insert into tasks(id,org_id,goal_id,parent_id,type_name,type_version,title,description,creator_id,reviewer_id,assignee_id,required_role,pending_slot,required_capabilities,human_only,state,previous_state,last_weight,participants,fields,priority,estimate_hours,planned_start,planned_end,actual_start,actual_end,created_at,updated_at,points,sprint_id,number,acceptance_mode,plan_id,version)
+		values($1,$2,nullif($3,''),nullif($4,''),$5,$6,$7,$8,$9,$10,nullif($11,''),nullif($12,''),nullif($13,''),$14,$15,$16,nullif($17,''),$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,nullif($30,''),$31,$32,$33,1)`,
+		t.ID, t.OrgID, t.GoalID, t.ParentID, t.TypeName, t.TypeVersion, t.Title, t.Description, t.CreatorID, t.ReviewerID, t.AssigneeID, t.RequiredRole, t.PendingSlot, t.RequiredCapabilities, t.HumanOnly, t.State, t.PreviousState, t.LastWeight, participants, fields, t.Priority, t.EstimateHours, t.PlannedStart, t.PlannedEnd, t.ActualStart, t.ActualEnd, t.CreatedAt, t.UpdatedAt, t.Points, t.SprintID, t.Number, t.AcceptanceMode, t.PlanID)
 	return err
 }
 
-// UpdateTask 写回任务主表（关联、交付物、评论另有表）。
+// UpdateTask 写回任务主表（关联、交付物、评论另有表）。每次写入版本加一（ADR 0028）；
+// 传入的版本若已落后于库里的，说明别人先写了，返回 ErrStale，调用方重读再来。
 func (s *Store) UpdateTask(ctx context.Context, q Querier, t *domain.Task) error {
 	t.UpdatedAt = time.Now()
 	participants, _ := json.Marshal(t.Participants)
 	fields, _ := json.Marshal(t.Fields)
-	_, err := q.Exec(ctx, `update tasks set goal_id=nullif($2,''),parent_id=nullif($3,''),title=$4,description=$5,reviewer_id=$6,assignee_id=nullif($7,''),required_role=nullif($8,''),pending_slot=nullif($9,''),required_capabilities=$10,human_only=$11,state=$12,previous_state=nullif($13,''),last_weight=$14,participants=$15,fields=$16,priority=$17,estimate_hours=$18,planned_start=$19,planned_end=$20,actual_start=$21,actual_end=$22,updated_at=$23,points=$24,sprint_id=nullif($25,'') where id=$1`,
-		t.ID, t.GoalID, t.ParentID, t.Title, t.Description, t.ReviewerID, t.AssigneeID, t.RequiredRole, t.PendingSlot, t.RequiredCapabilities, t.HumanOnly, t.State, t.PreviousState, t.LastWeight, participants, fields, t.Priority, t.EstimateHours, t.PlannedStart, t.PlannedEnd, t.ActualStart, t.ActualEnd, t.UpdatedAt, t.Points, t.SprintID)
-	return err
+	if t.AcceptanceMode == "" {
+		t.AcceptanceMode = domain.AcceptanceHuman
+	}
+	tag, err := q.Exec(ctx, `update tasks set goal_id=nullif($2,''),parent_id=nullif($3,''),title=$4,description=$5,reviewer_id=$6,assignee_id=nullif($7,''),required_role=nullif($8,''),pending_slot=nullif($9,''),required_capabilities=$10,human_only=$11,state=$12,previous_state=nullif($13,''),last_weight=$14,participants=$15,fields=$16,priority=$17,estimate_hours=$18,planned_start=$19,planned_end=$20,actual_start=$21,actual_end=$22,updated_at=$23,points=$24,sprint_id=nullif($25,''),acceptance_mode=$26,plan_id=$27,version=version+1 where id=$1 and version=$28`,
+		t.ID, t.GoalID, t.ParentID, t.Title, t.Description, t.ReviewerID, t.AssigneeID, t.RequiredRole, t.PendingSlot, t.RequiredCapabilities, t.HumanOnly, t.State, t.PreviousState, t.LastWeight, participants, fields, t.Priority, t.EstimateHours, t.PlannedStart, t.PlannedEnd, t.ActualStart, t.ActualEnd, t.UpdatedAt, t.Points, t.SprintID, t.AcceptanceMode, t.PlanID, t.Version)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrStale
+	}
+	t.Version++
+	return nil
 }
 
 // TaskByNumber 按组织内序号装载任务（行级安全已限定在当前组织）。
@@ -154,6 +169,7 @@ type TaskFilter struct {
 	Backlog    bool // 无负责人
 	Open       bool // 非终止（由应用层按类型过滤，这里只排除 assignee 条件）
 	ParentID   string
+	PlanID     string // 来自某份目标方案（ADR 0028）
 	SprintID   string // 属于某个迭代
 	NoSprint   bool   // 不在任何迭代里
 	Limit      int
@@ -165,6 +181,9 @@ func (s *Store) ListTasks(ctx context.Context, q Querier, f TaskFilter) ([]*doma
 	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
 	if f.GoalID != "" {
 		where = append(where, "goal_id="+arg(f.GoalID))
+	}
+	if f.PlanID != "" {
+		where = append(where, "plan_id="+arg(f.PlanID))
 	}
 	if f.ParentID != "" {
 		where = append(where, "parent_id="+arg(f.ParentID))

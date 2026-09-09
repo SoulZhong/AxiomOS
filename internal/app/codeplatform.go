@@ -809,7 +809,7 @@ func (a *App) addTaskLink(ctx context.Context, sess *Session, taskID string, in 
 			if !sess.Actor.HasGrant(domain.GrantExecute) {
 				return &domain.Rejection{Reasons: []domain.Reason{i18n.M("reject.agent_no_grant", i18n.Key("grant.execute"))}}
 			}
-			if domain.NeedsApproval(sess.Actor, domain.GrantExecute) {
+			if domain.NeedsApprovalFor(sess.Actor, c.Task.ID, domain.Action{Kind: domain.ActExternalLink, Grant: domain.GrantExecute}) {
 				summary := i18n.M("proposal.summary.task.external_link", c.Task.Title, title)
 				if sess.Write.DryRun {
 					return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), summary)
@@ -874,7 +874,7 @@ func (a *App) removeTaskLink(ctx context.Context, sess *Session, taskID, linkID 
 		if err != nil || l.TaskID != taskID {
 			return NotFound("err.link_missing")
 		}
-		if sess.Actor.Kind == domain.ExecutorAgent && domain.NeedsApproval(sess.Actor, domain.GrantExecute) {
+		if sess.Actor.Kind == domain.ExecutorAgent && domain.NeedsApprovalFor(sess.Actor, c.Task.ID, domain.Action{Kind: domain.ActExternalLink, Grant: domain.GrantExecute}) {
 			summary := i18n.M("proposal.summary.task.external_link_remove", c.Task.Title, l.Title)
 			if sess.Write.DryRun {
 				return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), summary)

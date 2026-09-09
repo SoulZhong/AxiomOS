@@ -531,6 +531,9 @@ func (a *App) deactivateMemberEffects(ctx context.Context, tx pgx.Tx, sess *Sess
 			if err := a.Store.RevokeAgent(ctx, tx, ag.ID); err != nil {
 				return err
 			}
+			if err := a.endMandatesOfAgent(ctx, tx, sess, ag.ID, "mandate.stale.agent", nil); err != nil {
+				return err
+			}
 			ids = append(ids, ag.ID)
 		}
 	}

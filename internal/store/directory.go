@@ -384,7 +384,7 @@ func (s *Store) MergeTeamRefs(ctx context.Context, q Querier, orgID, from, to st
 	}{
 		{`insert into team_members(org_id,team_id,member_id) select $1,$3,member_id from team_members where team_id=$2 on conflict do nothing`, []any{orgID, from, to}},
 		{`delete from team_members where team_id=$1`, []any{from}},
-		{`update goals set team_id=$2, updated_at=now() where team_id=$1`, []any{from, to}},
+		{`update goals set team_id=$2, updated_at=now(), version=version+1 where team_id=$1`, []any{from, to}},
 		{`update sprints set team_id=$2, updated_at=now() where team_id=$1`, []any{from, to}},
 		{`update teams set parent_id=$2 where parent_id=$1 and id<>$2`, []any{from, to}},
 	}
@@ -403,10 +403,10 @@ func (s *Store) MergeMemberRefs(ctx context.Context, q Querier, orgID, from, to 
 		sql  string
 		args []any
 	}{
-		{`update tasks set assignee_id=$2, updated_at=now() where assignee_id=$1`, []any{from, to}},
-		{`update tasks set reviewer_id=$2, updated_at=now() where reviewer_id=$1`, []any{from, to}},
-		{`update tasks set participants=(select coalesce(jsonb_object_agg(key, case when value=to_jsonb($1::text) then to_jsonb($2::text) else value end), '{}'::jsonb) from jsonb_each(participants)), updated_at=now() where exists (select 1 from jsonb_each_text(participants) e where e.value=$1)`, []any{from, to}},
-		{`update goals set owner_member_id=$2, updated_at=now() where owner_member_id=$1`, []any{from, to}},
+		{`update tasks set assignee_id=$2, updated_at=now(), version=version+1 where assignee_id=$1`, []any{from, to}},
+		{`update tasks set reviewer_id=$2, updated_at=now(), version=version+1 where reviewer_id=$1`, []any{from, to}},
+		{`update tasks set participants=(select coalesce(jsonb_object_agg(key, case when value=to_jsonb($1::text) then to_jsonb($2::text) else value end), '{}'::jsonb) from jsonb_each(participants)), updated_at=now(), version=version+1 where exists (select 1 from jsonb_each_text(participants) e where e.value=$1)`, []any{from, to}},
+		{`update goals set owner_member_id=$2, updated_at=now(), version=version+1 where owner_member_id=$1`, []any{from, to}},
 		{`update agents set owner_member_id=$2 where owner_member_id=$1`, []any{from, to}},
 		{`update teams set lead_member_id=$2 where lead_member_id=$1`, []any{from, to}},
 		{`insert into team_members(org_id,team_id,member_id) select $1,team_id,$3 from team_members where member_id=$2 on conflict do nothing`, []any{orgID, from, to}},

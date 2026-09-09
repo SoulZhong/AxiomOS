@@ -104,6 +104,10 @@
 | POST | `/tasks/{id}/artifacts` | `{type, title, url}` → 交付物 |
 | POST | `/tasks/{id}/comments` | `{body, kind?: comment|note}` → 评论 |
 | DELETE | `/tasks/{id}/relations/{type}/{other_id}` | 解除本任务指向另一个任务的一条关联 → 任务详情。人要与任务有关；Agent 要「建立关联」授权，解除 `blocks` 一律 202 待确认（`task.unlink`）；没有这条关联 → 409「这两个任务之间没有这条关联」。收 `dry_run` 与 `idempotency_key`。动态 `RelationRemoved`。MCP：`unlink_tasks` |
+| GET | `/tasks/{id}/mandates` | 任务上的委托，新的在前：`[{id, task_id, agent_id, agent_name, owner_id, owner_name, plan_id, goal_id, type_version, budget_cost, budget_tokens, deadline, side_effects{external_link}, ask_me[], grants{授权:模式}, task_version, assignee_id, status: active|revoked|stale|done, reason, active, created_at, ended_at}]`（ADR 0028） |
+| POST | `/tasks/{id}/mandates` | 人把任务委托给它的负责人 Agent：`{agent_id, budget_cost?, budget_tokens?, deadline?, side_effects?{external_link}, ask_me?[]}` → 委托。负责人不是这个 Agent → 400；只有发委托的人（Agent 的所有者或能管理它的人）可以。`ask_me` 只能在组织默认（`reassign`、`cancel`、`create_outside_plan`）之上加 `accept`，不能去勾 |
+| DELETE | `/mandates/{id}` | 收回委托，请求体可带 `{reason}` → 委托。只有发委托的人或组织负责人 |
+| POST | `/tasks/{id}/revert` | `{reason}` 必填：撤回委托内最近一步推进（24 小时内、之后没有别的改动），任务回到上一状态，只追加 `TaskReverted` 动态 → 任务详情。Agent 不能撤；不是发委托的人 → 403 |
 | POST | `/tasks/{id}/relations` | `{type, from_task_id, to_task_id}`（一端必须是本任务）→ 关联 |
 | POST | `/tasks/{id}/heartbeat` | `{usage[]}` 累计用量（Agent 用） |
 
@@ -315,7 +319,9 @@ MCP 的 `instructions` 另加两条：人的话说不清时先调 `next_actions`
 
 ## 待确认操作
 
-Agent 发起、但其授权模式是「需要人确认」的动作不会立即生效，而是记为一条待确认操作，等人点确认后才执行（ADR 0003）。对象：`{id, agent{id,name}, owner{id,name}, action, action_title, grant, target{kind: task|goal|sprint|task_type|agent, id, title}|null, summary, payload, status: pending|approved|rejected|expired, status_title, can_decide, decided_by, decided_at, reason, created_at, expires_at}`（`grant` 是用到的授权名，`can_decide` 表示当前登录者能否确认这一条）。`summary` 是完整中文句子，说明"确认后会发生什么"。
+Agent 发起、但其授权模式是「需要人确认」的动作不会立即生效，而是记为一条待确认操作，等人点确认后才执行（ADR 0003）。对象：`{id, agent{id,name}, owner{id,name}, action, action_title, grant, target{kind: task|goal|sprint|task_type|agent, id, title}|null, summary, payload, status: pending|approved|rejected|expired|stale, status_title, can_decide, decided_by, decided_at, reason, created_at, expires_at, bundle_id, target_version, plan_checks?}`（`grant` 是用到的授权名，`can_decide` 表示当前登录者能否确认这一条）。`summary` 是完整中文句子，说明"确认后会发生什么"。
+
+ADR 0028：同一 Agent 在同一任务上连续提出的几条 `bundle_id` 相同，界面按捆显示、一次答、逐项可剔除；`target_version` 是提出时对象的版本，答的时候对象被**别人**改过（Agent 自己的写进展、同一捆前几条的重放不算）这条就置为 `stale` 并通知 Agent 的所有者，不再重放（409「已失效」）；重放用提出时的授权快照，之后被所有者收回的授权不会因为一次确认又回来。等待中的目标方案另带 `plan_checks[{key, assignee_id, assignee_name, acceptance, participants{槽:执行者}, reachable, reasons[]}]`：首步走不了的任务不能批准（400「方案里有任务的第一步走不了」），人得先改负责人 / 参与角色或勾掉它。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -327,9 +333,11 @@ Agent 发起、但其授权模式是「需要人确认」的动作不会立即�
 
 Agent 侧：任何写操作若命中「需要人确认」的授权，HTTP 返回 `202` 与 `{proposal, message}`（`message` 是完整中文句子，如「已提交待确认操作，等小王确认后才会执行。」）；MCP 工具同样返回这句话与待确认操作 ID，并新增 `list_my_proposals` 查看自己提交的待确认操作。
 
-动态种类新增：`ProposalCreated`、`ProposalApproved`、`ProposalRejected`、`ProposalExpired`（七天没人确认自动作废，由后台巡检产生）。确认后执行产生的动态照常记在 Agent 名下，并在摘要里带上「经<确认人>确认」。
+动态种类新增：`ProposalCreated`、`ProposalApproved`、`ProposalRejected`、`ProposalExpired`（七天没人确认自动作废，由后台巡检产生）、`ProposalStale`（对象被别人改过）；委托相关：`MandateIssued`、`MandateRevoked`、`MandateStale`、`TaskAutoAccepted`（系统执行者，`actor_id` 为 `system`）、`TaskReverted`、`PlanReviewRequested`、`PlanReviewed`。推进类动态的 `data` 里另记写回后的 `version` 与所在的 `mandate_id`。确认后执行产生的动态照常记在 Agent 名下，并在摘要里带上「经<确认人>确认」。
 
-会走待确认操作的动作（`action` 取值）：`task.transition`、`task.claim`、`task.begin`、`task.assign`、`task.comment`、`task.note`、`task.artifact`、`task.link`、`task.external_link`、`task.external_link_remove`、`task.unlink`（解除前置关系对 Agent 一律待确认）、`goal.plan`（目标方案，ADR 0026：`payload{goal_id, rationale, tasks[{key,title,description,type_name,estimate_hours,planned_start,planned_end,priority,required_capabilities,assignee_id,parent_key,depends_on[]}], milestones[{key,title,due_on,description}], decider_id}`，`decider_id` 是目标负责人——他与 Agent 的所有者、组织负责人都能拍板，通知也发给他；批准后记一条 `GoalPlanApplied` 动态，`data{proposal_id, goal_id, tasks[{key,id,number,title}], milestones[], skipped[]}`）、`task.update`、`task.create`、`task.create_subtask`、`sprint.create`、`sprint.update`（按「创建任务」授权）、`goal.create`、`goal.update`、`goal.achieve`、`goal.unachieve`、`goal.abandon`、`goal.restart`（`payload{goal_id, input}`；负责人、上级、团队与状态的改动对 Agent 一律待确认，不看授权模式）、`goal.horizon`、`goal.rank`（整批一条，`payload` 是整批输入，没有单个 `target`）、`goal.note`、`milestone.create`、`milestone.update`、`milestone.delete`、`milestone.reach`、`milestone.unreach`（里程碑动作的 `target` 是所属目标，`payload.milestone_id` 指向那条里程碑；删除与撤销达到对 Agent 一律待确认）、`task_type.save`、`sprint.start`、`sprint.close`。每条另有 `action_title`（当前语言的动作名）、`status_title`、`can_decide`（当前登录者能否确认）。`task_type.save`、`sprint.start`、`sprint.close` 需要「管理流程」权限才能确认，其余只有 Agent 的所有者与组织负责人能确认。
+**委托之内不再逐条确认**（ADR 0028）：人批准 Agent 的目标方案、把任务指派给 Agent、批准它的领取，都会给 Agent 一份该任务的委托；委托内 `task.transition`（`by` 含负责人、只要「执行任务」授权、去向不是失败终态的步骤）、`task.begin`、`task.artifact`、`task.note`、`task.comment`、`task.create_subtask`、`task.link`、`task.external_link`（许可打开时）直接生效并自动开执行记录；`task.assign`、`task.unlink`（前置）、取消、验收、目标与流程的动作仍按下面的规则。Agent 自己直接领取的任务不自动委托，而是记一条 `mandate.issue`，所有者确认即发。方案收尾时系统记一条 `plan.review`（确认人是目标负责人，`payload{plan_id, goal_id, tasks[{id, number, title, state, acceptance, awaiting_review, artifacts}], milestones[{id, title, reached}], human_count}`），确认时可带 `{skip?: [任务或里程碑 ID]}`，等验收的任务逐项验收通过、里程碑逐项标为已达到，记 `PlanReviewed`。
+
+会走待确认操作的动作（`action` 取值）：`mandate.issue`、`plan.review`、`task.transition`、`task.claim`、`task.begin`、`task.assign`、`task.comment`、`task.note`、`task.artifact`、`task.link`、`task.external_link`、`task.external_link_remove`、`task.unlink`（解除前置关系对 Agent 一律待确认）、`goal.plan`（目标方案，ADR 0026：`payload{goal_id, rationale, tasks[{key,title,description,type_name,estimate_hours,planned_start,planned_end,priority,required_capabilities,assignee_id,parent_key,depends_on[],acceptance: auto|human,participants{槽:执行者}}], milestones[{key,title,due_on,description}], decider_id}`，`decider_id` 是目标负责人——他与 Agent 的所有者、组织负责人都能拍板，通知也发给他；批准后记一条 `GoalPlanApplied` 动态，`data{proposal_id, goal_id, tasks[{key,id,number,title}], milestones[], skipped[]}`）、`task.update`、`task.create`、`task.create_subtask`、`sprint.create`、`sprint.update`（按「创建任务」授权）、`goal.create`、`goal.update`、`goal.achieve`、`goal.unachieve`、`goal.abandon`、`goal.restart`（`payload{goal_id, input}`；负责人、上级、团队与状态的改动对 Agent 一律待确认，不看授权模式）、`goal.horizon`、`goal.rank`（整批一条，`payload` 是整批输入，没有单个 `target`）、`goal.note`、`milestone.create`、`milestone.update`、`milestone.delete`、`milestone.reach`、`milestone.unreach`（里程碑动作的 `target` 是所属目标，`payload.milestone_id` 指向那条里程碑；删除与撤销达到对 Agent 一律待确认）、`task_type.save`、`sprint.start`、`sprint.close`。每条另有 `action_title`（当前语言的动作名）、`status_title`、`can_decide`（当前登录者能否确认）。`task_type.save`、`sprint.start`、`sprint.close` 需要「管理流程」权限才能确认，其余只有 Agent 的所有者与组织负责人能确认。
 
 ## Agent 与成员
 

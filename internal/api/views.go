@@ -1224,6 +1224,11 @@ type ProposalV struct {
 	CanDecide   bool             `json:"can_decide"`
 	CreatedAt   time.Time        `json:"created_at"`
 	ExpiresAt   time.Time        `json:"expires_at"`
+	// ADR 0028：同一任务上连续提出的合成一捆（同 bundle_id 一次答）；target_version 是提出时对象的版本。
+	BundleID      string `json:"bundle_id,omitempty"`
+	TargetVersion int    `json:"target_version,omitempty"`
+	// 等待中的目标方案带每个任务的可达性预检；首步走不了的不能批准。
+	PlanChecks []app.PlanTaskCheck `json:"plan_checks,omitempty"`
 }
 
 // proposalView 把应用层的待确认操作转成接口形状（名字与句子已按请求者语言渲染）。
@@ -1235,7 +1240,7 @@ func proposalView(p *app.ProposalView) ProposalV {
 		Action: p.Action, ActionTitle: p.ActionTitle, Grant: nullable(string(p.Grant)),
 		Summary: p.SummaryText, Payload: p.Payload, Status: string(p.Status), StatusTitle: p.StatusTitle,
 		DecidedAt: p.DecidedAt, Reason: nullable(p.Reason), CanDecide: p.CanDecide,
-		CreatedAt: p.CreatedAt, ExpiresAt: p.ExpiresAt,
+		CreatedAt: p.CreatedAt, ExpiresAt: p.ExpiresAt, BundleID: p.BundleID, TargetVersion: p.TargetVersion, PlanChecks: p.PlanChecks,
 	}
 	if v.Payload == nil {
 		v.Payload = map[string]any{}

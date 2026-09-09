@@ -34,8 +34,10 @@ func TestGoalPlanProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 规划 Agent 也是方案里任务的负责人，得持有「执行任务」授权（需要人确认即可：批准方案即委托，ADR 0028）
 	_, ag := agentSessionFor(t, a, ctx, yi, "规划 Agent", map[domain.Grant]domain.GrantMode{
-		domain.GrantCreateTask: domain.GrantDirect, domain.GrantCreateSubtask: domain.GrantDirect, domain.GrantCreateGoal: domain.GrantDirect, domain.GrantLink: domain.GrantDirect})
+		domain.GrantCreateTask: domain.GrantDirect, domain.GrantCreateSubtask: domain.GrantDirect, domain.GrantCreateGoal: domain.GrantDirect, domain.GrantLink: domain.GrantDirect,
+		domain.GrantExecute: domain.GrantWithApproval})
 	plan := GoalPlanInput{GoalID: goal.ID, Rationale: "按登录链路拆", Tasks: []PlanTask{
 		{Key: "design", Title: "出设计稿"},
 		{Key: "api", Title: "写接口", DependsOn: []string{"design"}},

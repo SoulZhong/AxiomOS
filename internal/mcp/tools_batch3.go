@@ -24,6 +24,9 @@ type planTaskIn struct {
 	AssigneeID           string   `json:"assignee_id,omitempty" jsonschema:"Assignee (@name, ID or email); defaults to me"`
 	ParentKey            string   `json:"parent_key,omitempty" jsonschema:"Key of the parent task in this plan (makes this a subtask)"`
 	DependsOn            []string `json:"depends_on,omitempty" jsonschema:"Keys of tasks in this plan that must finish first"`
+	// ADR 0028
+	Acceptance   string            `json:"acceptance,omitempty" jsonschema:"auto (default: the system accepts when the review step's requirements are met) or human (the goal owner reviews it in the plan review)"`
+	Participants map[string]string `json:"participants,omitempty" jsonschema:"Participant slot -> person (@name, ID or email) for task types with slots; omitted slots are filled with the assignee"`
 }
 
 type planMilestoneIn struct {
@@ -47,7 +50,7 @@ type planStatusIn struct {
 }
 
 var batch3Descs = map[string]i18n.Text{
-	"propose_goal_plan": i18n.T("为一个目标提交一整套拆解（任务清单含依赖与上级、里程碑、理由），记成一条待确认操作，由目标负责人在网页上整体批准、整体拒绝或勾掉几条再批准；批准后一次落库，任务默认指派给我。这就是「领取目标」：目标仍归人负责，我成为方案里那些任务的负责人。提交前先 get_goal 读清目标、get_org_context 看清团队与任务类型；需要「创建任务」授权，带里程碑还要「创建目标」授权，带子任务还要「创建子任务」授权；不看授权模式，一律经人审。",
+	"propose_goal_plan": i18n.T("为一个目标提交一整套拆解（任务清单含依赖与上级、里程碑、理由、每个任务的验收方式与参与角色），记成一条待确认操作，由目标负责人整体批准、整体拒绝或勾掉几条再批准；批准即委托：任务一次落库、默认指派给我，并给我每个任务一份委托，之后附交付物、推进都不再逐条问人。验收方式默认 auto（要求齐了系统自动验收），要人亲自看的写 human。这就是「领取目标」：目标仍归人负责，我成为方案里那些任务的负责人。提交前先 get_goal 读清目标、get_org_context 看清团队与任务类型；需要「创建任务」授权，带里程碑还要「创建目标」授权，带子任务还要「创建子任务」授权；不看授权模式，一律经人审。",
 		"Propose a full breakdown for a goal (tasks with dependencies and parents, milestones, rationale) as one pending action; the goal owner approves it as a whole, rejects it, or unticks some items and approves the rest. On approval everything is created in one go, with tasks assigned to me by default. This is what claiming a goal means: the goal stays with its human owner and I become the assignee of the plan's tasks. Read the goal with get_goal and the org with get_org_context first; requires the Create tasks grant (plus Create goals for milestones, Create subtasks for parent_key); always reviewed by a person regardless of grant mode."),
 	"get_goal_plan_status": i18n.T("查一份目标方案的进展：等人确认 / 已确认 / 已拒绝（带理由）/ 已过期；已确认时带上建出来的任务与里程碑、被勾掉的键。被拒绝就读理由改方案再提，不要重提同一份。",
 		"Check a goal plan: awaiting confirmation / confirmed / rejected (with reason) / expired; when confirmed it lists the created tasks and milestones and the keys that were skipped. If rejected, read the reason and propose a revised plan; do not resubmit the same one."),
@@ -72,9 +75,19 @@ func addBatch3Tools(s *sdk.Server, k *kit) {
 		}
 		for _, t := range in.Tasks {
 			pt := app.PlanTask{Key: t.Key, Title: t.Title, Description: t.Description, TypeName: t.TypeName, EstimateHours: t.EstimateHours, Priority: t.Priority,
-				RequiredCapabilities: t.RequiredCapabilities, ParentKey: t.ParentKey, DependsOn: t.DependsOn}
+				RequiredCapabilities: t.RequiredCapabilities, ParentKey: t.ParentKey, DependsOn: t.DependsOn, Acceptance: t.Acceptance}
 			if pt.AssigneeID, err = k.mid(ctx, t.AssigneeID); err != nil {
 				return f(err)
+			}
+			for slot, who := range t.Participants {
+				id, err := k.mid(ctx, who)
+				if err != nil {
+					return f(err)
+				}
+				if pt.Participants == nil {
+					pt.Participants = map[string]string{}
+				}
+				pt.Participants[slot] = id
 			}
 			if pt.PlannedStart, err = parseDate(t.PlannedStart); err != nil {
 				return f(err)

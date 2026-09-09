@@ -8,7 +8,7 @@ import (
 	"github.com/teemo/axiomos/internal/domain"
 )
 
-const runCols = `id,task_id,state,executor_id,started_at,ended_at,coalesce(outcome,''),last_heartbeat,usage,cost`
+const runCols = `id,task_id,state,executor_id,started_at,ended_at,coalesce(outcome,''),last_heartbeat,usage,cost,mandate_id`
 
 type RunRow struct {
 	domain.Run
@@ -19,7 +19,7 @@ func scanRun(r interface{ Scan(...any) error }) (*RunRow, error) {
 	rr := &RunRow{}
 	var usage []byte
 	var outcome string
-	err := r.Scan(&rr.ID, &rr.TaskID, &rr.State, &rr.ExecutorID, &rr.StartedAt, &rr.EndedAt, &outcome, &rr.LastBeat, &usage, &rr.Cost)
+	err := r.Scan(&rr.ID, &rr.TaskID, &rr.State, &rr.ExecutorID, &rr.StartedAt, &rr.EndedAt, &outcome, &rr.LastBeat, &usage, &rr.Cost, &rr.MandateID)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -37,8 +37,8 @@ func (s *Store) InsertRun(ctx context.Context, q Querier, orgID string, r *domai
 	if r.Usage == nil {
 		usage = []byte("[]")
 	}
-	_, err := q.Exec(ctx, `insert into runs(id,org_id,task_id,state,executor_id,started_at,ended_at,outcome,last_heartbeat,usage) values($1,$2,$3,$4,$5,$6,$7,nullif($8,''),$9,$10)`,
-		r.ID, orgID, r.TaskID, r.State, r.ExecutorID, r.StartedAt, r.EndedAt, string(r.Outcome), r.LastBeat, usage)
+	_, err := q.Exec(ctx, `insert into runs(id,org_id,task_id,state,executor_id,started_at,ended_at,outcome,last_heartbeat,usage,mandate_id) values($1,$2,$3,$4,$5,$6,$7,nullif($8,''),$9,$10,$11)`,
+		r.ID, orgID, r.TaskID, r.State, r.ExecutorID, r.StartedAt, r.EndedAt, string(r.Outcome), r.LastBeat, usage, r.MandateID)
 	return err
 }
 

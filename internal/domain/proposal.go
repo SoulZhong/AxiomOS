@@ -17,6 +17,7 @@ const (
 	ProposalApproved ProposalStatus = "approved" // 已确认并执行
 	ProposalRejected ProposalStatus = "rejected" // 已拒绝
 	ProposalExpired  ProposalStatus = "expired"  // 超过有效期，自动作废
+	ProposalStale    ProposalStatus = "stale"    // 对象在等待期间变了，不能再答（ADR 0028）
 )
 
 // ProposalTTL 是待确认操作的有效期：超过它没人确认就自动过期。
@@ -41,6 +42,10 @@ type Proposal struct {
 	Reason      string         `json:"reason,omitempty"` // 拒绝理由（完整句子）
 	CreatedAt   time.Time      `json:"created_at"`
 	ExpiresAt   time.Time      `json:"expires_at"`
+	// ADR 0028：捆、版本、快照。
+	BundleID       string              `json:"bundle_id,omitempty"`      // 同一任务上同一 Agent 连续提出的多条合成一捆
+	TargetVersion  int                 `json:"target_version,omitempty"` // 提出时对象的版本，0 表示不校验
+	GrantsSnapshot map[Grant]GrantMode `json:"grants_snapshot,omitempty"`
 }
 
 // Pending 判断是否还在等人确认。
