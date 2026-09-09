@@ -35,8 +35,7 @@ export function ScheduleView() {
   const [anchor, setAnchor] = useState<Date>(() => today());
   const teams = session?.teams ?? [];
   const team = teamID || teams[0]?.id || "";
-  // 团队视图没有月档：一人一行的月历读不过来
-  const effScale: Scale = who === "team" && scale === "month" ? "week" : scale;
+  const effScale: Scale = scale;
 
   const range = useMemo(() => rangeOf(effScale, anchor), [effScale, anchor]);
   const whoParam = who === "team" ? team : "me";
@@ -66,7 +65,7 @@ export function ScheduleView() {
           {teams.length > 0 && (
             <Segmented size="sm" value={who} options={[["me", t("schedule.scope.mine")], ["team", t("schedule.scope.team")]]} onChange={setWho} aria-label={t("schedule.scope")} />
           )}
-          <Segmented size="sm" value={effScale} options={(who === "team" ? SCALES.filter((x) => x !== "month") : SCALES).map((k) => [k, t(`schedule.view.${k}` as Key)])} onChange={setScale} aria-label={t("schedule.scaleLabel")} />
+          <Segmented size="sm" value={effScale} options={SCALES.map((k) => [k, t(`schedule.view.${k}` as Key)])} onChange={setScale} aria-label={t("schedule.scaleLabel")} />
         </div>
       </div>
       {data.error && !data.data ? (
@@ -77,6 +76,11 @@ export function ScheduleView() {
         <>
           <Legend sources={data.data.sources} />
           <Empty text={t(effScale === "day" ? "schedule.emptyDay" : effScale === "week" ? "schedule.emptyWeek" : "schedule.emptyMonth")} />
+        </>
+      ) : who === "team" && effScale === "month" ? (
+        <>
+          <Legend sources={data.data.sources} />
+          <TeamMonth anchor={anchor} items={items} members={members} meID={meID} onPickDay={(d) => { setAnchor(d); setScale("day"); }} />
         </>
       ) : who === "team" ? (
         <>
@@ -341,3 +345,56 @@ function MemberRow({ member, days, items, meID, todayISO }: { member: { id: stri
   );
 }
 
+// ---------- 团队 · 月：一人一行，每格只画负载 ----------
+
+/** 团队月视图不放标题：一格里按类别画小点（最多三枚），多了写数字；点一格跳到那一天的团队日视图。 */
+function TeamMonth({ anchor, items, members, meID, onPickDay }: { anchor: Date; items: ScheduleItem[]; members: Array<{ id: string; name: string }>; meID: string; onPickDay: (d: Date) => void }) {
+  const year = anchor.getFullYear();
+  const month = anchor.getMonth();
+  const days = useMemo(() => {
+    const first = new Date(year, month, 1);
+    const count = new Date(year, month + 1, 0).getDate();
+    return Array.from({ length: count }, (_, i) => addDays(first, i));
+  }, [year, month]);
+  const todayISO = toISODate(today());
+  if (members.length === 0) return <Empty text={t("schedule.emptyTeam")} />;
+  return (
+    <div className="sc-team sc-team-month" style={{ "--cols": days.length } as React.CSSProperties}>
+      <div className="sc-head sc-corner" />
+      {days.map((d) => {
+        const iso = toISODate(d);
+        return (
+          <div key={iso} className={cx("sc-head sc-head-tiny", iso === todayISO && "sc-today", (d.getDay() === 0 || d.getDay() === 6) && "sc-weekend")}>
+            <span className="sc-dn">{d.getDate()}</span>
+          </div>
+        );
+      })}
+      {members.map((m) => (
+        <TeamMonthRow key={m.id} member={m} days={days} items={items.filter((it) => it.member_id === m.id)} meID={meID} todayISO={todayISO} onPickDay={onPickDay} />
+      ))}
+    </div>
+  );
+}
+
+function TeamMonthRow({ member, days, items, meID, todayISO, onPickDay }: { member: { id: string; name: string }; days: Date[]; items: ScheduleItem[]; meID: string; todayISO: string; onPickDay: (d: Date) => void }) {
+  return (
+    <>
+      <div className="sc-member">
+        <span className="truncate">{member.name}</span>
+        {member.id === meID && <span className="sc-me">{t("schedule.me")}</span>}
+      </div>
+      {days.map((d) => {
+        const iso = toISODate(d);
+        const list = items.filter((it) => coversDay(it, iso) && it.kind !== "goal");
+        const n = list.length;
+        const kinds = Array.from(new Set(list.map((it) => it.kind)));
+        const tip = n ? `${fmtDate(iso)} · ${t("schedule.loadTip", { n })}` : fmtDate(iso);
+        return (
+          <button key={iso} type="button" className={cx("sc-load", iso === todayISO && "sc-today", n >= 4 && "sc-load-heavy", (d.getDay() === 0 || d.getDay() === 6) && "sc-weekend")} title={tip} aria-label={tip} onClick={() => onPickDay(d)}>
+            {n === 0 ? null : n <= 3 ? kinds.slice(0, 3).map((k) => <i key={k} className={cx("sc-dot", `sc-dot-${k}`)} aria-hidden="true" />) : <span className="sc-load-n">{n}</span>}
+          </button>
+        );
+      })}
+    </>
+  );
+}
