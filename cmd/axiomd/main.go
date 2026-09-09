@@ -117,6 +117,13 @@ func main() {
 			} else if n > 0 {
 				log.Printf("%d 条 Agent 接入申请因超过 15 分钟没人批准而过期", n)
 			}
+			// 外部日历同步（ADR 0032）：每家启用的连接每 15 分钟一轮；Google 授权的一次性 state 十五分钟过期
+			for _, res := range a.RunScheduledCalendarSyncs(ctx, time.Now()) {
+				if res.Status != "ok" {
+					log.Printf("外部日历同步 %s %s：%s", res.Errors[0], res.Provider, strings.Join(res.Errors[1:], "；"))
+				}
+			}
+			a.SweepGoogleStates(time.Now())
 			// 外部目录定时同步（ADR 0017）：每小时 / 每天到点的组织跑一次
 			for _, res := range a.RunScheduledDirectorySyncs(ctx, time.Now()) {
 				if res.Err != nil {

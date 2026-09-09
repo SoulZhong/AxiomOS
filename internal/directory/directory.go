@@ -250,6 +250,14 @@ type Provider struct {
 	// 它不参与 IM 集成（Providers）与通知通道（MessagingProviders），只出现在 CodeHostProviders 里。
 	NewCodeHost func(creds map[string]string, opts Options) (CodeHost, error)
 
+	// 外部日历（ADR 0032）：CalendarFields 是读日历比读通讯录多要的凭据（企业微信要企业日历 ID；Google 要 OAuth 客户端）；
+	// 只做日历的提供方（Google Calendar）把全部字段放这里。NewCalendar 用全部凭据建一个只读的日历客户端；
+	// PerMemberCalendar 为真表示成员各自授权（建客户端时凭据里并入该成员的令牌）。
+	CalendarFields        []CredentialField
+	CalendarPrerequisites []i18n.Text
+	NewCalendar           func(creds map[string]string, opts Options) (Calendar, error)
+	PerMemberCalendar     bool
+
 	hidden bool // 测试注册的提供方：Lookup 能找到，Providers 不列出
 }
 
@@ -343,14 +351,14 @@ func validateProvider(p Provider) error {
 	if p.Title.In(i18n.ZhCN) == "" {
 		return fmt.Errorf("provider %s must declare Title", p.Key)
 	}
-	if p.New == nil && p.NewMessenger == nil && p.NewCodeHost == nil {
-		return fmt.Errorf("provider %s must declare New (directory), NewMessenger (messaging) or NewCodeHost (code platform)", p.Key)
+	if p.New == nil && p.NewMessenger == nil && p.NewCodeHost == nil && p.NewCalendar == nil {
+		return fmt.Errorf("provider %s must declare New (directory), NewMessenger (messaging), NewCodeHost (code platform) or NewCalendar (calendar)", p.Key)
 	}
 	if p.New != nil && p.RootDepartmentID == "" {
 		return fmt.Errorf("provider %s must declare RootDepartmentID", p.Key)
 	}
 	seen := map[string]bool{}
-	for _, f := range append(append([]CredentialField{}, p.Fields...), p.MessagingFields...) {
+	for _, f := range append(append(append([]CredentialField{}, p.Fields...), p.MessagingFields...), p.CalendarFields...) {
 		if f.Key == "" || f.Title.In(i18n.ZhCN) == "" || seen[f.Key] {
 			return fmt.Errorf("provider %s has a bad or duplicate field %q", p.Key, f.Key)
 		}

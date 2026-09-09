@@ -494,6 +494,24 @@ Agent 侧：任何写操作若命中「需要人确认」的授权，HTTP 返回
 
 **提供方接口**：飞书 `POST /open-apis/im/v1/messages?receive_id_type=open_id`，卡片（`interactive`：标题 + 一句话 + 「打开」按钮）或纯文本（没链接时）；`messaging` 检查往一个不存在的 open_id 试发一条——权限类错误码 → 待处理并指向 `…/app/{app_id}/auth`，230002 → 机器人未启用，其余拒绝说明权限已有。企业微信 `POST /cgi-bin/message/send`（`textcard`：标题、一句话、`url`、`btntxt`；`invaliduser` 非空算失败）；`messaging` 检查用应用 Secret 读 `GET /cgi-bin/agent/get?agentid=`。webhook：`POST` JSON `{kind, title, text, url, recipient{id,name}, at}`，头 `X-AxiomOS-Kind`，有密钥时 `X-AxiomOS-Signature: t=<unix 秒>,v1=<hex(HMAC-SHA256(secret, "<秒>.<body>"))>`，非 2xx 算拒绝。`t` 是**发出这一刻**的时间（不是消息生成时间）：接收方验签时先看 `t` 与当前时间相差是否在 **5 分钟**以内，超出就丢弃（防重放），再用常数时间比较 `v1`。邮件：纯文本，主题 = 那句话，正文 = 那句话 + 「打开：<链接>」，`X-AxiomOS-Kind` 头；465 走 TLS，其余端口 STARTTLS。
 
+## 日程与外部日历（ADR 0032）
+
+**日程**是目标、任务、里程碑与外部日历的一种看法，读的时候拼出来，不落库；外部日历只读同步，事件是副本。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/schedule?from=&to=&who=me\|<member_id>\|<team_id>` | 一段日期（含首尾，最长 62 天，默认本周）里若干人的日程 → `{from, to, who, members[{id,name}], items[], sources[]}`。`items` 每条 `{kind: task\|goal\|milestone\|event, id, title, member_id, start_date?, end_date?, date?, starts_at?, ends_at?, all_day?, number?, state?, progress?, deadline?, assignee_id?, status?, goal_id?, milestone_status?, provider?, url?, busy?, title_hidden?, overdue?}`：任务按计划起止（`start_date`/`end_date`）或单个日期（只有截止日时 `deadline: true`）；目标按计划起止；里程碑按到期日；会议带精确起止与全天。Agent 负责的任务算在它所有者的日程里。`who` 是团队时含下级团队的全部在职成员，可见范围照 ADR 0013（看不到的团队 / 成员 → 403）。**别人的会议只给「忙」**：`title_hidden: true`、没有标题与链接。`sources` 是接上的外部日历提供方 |
+| GET | `/org/calendars` | 组织设置：每家提供方一份 `{provider, provider_title, configured, enabled, per_member, fields[], prerequisites[], tip?, credentials, secrets_set, proxy_url, inherits_directory, last_sync_at?, last_status, last_status_title, last_error?, connected_members, redirect_url?}`。`inherits_directory` 为真表示同一提供方的 IM 集成凭据这里直接沿用；`per_member`（Google）表示成员各自授权，`redirect_url` 是要填进 OAuth 客户端的回调地址。需要 `org_settings` |
+| PUT | `/org/calendars/{provider}` | `{credentials?{字段:值}, proxy_url?, enabled?}`：保密字段留空表示不改；出网地址过守卫 → 上面那份。收 `dry_run`。动态 `CalendarConfigured`（只记改了哪些字段名） |
+| DELETE | `/org/calendars/{provider}` | 断开：连接、成员绑定、同步来的会议一起清掉 → 204。收 `dry_run`。动态 `CalendarDisconnected` |
+| POST | `/org/calendars/{provider}/test` | 接入检查 → `{ok, checks[], error?}`（`checks` 与 IM 集成同一形状）。只读外部系统 |
+| POST | `/org/calendars/{provider}/sync` | 立即同步：过去 7 天到未来 60 天，每个成员各自一笔，一个人失败不影响别人 → `{provider, members, events, errors[], status: ok\|failed}`；结果记在连接上，动态 `CalendarSyncRan`。后台每 15 分钟自动跑一轮 |
+| GET | `/me/calendars` | 我在各家提供方连没连：`[{provider, provider_title, org_configured, per_member, connected, email?, external_user_id?, connected_at?, auth_url?}]`。飞书 / 企业微信按外部目录的身份自动算已连接；Google 未连接时给 `auth_url`（带一次性 state，15 分钟有效） |
+| DELETE | `/me/calendars/{provider}` | 解除我的绑定（Google 的令牌一并删，同步来的会议删掉）→ 204 |
+| GET | `/me/calendars/google/callback?state=&code=` | Google 授权回调（公开）：换刷新令牌、按成员加密存下、立刻同步一次，然后 303 回 `/settings/?tab=me&calendar=connected`；失败带 `calendar=failed&reason=` |
+
+MCP：`get_my_schedule(from?, to?)` 给 Agent 看它所有者的日程，只读。
+
 ## 代码平台与外部事件（ADR 0020）
 
 代码平台（GitHub、GitLab、Gitee）与 IM 集成、通知通道走**同一套提供方注册表**（`internal/directory`），只是能力不同：`Providers()` 读组织结构、`MessagingProviders()` 发消息、`CodeHostProviders()` 收 PR 与检查结果。三个列表互不重叠，接口层与前端都按声明渲染，不出现平台名的分支。

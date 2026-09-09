@@ -181,6 +181,10 @@ function GoalDetailBody({ id }: { id: string | null }) {
           )}
         </div>
       </div>
+      {/* 说明紧跟页头、与下面的内容同宽：它是目标本身的一部分，不藏在进度面板里，也不挤在动作栏左边；点击就地改（§15） */}
+      <div className="-mt-1 mb-6 text-body text-ink-muted">
+        <InlineText value={g.description} editable={editNotes} placeholder={editNotes ? t("goal.descriptionPlaceholder") : t("goal.noDescription")} onSave={(v) => save({ description: v }, { description: v })} />
+      </div>
 
       {/* 主栏自适应，侧栏固定 380px（≥1920 时 420px） */}
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] 3xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -196,9 +200,6 @@ function GoalDetailBody({ id }: { id: string | null }) {
                   {/* 下一步该干什么（DESIGN.md §9），与目标列表同一套判定 */}
                   <span className={cx("mt-1 block text-body", sum.tone === "danger" ? "text-danger" : sum.tone === "warning" ? "text-warning" : sum.tone === "accent" ? "text-accent-hover" : "text-ink-subtle")}>{sum.text}</span>
                 </span>
-              </div>
-              <div className="mt-4 border-t border-hairline pt-4 text-ink-muted">
-                <InlineText value={g.description} editable={editNotes} placeholder={t("goal.noDescription")} onSave={(v) => save({ description: v }, { description: v })} />
               </div>
             </Panel>
           </BriefSection>

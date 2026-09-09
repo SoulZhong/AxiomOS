@@ -19,6 +19,7 @@ import (
 
 	"github.com/teemo/axiomos/internal/api"
 	"github.com/teemo/axiomos/internal/app"
+	"github.com/teemo/axiomos/internal/directory"
 	"github.com/teemo/axiomos/internal/domain"
 	"github.com/teemo/axiomos/internal/i18n"
 )
@@ -403,6 +404,9 @@ var notDryRunnable = map[string]string{
 	"PUT /api/v1/org/code-platform":                               "代码平台配置，网页向导",
 	"DELETE /api/v1/org/code-platform":                            "断开代码平台，网页有确认框",
 	"POST /api/v1/org/code-platform/test":                         "代码平台连通性自检，只读外部系统",
+	"POST /api/v1/org/calendars/{provider}/test":                  "外部日历接入检查，只读外部系统（ADR 0032）",
+	"POST /api/v1/org/calendars/{provider}/sync":                  "同步外部日历，本身就是拉一次；结果记在连接上",
+	"DELETE /api/v1/me/calendars/{provider}":                      "解除自己与外部日历的绑定，网页有确认框",
 	"PUT /api/v1/org/directory":                                   "外部目录配置（ADR 0017），网页向导",
 	"DELETE /api/v1/org/directory":                                "断开外部目录，网页有确认框",
 	"POST /api/v1/org/directory/test":                             "外部目录连通性自检，只读外部系统",
@@ -468,6 +472,12 @@ func TestEveryHTTPWriteEndpointDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 外部日历：先真连一家（假服务），断开才有东西可断
+	calProvider := directory.FakeCalendarKey
+	directory.UseFakeCalendar(directory.NewFakeCalendar(), "good-token")
+	if _, err := a.SaveCalendar(ctx, w.jia, app.CalendarInput{Provider: calProvider, Credentials: map[string]string{"token": "good-token"}}); err != nil {
+		t.Fatal(err)
+	}
 	// 委托：人指派给 Agent 即发委托；Agent 在委托内走一步，才有撤回可撤；收回委托之后再发才有得发
 	_, delegateAgent := w.agent(t, w.jia, "受委托的 Agent", map[domain.Grant]domain.GrantMode{domain.GrantExecute: domain.GrantWithApproval}, 1)
 	delegated := w.task(t, w.jia, "委托出去的任务", delegateAgent.Actor.ID)
@@ -518,6 +528,9 @@ func TestEveryHTTPWriteEndpointDryRunWritesNothing(t *testing.T) {
 		"POST /api/v1/sprints/{id}/close":                       {"/sprints/" + sp.ID + "/close", map[string]any{"unfinished": "backlog"}},
 		"POST /api/v1/sprints/{id}/tasks":                       {"/sprints/" + sp.ID + "/tasks", map[string]any{"task_ids": []string{mine.ID}}},
 		"DELETE /api/v1/sprints/{id}/tasks/{task_id}":           {"/sprints/" + sp.ID + "/tasks/" + other.ID, nil},
+		// 外部日历（ADR 0032）：保存与断开都能先看后做
+		"PUT /api/v1/org/calendars/{provider}":    {"/org/calendars/googlecal", map[string]any{"credentials": map[string]string{"client_id": "x", "client_secret": "y"}}},
+		"DELETE /api/v1/org/calendars/{provider}": {"/org/calendars/" + calProvider, nil},
 		// 委托与撤回（ADR 0028）
 		"POST /api/v1/tasks/{id}/mandates": {"/tasks/" + delegated.ID + "/mandates", map[string]any{"agent_id": delegateAgent.Actor.ID}},
 		"DELETE /api/v1/mandates/{id}":     {"/mandates/" + mandate.ID, nil},

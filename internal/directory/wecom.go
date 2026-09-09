@@ -49,7 +49,27 @@ func init() {
 			i18n.T("把本系统的出网 IP 加进该应用的企业可信 IP", "Add this system's outbound IP to that app's trusted IPs"),
 		},
 		NewMessenger: func(creds map[string]string, opts Options) (Messenger, error) { return NewWeComMessenger(creds, opts) },
+		// 外部日历（ADR 0032）：用自建应用的 Secret 读一个企业日历里的日程，按参与人对到成员。
+		CalendarFields: []CredentialField{
+			{Key: "cal_id", Title: i18n.T("企业日历 ID", "Company calendar ID"), Placeholder: "wcxxxxxxxxxxxxxxxx",
+				Hint: i18n.T("管理后台 → 应用管理 → 日程 → 企业日历；成员的会议要在这本日历里", "Admin console → App Management → Schedule → company calendars; members' meetings must live in this calendar")},
+		},
+		CalendarPrerequisites: []i18n.Text{
+			i18n.T("在企业微信管理后台把「日程」的接口权限授予该自建应用", "Grant the custom app access to the Schedule API in the WeCom admin console"),
+			i18n.T("成员要先通过 IM 集成同步进来，日程按他的企业微信账号对应", "Members must be synced through the IM integration first; events are matched by their WeCom account"),
+		},
+		NewCalendar: func(creds map[string]string, opts Options) (Calendar, error) { return NewWeComCalendar(creds, opts) },
 	})
+}
+
+// NewWeComCalendar 用自建应用的 Secret 与企业日历 ID 建日历客户端。
+func NewWeComCalendar(creds map[string]string, opts Options) (*WeCom, error) {
+	w, err := NewWeComMessenger(creds, opts)
+	if err != nil {
+		return nil, err
+	}
+	w.calID = creds["cal_id"]
+	return w, nil
 }
 
 // wecomRootDepartmentID 是企业微信根部门的编号。
@@ -64,6 +84,7 @@ const wecomRootDepartmentID = "1"
 // 每个响应都带 errcode / errmsg；errcode 非 0 一律当作提供方拒绝，把 errmsg 原话带回。
 // status：1 已激活、2 已禁用、4 未激活、5 退出企业 → 1 与 4 算在职，2 与 5 不算。
 type WeCom struct {
+	calID      string // 外部日历：企业日历 ID
 	BaseURL    string
 	corpID     string
 	corpSecret string
@@ -526,4 +547,57 @@ func (w *WeCom) DiagnoseMessaging(ctx context.Context) Check {
 	}
 	c.FixURL = wecomConsoleApps
 	return c
+}
+
+// ---------- 外部日历（ADR 0032） ----------
+//
+//	POST /cgi-bin/oa/schedule/get_by_calendar  {cal_id, offset, limit} → {schedule_list:[{schedule_id, summary, start_time, end_time, status, attendees:[{userid}], organizer}]}
+
+type wecomSchedules struct {
+	wecomEnvelope
+	ScheduleList []struct {
+		ScheduleID string `json:"schedule_id"`
+		Summary    string `json:"summary"`
+		StartTime  int64  `json:"start_time"`
+		EndTime    int64  `json:"end_time"`
+		Status     int    `json:"status"` // 1 正常 2 已取消
+		Organizer  string `json:"organizer"`
+		Attendees  []struct {
+			UserID string `json:"userid"`
+		} `json:"attendees"`
+	} `json:"schedule_list"`
+}
+
+// Events 读企业日历里这个成员参与的日程（组织者或参与人）。
+func (w *WeCom) Events(ctx context.Context, externalUserID string, from, to time.Time) ([]CalendarEvent, error) {
+	if w.calID == "" {
+		return nil, &RejectedError{Code: 400, Msg: "cal_id not configured"}
+	}
+	var out []CalendarEvent
+	for offset := 0; offset < 5000; offset += 500 {
+		var res wecomSchedules
+		if err := w.post(ctx, "/cgi-bin/oa/schedule/get_by_calendar", map[string]any{"cal_id": w.calID, "offset": offset, "limit": 500}, &res); err != nil {
+			return nil, err
+		}
+		for _, it := range res.ScheduleList {
+			mine := it.Organizer == externalUserID
+			for _, a := range it.Attendees {
+				if a.UserID == externalUserID {
+					mine = true
+				}
+			}
+			if !mine || it.Status == 2 {
+				continue
+			}
+			start, end := time.Unix(it.StartTime, 0), time.Unix(it.EndTime, 0)
+			if !end.After(from) || !start.Before(to) {
+				continue
+			}
+			out = append(out, CalendarEvent{ExternalID: it.ScheduleID, Title: it.Summary, Start: start, End: end, Busy: true})
+		}
+		if len(res.ScheduleList) < 500 {
+			break
+		}
+	}
+	return out, nil
 }

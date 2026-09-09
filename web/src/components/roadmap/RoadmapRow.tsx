@@ -1,13 +1,14 @@
 "use client";
 import Link from "next/link";
-import { useId, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useRouter } from "next/navigation";
+import { useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { Goal, ISODate } from "@/lib/api";
 import { fmtDate, toISODate, today } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import { C, MONO, textW } from "@/components/gantt/GanttFrame";
 import { MilestoneMarks, type MilestoneInteraction } from "@/components/gantt/MilestoneMarks";
-import { IconChevronRight, IconGantt } from "@/components/icons";
-import { cx } from "@/components/ui";
+import { IconChevronRight, IconCopy, IconEdit, IconGantt, IconGoal, IconPlus } from "@/components/icons";
+import { Menu, cx } from "@/components/ui";
 import { barTone, confidenceTone, type BarSpan, type ColorBy } from "./model";
 import type { MsCluster } from "./milestones";
 
@@ -62,6 +63,9 @@ export interface RoadmapRowProps {
   rankable: boolean;
   onToggle: (id: string) => void;
   onSelect: (id: string) => void;
+  /** 行尾的快捷操作：新建子目标（内联输入）、复制目标 */
+  onAddChild: (g: Goal) => void;
+  onDuplicate: (g: Goal) => void;
   onBarEnter: (g: Goal, el: Element) => void;
   onBarLeave: () => void;
   onBarDown: (e: ReactPointerEvent<Element>, g: Goal, kind: "move" | "start" | "end" | "ghost") => void;
@@ -78,6 +82,7 @@ export interface RoadmapRowProps {
 
 export function RoadmapRow(p: RoadmapRowProps) {
   const { goal, row, width, infoW, compact, cellW } = p;
+  const router = useRouter();
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const cy = ROW_H / 2;
   const barY = cy - BAR_H / 2;
@@ -116,6 +121,13 @@ export function RoadmapRow(p: RoadmapRowProps) {
         </button>
         <span className="rt-info-main">
           <span className="rt-title-line">
+            {/* 目标类型（ADR 0023）打头：一枚小芯片，读作"这是一个产品目标：……"；标题先截断、芯片不缩；窄屏不画 */}
+            {!compact && goal.type && (
+              <span className="rt-type" title={goal.type.name}>
+                <i className="rt-type-dot" style={{ background: goal.type.color }} aria-hidden="true" />
+                {goal.type.name}
+              </span>
+            )}
             <i className={cx("rt-dot", conf && `rt-dot-${conf}`)} title={conf ? t("roadmap.confidenceTip", { v: goal.confidence_title || "" }) : t("confidence.none")} aria-hidden="true" />
             <Link href={`/goals/${encodeURIComponent(goal.id)}/`} className={cx("rt-title", abandoned && "line-through opacity-70")} title={goal.title} onClick={(e) => e.stopPropagation()}>
               {goal.title}
@@ -123,13 +135,6 @@ export function RoadmapRow(p: RoadmapRowProps) {
             {derived && (
               <span className="rt-derived" title={t("roadmap.derivedTip")} aria-label={t("roadmap.derivedTip")}>
                 ↗
-              </span>
-            )}
-            {/* 目标类型（ADR 0023）：标题同一行的小芯片，标题先截断、芯片不挤没；窄屏不画 */}
-            {!compact && goal.type && (
-              <span className="rt-type" title={goal.type.name}>
-                <i className="rt-type-dot" style={{ background: goal.type.color }} aria-hidden="true" />
-                {goal.type.name}
               </span>
             )}
           </span>
@@ -152,9 +157,22 @@ export function RoadmapRow(p: RoadmapRowProps) {
         {!compact && (
           <>
             <ProgressPie ratio={ratio} done={goal.achieved} pct={Math.round(goal.progress)} title={t("roadmap.progressTip", { pct, owner: goal.owner.name })} />
-            <Link href={`/tasks/?view=gantt&goal=${encodeURIComponent(goal.id)}`} className="rt-jump" title={t("roadmap.openTasks")} aria-label={t("roadmap.openTasks")} onClick={(e) => e.stopPropagation()}>
-              <IconGantt size={13} />
-            </Link>
+            {/* 行尾快捷操作（悬停出现）：新建子目标、更多（复制 / 打开详情 / 看任务甘特图）。改不动的人看得到但按不了，原因写在菜单里 */}
+            <span className="rt-actions" onClick={(e) => e.stopPropagation()}>
+              <button type="button" className="rt-act pressable" title={p.editable ? t("goals.addChild") : t("roadmap.noEditActions")} aria-label={t("goals.addChild")} disabled={!p.editable || abandoned} onClick={() => p.onAddChild(goal)}>
+                <IconPlus size={13} />
+              </button>
+              <Menu
+                label={t("roadmap.moreActions")}
+                className="rt-act rt-act-menu"
+                items={[
+                  { key: "child", label: t("goals.addChild"), icon: <IconPlus size={14} />, disabled: !p.editable ? t("roadmap.noEditActions") : abandoned ? t("roadmap.abandonedActions") : null, onSelect: () => p.onAddChild(goal) },
+                  { key: "copy", label: t("roadmap.duplicate"), icon: <IconCopy size={14} />, disabled: !p.editable ? t("roadmap.noEditActions") : null, onSelect: () => p.onDuplicate(goal) },
+                  { key: "open", label: t("roadmap.openDetail"), icon: <IconGoal size={14} />, onSelect: () => router.push(`/goals/${encodeURIComponent(goal.id)}/`) },
+                  { key: "tasks", label: t("roadmap.openTasks"), icon: <IconGantt size={14} />, onSelect: () => router.push(`/tasks/?view=gantt&goal=${encodeURIComponent(goal.id)}`) },
+                ]}
+              />
+            </span>
           </>
         )}
       </div>
@@ -230,6 +248,62 @@ export function RoadmapRow(p: RoadmapRowProps) {
         <MilestoneMarks marks={p.clusters} cy={cy} xOfDate={p.xOf} dayW={p.dayW} width={width} interactive={p.ms} />
       </svg>
       {p.creating && <InlineCreate left={infoW + p.creating.x} top={(ROW_H - 26) / 2} due_on={p.creating.due_on} onSubmit={p.onCreate} onCancel={p.onCancelCreate} />}
+    </div>
+  );
+}
+
+/** 内联新建子目标展开说明后的行高：标题一行 + 三行说明 */
+export const CHILD_ROW_DESC_H = ROW_H + 84;
+
+/**
+ * 「新建子目标」的内联行：紧贴在上级那一行下面、缩进一级，信息列里是一个输入框，
+ * 回车创建、Esc 或空着失焦取消；条区留空。不弹抽屉——在时间线上补一个子目标应当像在清单里补一行。
+ * 标题旁一枚「加说明」：点开后行长高，下面出现一个三行的说明框（⌘/Ctrl+Enter 创建），不点就只填标题。
+ */
+export function InlineChildRow({ depth, infoW, width, onSubmit, onCancel }: { depth: number; infoW: number; width: number; onSubmit: (title: string, description: string) => void; onCancel: () => void }) {
+  const [title, setTitle] = useState("");
+  const [desc, setDesc] = useState("");
+  const [withDesc, setWithDesc] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const descRef = useRef<HTMLTextAreaElement>(null);
+  const submit = () => {
+    const v = title.trim();
+    if (!v || busy) return;
+    setBusy(true);
+    onSubmit(v, desc.trim());
+  };
+  const onKey = (e: ReactKeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+    else if (e.key === "Enter" && (e.currentTarget.tagName === "INPUT" || e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+  };
+  // 焦点离开整行、且什么都没填时才算取消（在标题与说明之间切换不算离开）
+  const onBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    if (box.current?.contains(e.relatedTarget as Node | null)) return;
+    if (!title.trim() && !desc.trim()) onCancel();
+  };
+  const h = withDesc ? CHILD_ROW_DESC_H : ROW_H;
+  return (
+    <div className="gantt-row rt-row rt-child-row" style={{ height: h }}>
+      <div ref={box} className={cx("gantt-label rt-info rt-child-info", withDesc && "rt-child-info-tall")} style={{ width: infoW, paddingLeft: 8 + depth * INDENT }} onBlur={onBlur}>
+        <span className="gantt-chevron invisible" aria-hidden="true" />
+        <span className="rt-child-form">
+          <span className="rt-child-input">
+            <IconGoal size={13} />
+            <input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={onKey} placeholder={t("roadmap.childPlaceholder")} aria-label={t("goals.addChild")} autoFocus disabled={busy} />
+            {!withDesc && (
+              <button type="button" className="rt-child-more pressable" title={t("roadmap.addDescription")} aria-label={t("roadmap.addDescription")} onClick={() => { setWithDesc(true); setTimeout(() => descRef.current?.focus(), 0); }} disabled={busy}>
+                <IconEdit size={12} />
+                <span>{t("roadmap.addDescription")}</span>
+              </button>
+            )}
+          </span>
+          {withDesc && (
+            <textarea ref={descRef} value={desc} onChange={(e) => setDesc(e.target.value)} onKeyDown={onKey} className="rt-child-desc" placeholder={t("roadmap.descPlaceholder")} aria-label={t("roadmap.addDescription")} rows={3} disabled={busy} />
+          )}
+        </span>
+      </div>
+      <svg width={width} height={h} className="gantt-bars rt-bars" aria-hidden="true" />
     </div>
   );
 }

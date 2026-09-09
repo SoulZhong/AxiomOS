@@ -9,7 +9,7 @@ import { clearPreferences, loadPreferences } from "@/lib/preferences";
 import { toggleSidebar, useSidebarCollapsed } from "@/lib/sidebar";
 import { applyScopeSession } from "@/lib/useScope";
 import { BridgeBar } from "./BridgeBar";
-import { IconAgent, IconApprove, IconBacklog, IconBoard, IconChart, IconChevronLeft, IconChevronRight, IconClose, IconFlow, IconGanttFlight, IconGoal, IconHome, IconKeyboard, IconLogout, IconMenu, IconOrg, IconOverview, IconSearch, IconSettings, IconSprint, IconTask, ShipMark } from "./icons";
+import { IconAgent, IconApprove, IconBacklog, IconBoard, IconCalendar, IconChart, IconChevronLeft, IconChevronRight, IconClose, IconFlow, IconGanttFlight, IconGoal, IconHome, IconKeyboard, IconLogout, IconMenu, IconOrg, IconOverview, IconSearch, IconSettings, IconSprint, IconTask, ShipMark } from "./icons";
 import { CommandPalette } from "./palette/CommandPalette";
 import { useShipTelemetry } from "./ship-status/telemetry";
 import { ChordIndicator, ShortcutHelp, useGlobalShortcuts, useIsMac } from "./shortcuts";
@@ -172,6 +172,7 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
   const sub = (base: string, label: string, tabs: Array<[string, string, ReactNode]>) => tabs.map(([q, tl, icon]) => ({ href: `${base}${q}`, label: `${label} · ${tl}`, icon }));
   const palettePages = [
     ...nav.map((n) => ({ href: n.href === "/" ? "/" : `${n.href}/`, label: n.label, icon: n.icon })),
+    ...sub("/?tab=", t("nav.home"), [["schedule", t("schedule.title"), <IconCalendar key="cal" />]]),
     ...sub("/tasks/?view=", t("nav.tasks"), [["board", t("tasks.view.board"), <IconBoard key="b" />], ["gantt", t("tasks.view.gantt"), <IconGanttFlight key="g" />], ["sprints", t("tasks.view.sprints"), <IconSprint key="s" />], ["backlog", t("tasks.view.backlog"), <IconBacklog key="k" />]]),
     ...sub("/overview/?tab=", t("nav.overview"), [["cost", t("overview.tab.cost"), <IconChart key="c" />], ["efficiency", t("overview.tab.efficiency"), <IconChart key="e" />], ["agents", t("overview.tab.agents"), <IconAgent key="a" />]]),
     { href: "/proposals/", label: `${t("proposals.title")} · ${t("proposals.history")}`, icon: <IconApprove key="p" /> },

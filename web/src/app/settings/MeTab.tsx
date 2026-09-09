@@ -1,10 +1,11 @@
 "use client";
 import { useState, type FormEvent } from "react";
-import { api, type PreferencesPatch } from "@/lib/api";
+import { api, type MyCalendarView, type PreferencesPatch } from "@/lib/api";
 import { errorMessage, useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { applyPreferences, usePreferences } from "@/lib/preferences";
 import { useSession } from "@/components/AppShell";
+import { useQueryParam } from "@/lib/hooks";
 import { useToast } from "@/components/toast";
 import { Button, ConsequenceDialog, ErrorBox, Input, ListSkeleton, Panel, Tag } from "@/components/ui";
 import { MeNotifications } from "./MeNotifications";
@@ -63,6 +64,7 @@ export function MeTab() {
         ) : null}
       </Panel>
       <MeNotifications index={2} />
+      <CalendarPanel index={3} />
       <CodeIdentityPanel index={4} />
       <ConsequenceDialog
         open={resetting}
@@ -116,6 +118,50 @@ function CodeIdentityPanel({ index }: { index: number }) {
               {data!.bound && !login && <Tag tone="success">{t("me.codeId.bound")}</Tag>}
               {error && <p className="w-full text-caption text-danger" role="alert">{error}</p>}
             </form>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/** 我的外部日历（ADR 0032）：飞书 / 企业微信沿用外部目录的身份，不用连；Google 自己授权一次，随时断开。 */
+function CalendarPanel({ index }: { index: number }) {
+  const toast = useToast();
+  const list = useLoad(() => api.me.calendars.list(), []);
+  const flag = useQueryParam("calendar");
+  const reason = useQueryParam("reason");
+  const [busy, setBusy] = useState<string | null>(null);
+  const disconnect = async (c: MyCalendarView) => {
+    setBusy(c.provider);
+    try { await api.me.calendars.disconnect(c.provider); toast.ok(t("me.calendar.disconnected", { name: c.provider_title })); list.reload(); }
+    catch (e) { toast.fail(errorMessage(e)); } finally { setBusy(null); }
+  };
+  const rows = (list.data ?? []).filter((c) => c.org_configured || c.connected);
+  return (
+    <Panel index={index} title={t("me.calendar.title")}>
+      {list.loading && !list.data ? <ListSkeleton rows={2} /> : list.error && !list.data ? <ErrorBox message={list.error} onRetry={list.reload} /> : (
+        <>
+          <p className="mb-3 max-w-[640px] text-body text-ink-muted">{t("me.calendar.hint")}</p>
+          {flag === "connected" && <p className="mb-3 text-caption text-success" role="status">{t("me.calendar.justConnected")}</p>}
+          {flag === "denied" && <p className="mb-3 text-caption text-warning" role="alert">{t("me.calendar.denied")}</p>}
+          {flag === "failed" && <p className="mb-3 text-caption text-danger" role="alert">{t("me.calendar.failed", { reason: reason ?? "" })}</p>}
+          {rows.length === 0 ? (
+            <p className="text-caption text-ink-subtle">{t("me.calendar.none")}</p>
+          ) : (
+            <ul className="max-w-[640px] divide-y divide-hairline" data-my-calendars>
+              {rows.map((c) => (
+                <li key={c.provider} className="flex flex-wrap items-center gap-2 py-2">
+                  <span className="font-medium">{c.provider_title}</span>
+                  {c.connected ? <Tag tone="success">{t("me.calendar.connected")}</Tag> : <Tag>{t("me.calendar.notConnected")}</Tag>}
+                  <span className="text-caption text-ink-subtle">{c.connected ? (c.email || c.external_user_id || "") : c.per_member ? t("me.calendar.connectHint") : t("me.calendar.viaDirectory")}</span>
+                  <span className="ml-auto flex items-center gap-2">
+                    {!c.connected && c.per_member && c.auth_url && <a className="btn btn-primary btn-sm" href={c.auth_url}>{t("me.calendar.connect", { name: c.provider_title })}</a>}
+                    {c.connected && c.per_member && <Button size="sm" variant="ghost" disabled={busy === c.provider} onClick={() => void disconnect(c)}>{t("me.calendar.disconnect")}</Button>}
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
         </>
       )}

@@ -177,8 +177,7 @@ import type {
   InboxKind,
   InboxQuestion,
   InboxTask,
-  Notification,
-} from "./api";
+  Notification, CalendarProviderView, CalendarsView, CalendarInput, CalendarTestResult, CalendarSyncResult, MyCalendarView, ScheduleItem, ScheduleView } from "./api";
 import { fieldChangeSentence } from "./fieldChange";
 import { ApiError, BLOCK_KEYS, DEFAULT_PREFERENCES, DEVICE_CLIENTS, GRID_COLS, GRID_MAX_H, INBOX_KINDS, LINK_KINDS, PREF_FIELDS, blocksOverlap, compactLayout, isBlockHeight, isBlockKey, isBlockWidth, normalizeLayout, sameLayout } from "./api";
 import { addDays, diffDays, parseDate, startOfWeek, toISODate, today } from "./format";
@@ -4399,3 +4398,117 @@ export async function mockRequest(method: string, path: string, body?: unknown, 
   }
   throw new ApiError(404, t("api.notFound", { method, path }));
 }
+
+// ---------- 日程与外部日历（ADR 0032） ----------
+// 日程从示例里的任务、目标、里程碑读时拼出来；外部日历只在内存里记一份连接，同步来的会议是几条写死的示例。
+interface CalRow { credentials: Record<string, string>; secrets: Record<string, string>; enabled: boolean; last_sync_at: string | null; last_status: string; last_error: string }
+const CAL_PROVIDERS: Array<{ key: string; title: string; per_member: boolean; fields: DirectoryField[]; prerequisites: string[]; tip?: { text: string; url?: string } }> = [
+  { key: "feishu", title: "飞书", per_member: false, fields: [{ key: "app_id", title: "App ID", secret: false, placeholder: "cli_xxx", hint: "飞书开放平台 → 应用 → 凭证与基础信息" }, { key: "app_secret", title: "App Secret", secret: true, placeholder: "", hint: "同一页" }], prerequisites: ["为应用开通日历只读权限并发布版本", "成员要先通过 IM 集成同步进来"], tip: { text: "同一个企业自建应用，开通「读取日历」「读取日程」即可。", url: "https://open.feishu.cn/app" } },
+  { key: "googlecal", title: "Google 日历", per_member: true, fields: [{ key: "client_id", title: "OAuth 客户端 ID", secret: false, placeholder: "xxx.apps.googleusercontent.com", hint: "Google Cloud Console → 凭据" }, { key: "client_secret", title: "OAuth 客户端密钥", secret: true, placeholder: "", hint: "同一处" }], prerequisites: ["启用 Google Calendar API", "创建网页应用类型的 OAuth 客户端", "成员在个人设置里各自连接一次"], tip: { text: "本系统只申请日历只读权限。", url: "https://console.cloud.google.com/apis/credentials" } },
+  { key: "wecom", title: "企业微信", per_member: false, fields: [{ key: "corp_id", title: "企业 ID", secret: false, placeholder: "wwxxx", hint: "管理后台 → 我的企业" }, { key: "agent_id", title: "应用 AgentId", secret: false, placeholder: "1000002", hint: "应用管理 → 自建应用" }, { key: "app_secret", title: "应用 Secret", secret: true, placeholder: "", hint: "同一页" }, { key: "cal_id", title: "企业日历 ID", secret: false, placeholder: "wcxxx", hint: "应用管理 → 日程 → 企业日历" }], prerequisites: ["把「日程」接口权限授予该自建应用", "成员要先通过 IM 集成同步进来"] },
+];
+const CALS: Record<string, CalRow> = {
+  feishu: { credentials: { app_id: "cli_a1b2c3" }, secrets: { app_secret: "x" }, enabled: true, last_sync_at: at(-0.01), last_status: "ok", last_error: "" },
+};
+const CAL_IDENTITIES: Record<string, Record<ID, { email?: string; external_user_id?: string }>> = { feishu: { wang: { external_user_id: "ou_wang" }, li: { external_user_id: "ou_li" } } };
+function calConfigured(key: string): boolean {
+  const p = CAL_PROVIDERS.find((x) => x.key === key); const c = CALS[key];
+  return !!p && !!c && p.fields.every((f) => f.optional || (f.secret ? !!c.secrets[f.key] : !!c.credentials[f.key]));
+}
+function viewCalendar(p: (typeof CAL_PROVIDERS)[number]): CalendarProviderView {
+  const c = CALS[p.key];
+  return {
+    provider: p.key, provider_title: p.title, configured: calConfigured(p.key), enabled: c?.enabled ?? false, per_member: p.per_member,
+    fields: p.fields.map((f) => ({ ...f, set: f.secret ? !!c?.secrets[f.key] : !!c?.credentials[f.key], value: f.secret ? undefined : c?.credentials[f.key] ?? "" })),
+    prerequisites: p.prerequisites, tip: p.tip, credentials: { ...(c?.credentials ?? {}) }, secrets_set: Object.fromEntries(p.fields.filter((f) => f.secret).map((f) => [f.key, !!c?.secrets[f.key]])),
+    proxy_url: "", inherits_directory: p.key === "feishu", last_sync_at: c?.last_sync_at ?? undefined, last_status: c?.last_status ?? "", last_status_title: c?.last_status === "ok" ? "成功" : c?.last_status === "failed" ? "失败" : "",
+    last_error: c?.last_error || undefined, connected_members: Object.keys(CAL_IDENTITIES[p.key] ?? {}).length, redirect_url: p.per_member ? `${typeof window === "undefined" ? "" : window.location.origin}/api/v1/me/calendars/google/callback` : undefined,
+  };
+}
+on("GET", "/org/calendars", (): CalendarsView => { requireOrgAdmin(); return { providers: CAL_PROVIDERS.map(viewCalendar) }; });
+on("PUT", "/org/calendars/:provider", (m, body) => {
+  requireOrgAdmin();
+  const key = m.groups!.provider; const p = CAL_PROVIDERS.find((x) => x.key === key);
+  if (!p) throw new ApiError(400, t("mock.calendar.badProvider", { key }));
+  const b = (body ?? {}) as CalendarInput;
+  const c = CALS[key] ?? (CALS[key] = { credentials: {}, secrets: {}, enabled: true, last_sync_at: null, last_status: "", last_error: "" });
+  for (const [k, v] of Object.entries(b.credentials ?? {})) { const f = p.fields.find((x) => x.key === k); if (!f) continue; if (f.secret) { if (v) c.secrets[k] = v; } else c.credentials[k] = v; }
+  if (b.enabled !== undefined) c.enabled = b.enabled;
+  emit("CalendarConfigured", { actor: ME, summary: t("mock.ev.calendarConfigured", { name: p.title }) });
+  return viewCalendar(p);
+});
+on("DELETE", "/org/calendars/:provider", (m) => {
+  requireOrgAdmin();
+  const key = m.groups!.provider; const p = CAL_PROVIDERS.find((x) => x.key === key);
+  if (!p || !CALS[key]) throw new ApiError(404, t("mock.calendar.notConfigured", { name: p?.title ?? key }));
+  delete CALS[key]; delete CAL_IDENTITIES[key];
+  emit("CalendarDisconnected", { actor: ME, summary: t("mock.ev.calendarDisconnected", { name: p.title }) });
+  return undefined;
+});
+on("POST", "/org/calendars/:provider/test", (m): CalendarTestResult => {
+  requireOrgAdmin();
+  const key = m.groups!.provider;
+  if (!calConfigured(key)) return { ok: false, checks: [], error: t("mock.calendar.notConfigured", { name: CAL_PROVIDERS.find((x) => x.key === key)?.title ?? key }) };
+  return { ok: true, checks: [{ key: "token", title: "拿到应用凭证", status: "ok", blocking: false }, { key: "calendar", title: "日历只读权限", status: "ok", blocking: false }] };
+});
+on("POST", "/org/calendars/:provider/sync", (m): CalendarSyncResult => {
+  requireOrgAdmin();
+  const key = m.groups!.provider; const c = CALS[key];
+  if (!c) throw new ApiError(404, t("mock.calendar.notConfigured", { name: key }));
+  c.last_sync_at = at(0); c.last_status = "ok"; c.last_error = "";
+  const members = Object.keys(CAL_IDENTITIES[key] ?? {}).length;
+  return { provider: key, members, events: members * 2, errors: [], status: "ok" };
+});
+on("GET", "/me/calendars", (): MyCalendarView[] => {
+  requireLogin();
+  return CAL_PROVIDERS.map((p) => {
+    const id = CAL_IDENTITIES[p.key]?.[ME];
+    return { provider: p.key, provider_title: p.title, org_configured: calConfigured(p.key) && !!CALS[p.key]?.enabled, per_member: p.per_member, connected: !!id, email: id?.email, external_user_id: id?.external_user_id, connected_at: id ? at(-3) : undefined, auth_url: p.per_member && calConfigured(p.key) && !id ? "#mock-google-auth" : undefined };
+  });
+});
+on("DELETE", "/me/calendars/:provider", (m) => { requireLogin(); const key = m.groups!.provider; if (CAL_IDENTITIES[key]) delete CAL_IDENTITIES[key][ME]; return undefined; });
+
+/** GET /schedule：把示例里的任务、目标、里程碑与几场示例会议按区间拼出来 */
+on("GET", "/schedule", (_m, _b, q): ScheduleView => {
+  requireLogin();
+  const from = str(q, "from") ?? day(0); const to = str(q, "to") ?? day(6);
+  const who = str(q, "who") || ME;
+  const team = TEAMS.find((x) => x.id === who);
+  let members: ID[] = [];
+  if (team) { const under = (id: ID): ID[] => [id, ...TEAMS.filter((x) => x.parent_id === id).flatMap((x) => under(x.id))]; members = [...new Set(under(team.id).flatMap((id) => TEAMS.find((x) => x.id === id)?.member_ids ?? []))]; }
+  else members = [who === "me" ? ME : who];
+  const overlaps = (a: string | null, b: string | null) => !!a && !!b && b >= from && a <= to;
+  const items: ScheduleItem[] = [];
+  for (const tk of Object.values(tasks)) {
+    if (!tk.assignee_id) continue;
+    const owner = MEMBERS[tk.assignee_id] ? tk.assignee_id : (AGENTS[tk.assignee_id] as { owner?: { id: ID } } | undefined)?.owner?.id ?? tk.assignee_id;
+    if (!members.includes(owner)) continue;
+    const v = viewTask(tk);
+    const base: ScheduleItem = { kind: "task", id: tk.id, title: tk.title, member_id: owner, number: tk.number, state: v.state, progress: v.progress, assignee_id: tk.assignee_id };
+    if (tk.planned_start && tk.planned_end && overlaps(tk.planned_start, tk.planned_end)) items.push({ ...base, start_date: tk.planned_start, end_date: tk.planned_end });
+    else if (!tk.planned_start && tk.planned_end && tk.planned_end >= from && tk.planned_end <= to) items.push({ ...base, date: tk.planned_end, deadline: true });
+    else if (tk.planned_start && !tk.planned_end && tk.planned_start >= from && tk.planned_start <= to) items.push({ ...base, date: tk.planned_start });
+  }
+  for (const g of Object.values(goals)) {
+    if (!members.includes(g.owner_id) || !overlaps(g.planned_start, g.planned_end)) continue;
+    items.push({ kind: "goal", id: g.id, title: g.title, member_id: g.owner_id, status: g.achieved ? "achieved" : "active", start_date: g.planned_start!, end_date: g.planned_end! });
+  }
+  for (const m of Object.values(milestones)) {
+    const g = goals[m.goal_id]; if (!g || !members.includes(g.owner_id) || m.due_on < from || m.due_on > to) continue;
+    items.push({ kind: "milestone", id: m.id, title: m.title, member_id: g.owner_id, goal_id: g.id, date: m.due_on, milestone_status: m.reached_at ? "reached" : m.due_on < day(0) ? "overdue" : "upcoming" });
+  }
+  // 示例会议：连上飞书的人每天 10:00 一场站会，周三 15:00 一场评审
+  if (CALS.feishu?.enabled) {
+    for (const mid of members) {
+      if (!CAL_IDENTITIES.feishu?.[mid]) continue;
+      for (let d = new Date(`${from}T00:00:00`); toISODate(d) <= to; d = new Date(d.getTime() + 86400000)) {
+        if (d.getDay() === 0 || d.getDay() === 6) continue;
+        const iso = toISODate(d);
+        const mine = mid === ME;
+        items.push({ kind: "event", id: `ev-${mid}-${iso}-standup`, title: mine ? "每日站会" : "忙", member_id: mid, provider: "feishu", date: iso, starts_at: `${iso}T10:00:00`, ends_at: `${iso}T10:15:00`, busy: true, title_hidden: !mine, url: mine ? "https://example.com/cal/standup" : undefined });
+        if (d.getDay() === 3) items.push({ kind: "event", id: `ev-${mid}-${iso}-review`, title: mine ? "需求评审" : "忙", member_id: mid, provider: "feishu", date: iso, starts_at: `${iso}T15:00:00`, ends_at: `${iso}T16:00:00`, busy: true, title_hidden: !mine });
+      }
+    }
+  }
+  return { from, to, who, members: members.map((id) => ({ id, name: MEMBERS[id]?.name ?? id })), items, sources: CALS.feishu?.enabled ? ["feishu"] : [] };
+});

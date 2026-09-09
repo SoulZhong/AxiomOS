@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -67,8 +68,15 @@ var batch2Descs = map[string]i18n.Text{
 	"mark_notifications_read": i18n.T("把几条通知标为已读，只能标与我有关的；返回剩下的未读数。已读只是阅读状态，不记动态。", "Mark notifications as read (only ones that concern me); returns the remaining unread count. Read state leaves no activity entry."),
 	"list_teams":              i18n.T("列出团队：名称、上级、负责人、成员名单。指派与规划时用。", "List teams: name, parent, lead, members. Use it when assigning and planning."),
 	"list_capabilities":       i18n.T("列出组织的能力标签（代码名 → 名称）。创建任务填 required_capabilities 时用。", "List the organization's capability tags (code name → title). Use it when filling required_capabilities on a task."),
+	"get_my_schedule": i18n.T("看我所有者的日程（ADR 0032）：一段日期里他负责的任务（计划起止与截止）、目标（计划起止）、里程碑到期、外部日历里的会议；只读。判断他什么时候有空、这周排了什么、给任务排计划时用。默认本周，最长 62 天。",
+		"Read my owner's schedule (ADR 0032): within a date range, the tasks they are assigned (planned dates and deadlines), goals (planned dates), milestone due dates and meetings from external calendars; read-only. Use it to see when they are free, what this week holds, or when planning task dates. Defaults to this week; at most 62 days."),
 	"get_org_context": i18n.T("组织背景一次看全：组织名与货币、可见性策略、我的范围、我是谁（团队、角色、能力标签、授权、并发上限）、团队、能力标签、目标类型、任务类型、角色。只读；规划或指派前先看它。",
 		"The organization at a glance: name and currency, visibility policy, my scope, who I am (teams, roles, capabilities, grants, concurrency limit), teams, capability tags, goal types, task types, roles. Read-only; check it before planning or assigning."),
+}
+
+type scheduleIn struct {
+	From string `json:"from,omitempty" jsonschema:"Start date YYYY-MM-DD; default is Monday of the current week"`
+	To   string `json:"to,omitempty" jsonschema:"End date YYYY-MM-DD inclusive; default is Sunday of the current week, or 6 days after a given start; at most 62 days in total"`
 }
 
 func init() {
@@ -212,6 +220,29 @@ func addBatch2Tools(s *sdk.Server, k *kit) {
 			out[name] = t.In(k.loc)
 		}
 		return jsonResult(out)
+	})
+	sdk.AddTool(s, k.tool("get_my_schedule"), func(ctx context.Context, req *sdk.CallToolRequest, in scheduleIn) (*sdk.CallToolResult, any, error) {
+		from, err := parseDate(in.From)
+		if err != nil {
+			return f(err)
+		}
+		to, err := parseDate(in.To)
+		if err != nil {
+			return f(err)
+		}
+		start, end := app.CurrentWeek(time.Now())
+		if from != nil {
+			start = *from
+			end = start.AddDate(0, 0, 6)
+		}
+		if to != nil {
+			end = *to
+		}
+		v, err := a.MyScheduleOf(ctx, sess, start, end)
+		if err != nil {
+			return f(err)
+		}
+		return jsonResult(v)
 	})
 	sdk.AddTool(s, k.tool("get_org_context"), func(ctx context.Context, req *sdk.CallToolRequest, in struct{}) (*sdk.CallToolResult, any, error) {
 		out, err := a.OrgContextOf(ctx, sess)
