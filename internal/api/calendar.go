@@ -25,7 +25,7 @@ func (s *Server) calendarRoutes(auth, pub func(string, http.HandlerFunc)) {
 	pub("GET /api/v1/me/calendars/google/callback", s.googleCallback)
 }
 
-// schedule 取日程（GET /schedule?from=&to=&who=me|<member_id>|<team_id>）。默认本周。
+// schedule 取日程（GET /schedule?from=&to=&who=me|<member_id>|<team_id>|<org_id>）。默认本周。
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	weekFrom, weekTo := app.CurrentWeek(time.Now())

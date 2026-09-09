@@ -355,7 +355,7 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
           return [
             t("settings.people.deactivateTeamEffect.tree"),
             im && im.members > 0 && (im.only_team > 0 ? t("settings.people.deleteTeamEffect.membersOrphan", { n: im.members, m: im.only_team }) : t("settings.people.deleteTeamEffect.members", { n: im.members })),
-            im && im.sub_teams > 0 && (im.new_parent ? t("settings.people.deleteTeamEffect.subteams", { n: im.sub_teams, parent: im.new_parent }) : t("settings.people.deleteTeamEffect.subteamsTop", { n: im.sub_teams })),
+            im && im.sub_teams > 0 && t("settings.people.deleteTeamEffect.subteams", { n: im.sub_teams, names: im.sub_team_names.slice(0, 3).join("、") + (im.sub_team_names.length > 3 ? "…" : "") }),
             im && im.goals > 0 && t("settings.people.deleteTeamEffect.goals", { n: im.goals }),
             im && im.sprints > 0 && t("settings.people.deleteTeamEffect.sprints", { n: im.sprints }),
             im?.is_boundary && t("settings.people.deleteTeamEffect.boundary"),

@@ -71,7 +71,7 @@ type ScheduleView struct {
 
 func isoDay(t time.Time) string { return t.Format("2006-01-02") }
 
-// ScheduleOf 取日程：who 为空或 me 是我自己；成员 ID 看那个人；团队 ID 看团队全部成员（含下级团队）。
+// ScheduleOf 取日程：who 为空或 me 是我自己；成员 ID 看那个人；团队 ID 看团队全部成员（含下级团队）；组织 ID 看我能看的整个组织。
 func (a *App) ScheduleOf(ctx context.Context, sess *Session, who string, from, to time.Time) (*ScheduleView, error) {
 	from = time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.Local)
 	to = time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, time.Local)
@@ -260,7 +260,8 @@ func kindRank(k string) int {
 }
 
 // scheduleMembers 解析 who：我 / 某个成员 / 某个团队（含下级）；并按 ADR 0013 判能不能看。
-// scheduleMembers 把 who 解析成成员列表；who 是团队时还返回这棵子树的团队 ID（归口到它们的目标也算团队的日程）。
+// scheduleMembers 把 who 解析成成员列表；who 是团队时还返回这棵子树的团队 ID（归口到它们的目标也算团队的日程）；
+// who 是组织 ID 时是我能看的整个组织：可见域里的全部团队与在职成员（能看整个组织的人就是整个组织）。
 func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who string) ([]string, []string, error) {
 	if who == sess.MemberID {
 		return []string{who}, nil, nil
@@ -273,12 +274,23 @@ func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who
 	for _, t := range teams {
 		byID[t.ID] = t
 	}
-	if _, isTeam := byID[who]; isTeam {
-		if !sess.CanSeeCollabTeam(who) {
-			return nil, nil, Forbidden("err.schedule_team_hidden")
+	_, isTeam := byID[who]
+	whole := who == sess.OrgID
+	if isTeam || whole {
+		want := map[string]bool{}
+		if whole {
+			for _, t := range teams {
+				if sess.CanSeeCollabTeam(t.ID) {
+					want[t.ID] = true
+				}
+			}
+		} else {
+			if !sess.CanSeeCollabTeam(who) {
+				return nil, nil, Forbidden("err.schedule_team_hidden")
+			}
+			want[who] = true
 		}
 		// 含下级团队
-		want := map[string]bool{who: true}
 		for changed := true; changed; {
 			changed = false
 			for _, t := range teams {
@@ -309,6 +321,11 @@ func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who
 		active := map[string]bool{}
 		for _, m := range members {
 			active[m.ID] = m.Active
+			// 能看整个组织的人看整个组织时，不属于任何团队的人也算进来
+			if whole && sess.CollabAll() && !seen[m.ID] {
+				seen[m.ID] = true
+				out = append(out, m.ID)
+			}
 		}
 		kept := out[:0]
 		for _, m := range out {

@@ -37,19 +37,22 @@ export function ScheduleView() {
   const [anchor, setAnchor] = useState<Date>(() => today());
   // 组织树上能看到的团队（带层级缩进，来自会话的范围档位）；没有档位信息时退回自己所在的团队
   const { options } = useScopeState();
+  // 顶上一档是整个组织，叫组织自己的名字（能看多少算多少，后端按可见域截），下面是团队，按层级缩进
+  const orgName = session?.organization.name ?? "";
+  const orgID = session?.organization.id ?? "";
   const tree = useMemo(() => {
     const teams = options.filter((o) => o.id !== SCOPE_ALL);
     const base = Math.min(...teams.map((o) => o.depth));
-    const fromScope = teams.map((o) => ({ id: o.id as string, name: o.title, depth: o.depth - base }));
-    if (fromScope.length > 0) return fromScope;
-    return (session?.teams ?? []).map((x) => ({ id: x.id, name: x.name, depth: 0 }));
-  }, [options, session?.teams]);
-  // 默认团队：自己直接所属的、层级最深的那个（组织树上离自己最近的节点）；不属于任何团队就取树上第一个
+    const fromScope = teams.map((o) => ({ id: o.id as string, name: o.title, depth: o.depth - base + 1 }));
+    const list = fromScope.length > 0 ? fromScope : (session?.teams ?? []).map((x) => ({ id: x.id, name: x.name, depth: 1 }));
+    return [{ id: orgID, name: orgName, depth: 0 }, ...list];
+  }, [options, session?.teams, orgID, orgName]);
+  // 默认：自己直接所属的、层级最深的团队（组织树上离自己最近的节点）；不属于任何团队就看全公司
   const defaultTeam = useMemo(() => {
     const mine = (session?.my_team_ids ?? []).filter((id) => tree.some((x) => x.id === id));
     const depthOf = (id: string) => tree.find((x) => x.id === id)?.depth ?? -1;
-    return [...mine].sort((a, b) => depthOf(b) - depthOf(a))[0] ?? tree[0]?.id ?? "";
-  }, [session?.my_team_ids, tree]);
+    return [...mine].sort((a, b) => depthOf(b) - depthOf(a))[0] ?? orgID;
+  }, [session?.my_team_ids, tree, orgID]);
   const team = teamID || defaultTeam;
   const effScale: Scale = scale;
 
@@ -90,7 +93,7 @@ export function ScheduleView() {
         <div className="sc-skeleton"><ListSkeleton rows={6} /></div>
       ) : (
         <>
-          <Legend sources={data.data.sources} members={who === "team" ? members : undefined} />
+          <Legend sources={data.data.sources} members={who === "team" ? members : undefined} whole={team === orgID ? orgName : null} />
           {/* 没有安排也照样画格子——日历本身就是信息（今天在哪、周末在哪）；空只提示一句 */}
           {items.length === 0 && <p className="sc-empty" role="status">{t(who === "team" && members.length === 0 ? "schedule.emptyTeam" : effScale === "day" ? "schedule.emptyDay" : effScale === "week" ? "schedule.emptyWeek" : "schedule.emptyMonth")}</p>}
           {effScale === "month"
@@ -204,10 +207,10 @@ function providerShort(p: string): string {
 }
 
 /** 图例：四类画法 + 接上的外部日历来源 */
-function Legend({ sources, members }: { sources: string[]; members?: Array<{ id: string; name: string }> }) {
+function Legend({ sources, members, whole }: { sources: string[]; members?: Array<{ id: string; name: string }>; whole?: string | null }) {
   return (
     <div className="sc-legend" aria-hidden="true">
-      {members && <span className="sc-legend-members">{t("schedule.teamMembers", { n: members.length })}{members.length > 0 && <span className="text-ink-tertiary">（{members.slice(0, 8).map((m) => m.name).join("、")}{members.length > 8 ? "…" : ""}）</span>}</span>}
+      {members && <span className="sc-legend-members">{whole ? t("schedule.orgMembers", { org: whole, n: members.length }) : t("schedule.teamMembers", { n: members.length })}{members.length > 0 && <span className="text-ink-tertiary">（{members.slice(0, 8).map((m) => m.name).join("、")}{members.length > 8 ? "…" : ""}）</span>}</span>}
       <span><i className="sc-swatch sc-chip-accent" />{t("schedule.legend.task")}</span>
       <span><i className="sc-swatch sc-chip-goal" />{t("schedule.legend.goal")}</span>
       <span><i className="sc-diamond" />{t("schedule.legend.milestone")}</span>

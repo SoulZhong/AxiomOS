@@ -294,15 +294,15 @@ export interface OrgTeam {
 
 /** 删除团队会波及什么（GET /org/teams/{id}/impact） */
 export interface TeamImpact {
+  /** 子树里的成员（不重复） */
   members: number;
   /** 其中从此不属于任何团队的人 */
   only_team: number;
+  /** 全部下级团队（含下级的下级），一起删除 */
   sub_teams: number;
+  sub_team_names: string[];
   goals: number;
   sprints: number;
-  new_parent_id: ID | null;
-  /** 下级上移后的新上级名；空 = 顶层 */
-  new_parent: string;
   is_boundary: boolean;
 }
 
