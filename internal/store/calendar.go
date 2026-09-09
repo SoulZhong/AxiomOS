@@ -287,14 +287,14 @@ func (s *Store) TasksInRange(ctx context.Context, q Querier, executors []string,
 	return out, rows.Err()
 }
 
-// GoalsInRange 读负责人属于这些成员、计划起止落在区间内的目标。
-func (s *Store) GoalsInRange(ctx context.Context, q Querier, owners []string, from, to time.Time) ([]*domain.Goal, error) {
-	if len(owners) == 0 {
+// GoalsInRange 读负责人属于这些成员、或归口到这些团队的、计划起止落在区间内的目标。
+func (s *Store) GoalsInRange(ctx context.Context, q Querier, owners, teams []string, from, to time.Time) ([]*domain.Goal, error) {
+	if len(owners) == 0 && len(teams) == 0 {
 		return nil, nil
 	}
-	rows, err := q.Query(ctx, `select `+goalCols+` from goals where owner_member_id = any($1)
+	rows, err := q.Query(ctx, `select `+goalCols+` from goals where (owner_member_id = any($1) or team_id = any($4))
 		and planned_start is not null and planned_end is not null and planned_end >= $2::date and planned_start < $3::date
-		order by planned_start`, owners, from, to)
+		order by planned_start`, owners, from, to, teams)
 	if err != nil {
 		return nil, err
 	}
@@ -310,13 +310,13 @@ func (s *Store) GoalsInRange(ctx context.Context, q Querier, owners []string, fr
 	return out, rows.Err()
 }
 
-// MilestonesInRange 读这些成员负责的目标下、到期日落在区间内的里程碑。
-func (s *Store) MilestonesInRange(ctx context.Context, q Querier, owners []string, from, to time.Time) ([]*domain.Milestone, error) {
-	if len(owners) == 0 {
+// MilestonesInRange 读这些成员负责的、或归口到这些团队的目标下，到期日落在区间内的里程碑。
+func (s *Store) MilestonesInRange(ctx context.Context, q Querier, owners, teams []string, from, to time.Time) ([]*domain.Milestone, error) {
+	if len(owners) == 0 && len(teams) == 0 {
 		return nil, nil
 	}
-	rows, err := q.Query(ctx, `select `+milestoneCols+` from milestones m where m.goal_id in (select id from goals where owner_member_id = any($1))
-		and m.due_on >= $2::date and m.due_on < $3::date order by m.due_on`, owners, from, to)
+	rows, err := q.Query(ctx, `select `+milestoneCols+` from milestones m where m.goal_id in (select id from goals where owner_member_id = any($1) or team_id = any($4))
+		and m.due_on >= $2::date and m.due_on < $3::date order by m.due_on`, owners, from, to, teams)
 	if err != nil {
 		return nil, err
 	}

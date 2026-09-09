@@ -41,6 +41,7 @@ func (s *Server) orgRoutes(mux *http.ServeMux, auth func(string, http.HandlerFun
 	auth("POST /api/v1/org/teams", s.orgTeamCreate)
 	auth("PATCH /api/v1/org/teams/{id}", s.orgTeamPatch)
 	auth("DELETE /api/v1/org/teams/{id}", s.orgTeamDelete)
+	auth("GET /api/v1/org/teams/{id}/impact", s.orgTeamImpact)
 	auth("POST /api/v1/org/teams/{id}/merge", s.orgTeamMerge)
 	auth("GET /api/v1/org/capabilities", s.orgCapabilities)
 	auth("PUT /api/v1/org/capabilities/{name}", s.orgCapabilityPut)
@@ -520,6 +521,11 @@ func (s *Server) orgTeamMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, teamView(*t, sessionOf(r).Loc()))
+}
+
+func (s *Server) orgTeamImpact(w http.ResponseWriter, r *http.Request) {
+	v, err := s.App.TeamDeleteImpact(r.Context(), sessionOf(r), r.PathValue("id"))
+	respond(w, r, v, err)
 }
 
 func (s *Server) orgTeamDelete(w http.ResponseWriter, r *http.Request) {

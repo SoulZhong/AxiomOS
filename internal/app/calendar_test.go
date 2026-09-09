@@ -204,6 +204,8 @@ func TestScheduledCalendarSyncs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// 测试库里留着以前跑出来的组织，它们的假日历也会到点；先把这些跑掉，再连本组织的，计数才只算这一个
+	a.RunScheduledCalendarSyncs(ctx, time.Now())
 	if _, err := a.SaveCalendar(ctx, jia, CalendarInput{Provider: directory.FakeCalendarKey, Credentials: map[string]string{"token": "good-token"}}); err != nil {
 		t.Fatal(err)
 	}

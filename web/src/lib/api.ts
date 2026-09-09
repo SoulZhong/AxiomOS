@@ -292,6 +292,20 @@ export interface OrgTeam {
   subtree_member_count?: number;
 }
 
+/** 删除团队会波及什么（GET /org/teams/{id}/impact） */
+export interface TeamImpact {
+  members: number;
+  /** 其中从此不属于任何团队的人 */
+  only_team: number;
+  sub_teams: number;
+  goals: number;
+  sprints: number;
+  new_parent_id: ID | null;
+  /** 下级上移后的新上级名；空 = 顶层 */
+  new_parent: string;
+  is_boundary: boolean;
+}
+
 // ---------- 外部目录同步（ADR 0017） ----------
 
 /** 提供方代码名：来自 GET /org/directory/providers，前端不枚举 */
@@ -574,6 +588,8 @@ export interface ScheduleItem {
   id: ID;
   title: string;
   member_id: ID;
+  /** 那个人的名字（团队视图里目标可能归口到团队而负责人不在名单里） */
+  member_name?: string;
   /** 跨天的一段（含首尾） */
   start_date?: ISODate;
   end_date?: ISODate;
@@ -2521,6 +2537,8 @@ export const api = {
     updateTeam: (id: ID, patch: { name?: string; parent_id?: ID | null; lead_id?: ID | null; member_ids?: ID[]; is_boundary?: boolean; active?: boolean }) =>
       request<OrgTeam>("PATCH", `/org/teams/${encodeURIComponent(id)}`, patch),
     deleteTeam: (id: ID) => request<void>("DELETE", `/org/teams/${encodeURIComponent(id)}`),
+    /** 删除前看影响范围：成员离开、下级上移到哪、归口的目标与迭代 */
+    teamImpact: (id: ID) => request<TeamImpact>("GET", `/org/teams/${encodeURIComponent(id)}/impact`),
     /** 把团队 id 并入 into：旧团队的成员、目标、任务、迭代整体并入，旧团队停用不删除 */
     mergeTeam: (id: ID, into: ID) => request<OrgTeam>("POST", `/org/teams/${encodeURIComponent(id)}/merge`, { into }),
     /**

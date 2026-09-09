@@ -23,6 +23,8 @@ type ScheduleItem struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
 	MemberID string `json:"member_id"` // 这是谁的日程
+	// MemberName 是那个人的名字：团队视图里目标可能归口到团队而负责人不在团队里，名字不能只靠成员名单查
+	MemberName string `json:"member_name"`
 	// 跨天的一段：起止日期（含）；单日的一枚：Date
 	StartDate string `json:"start_date,omitempty"`
 	EndDate   string `json:"end_date,omitempty"`
@@ -91,7 +93,7 @@ func (a *App) ScheduleOf(ctx context.Context, sess *Session, who string, from, t
 		if err != nil {
 			return err
 		}
-		members, err := a.scheduleMembers(ctx, tx, sess, who)
+		members, teams, err := a.scheduleMembers(ctx, tx, sess, who)
 		if err != nil {
 			return err
 		}
@@ -152,8 +154,8 @@ func (a *App) ScheduleOf(ctx context.Context, sess *Session, who string, from, t
 			}
 			v.Items = append(v.Items, it)
 		}
-		// 目标（负责人是这些人的）
-		goals, err := a.Store.GoalsInRange(ctx, tx, members, from, toExcl)
+		// 目标：负责人是这些人的；看团队时再加上归口到这个团队（含下级）的
+		goals, err := a.Store.GoalsInRange(ctx, tx, members, teams, from, toExcl)
 		if err != nil {
 			return err
 		}
@@ -165,7 +167,7 @@ func (a *App) ScheduleOf(ctx context.Context, sess *Session, who string, from, t
 				StartDate: isoDay(*g.PlannedStart), EndDate: isoDay(*g.PlannedEnd)})
 		}
 		// 里程碑
-		ms, err := a.Store.MilestonesInRange(ctx, tx, members, from, toExcl)
+		ms, err := a.Store.MilestonesInRange(ctx, tx, members, teams, from, toExcl)
 		if err != nil {
 			return err
 		}
@@ -195,6 +197,11 @@ func (a *App) ScheduleOf(ctx context.Context, sess *Session, who string, from, t
 		if err != nil {
 			return err
 		}
+		defer func() {
+			for i := range v.Items {
+				v.Items[i].MemberName = names[v.Items[i].MemberID]
+			}
+		}()
 		seenSrc := map[string]bool{}
 		for _, e := range events {
 			it := ScheduleItem{Kind: "event", ID: e.ID, Title: e.Title, MemberID: e.MemberID, Provider: e.Provider, URL: e.URL, Busy: e.Busy, AllDay: e.AllDay}
@@ -253,13 +260,14 @@ func kindRank(k string) int {
 }
 
 // scheduleMembers 解析 who：我 / 某个成员 / 某个团队（含下级）；并按 ADR 0013 判能不能看。
-func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who string) ([]string, error) {
+// scheduleMembers 把 who 解析成成员列表；who 是团队时还返回这棵子树的团队 ID（归口到它们的目标也算团队的日程）。
+func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who string) ([]string, []string, error) {
 	if who == sess.MemberID {
-		return []string{who}, nil
+		return []string{who}, nil, nil
 	}
 	teams, err := a.Store.ListTeams(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	byID := map[string]*domain.Team{}
 	for _, t := range teams {
@@ -267,7 +275,7 @@ func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who
 	}
 	if _, isTeam := byID[who]; isTeam {
 		if !sess.CanSeeCollabTeam(who) {
-			return nil, Forbidden("err.schedule_team_hidden")
+			return nil, nil, Forbidden("err.schedule_team_hidden")
 		}
 		// 含下级团队
 		want := map[string]bool{who: true}
@@ -282,7 +290,7 @@ func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who
 		}
 		tm, err := a.Store.TeamMembers(ctx, tx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		seen := map[string]bool{}
 		var out []string
@@ -296,7 +304,7 @@ func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who
 		}
 		members, err := a.Store.ListMembers(ctx, tx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		active := map[string]bool{}
 		for _, m := range members {
@@ -309,16 +317,21 @@ func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who
 			}
 		}
 		sort.Strings(kept)
-		return kept, nil
+		subtree := make([]string, 0, len(want))
+		for tid := range want {
+			subtree = append(subtree, tid)
+		}
+		sort.Strings(subtree)
+		return kept, subtree, nil
 	}
 	// 某个成员：他在我能看的团队里，或我能看全公司
 	if _, err := a.Store.MemberByID(ctx, tx, who); err != nil {
-		return nil, NotFound("err.member_missing")
+		return nil, nil, NotFound("err.member_missing")
 	}
 	if !sess.CollabAll() {
 		theirs, err := a.Store.TeamsOfMember(ctx, tx, who)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ok := false
 		for _, t := range theirs {
@@ -327,10 +340,10 @@ func (a *App) scheduleMembers(ctx context.Context, tx pgx.Tx, sess *Session, who
 			}
 		}
 		if !ok {
-			return nil, Forbidden("err.schedule_member_hidden")
+			return nil, nil, Forbidden("err.schedule_member_hidden")
 		}
 	}
-	return []string{who}, nil
+	return []string{who}, nil, nil
 }
 
 // MyScheduleOf 给 Agent：它所有者的日程（只读）。

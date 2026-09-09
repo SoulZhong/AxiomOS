@@ -3484,12 +3484,18 @@ on("PATCH", "/org/teams/:id", (m, body) => {
   }
   return viewOrgTeam(tm);
 });
+const teamImpactOf = (tm: (typeof TEAMS)[number]) => {
+  const elsewhere = new Set(TEAMS.filter((x) => x.id !== tm.id).flatMap((x) => x.member_ids));
+  const parent = TEAMS.find((x) => x.id === tm.parent_id);
+  return { members: tm.member_ids.length, only_team: tm.member_ids.filter((id) => !elsewhere.has(id)).length, sub_teams: TEAMS.filter((x) => x.parent_id === tm.id).length, goals: 0, sprints: 0, new_parent_id: tm.parent_id ?? null, new_parent: parent?.name ?? "", is_boundary: !!tm.is_boundary };
+};
+on("GET", "/org/teams/:id/impact", (m) => { requireOrgAdmin(); return teamImpactOf(getTeam(m.groups!.id)); });
 on("DELETE", "/org/teams/:id", (m) => {
   requireOrgAdmin();
   const tm = getTeam(m.groups!.id);
-  // 只能删空的手工团队（有人或有下级要先挪走；同步团队只能停用）
+  // 手工团队有人有下级也能删（成员离开、下级上移）；同步团队只能停用
   if (isSyncedRow(tm)) throw new ApiError(409, t("mock.people.syncedTeamDelete", { name: sourceTitle(tm.source) }));
-  if (tm.member_ids.length > 0 || TEAMS.some((x) => x.parent_id === tm.id)) throw new ApiError(409, t("mock.people.teamNotEmpty"));
+  for (const x of TEAMS) if (x.parent_id === tm.id) x.parent_id = tm.parent_id ?? null;
   TEAMS.splice(TEAMS.indexOf(tm), 1);
   return undefined;
 });

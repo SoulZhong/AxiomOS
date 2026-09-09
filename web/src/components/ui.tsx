@@ -84,10 +84,43 @@ export function Button({ variant = "default", size = "md", icon, className, chil
 }
 
 /** 纯 CSS 提示气泡（surface-3 底 + 强细线，12px，最大宽 280px）；tip 为空时不显示。禁用按钮的原因就放这里。 */
+/**
+ * 气泡挂在 body 上（fixed 定位），滚动容器的 overflow 裁不到它；进入延迟与缩放淡入在 .tip-pop 的动画里。
+ * 原生 <dialog> 在顶层，body 上的东西盖不过它，所以对话框里退回 CSS 的 ::after 气泡（同一套样式）。
+ * 侧栏的 .sb-tip 只在收起态显示：CSS 用 --tip-hidden 说话，这里照它的意思办。
+ */
 export function Tip({ tip, children, className, placement = "top" }: { tip?: string | null; children: ReactNode; className?: string; placement?: "top" | "bottom" | "right" }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState<{ x: number; y: number; instant: boolean } | null>(null);
+  // 对话框里的退回 CSS 气泡：把文案写到 data-tip 上（DOM 属性，不走 state）
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (tip && el.closest("dialog")) el.dataset.tip = tip;
+    else delete el.dataset.tip;
+  }, [tip]);
+  const show = (instant: boolean) => {
+    const el = ref.current;
+    if (!el || !tip || el.closest("dialog")) return;
+    if (getComputedStyle(el).getPropertyValue("--tip-hidden").trim() === "1") return;
+    const r = el.getBoundingClientRect();
+    setPos(placement === "bottom" ? { x: r.left + r.width / 2, y: r.bottom + 6, instant } : placement === "right" ? { x: r.right + 10, y: r.top + r.height / 2, instant } : { x: r.left + r.width / 2, y: r.top - 6, instant });
+  };
+  const hide = () => setPos(null);
   return (
-    <span className={cx("tip", placement === "bottom" && "tip-bottom", placement === "right" && "tip-right", className)} data-tip={tip || undefined}>
+    <span
+      ref={ref}
+      className={cx("tip", placement === "bottom" && "tip-bottom", placement === "right" && "tip-right", className)}
+      onMouseEnter={() => show(false)}
+      onMouseLeave={hide}
+      onFocus={() => show(keyboardIntent())}
+      onBlur={hide}
+    >
       {children}
+      {pos && tip && typeof document !== "undefined" && createPortal(
+        <span role="tooltip" className={cx("tip-pop", placement === "bottom" && "tip-pop-bottom", placement === "right" && "tip-pop-right")} data-instant={pos.instant || undefined} style={{ left: pos.x, top: pos.y }}>{tip}</span>,
+        document.body,
+      )}
     </span>
   );
 }
@@ -523,8 +556,13 @@ export function ConfirmDialog({ open, title, message, confirmLabel, danger, busy
  * 用一句话一条地写清会发生什么，能数的就带数字（「名下 3 个未结束任务需要重新指派」）。
  * effects 里的 null 会被跳过（没有影响的那条不用写）；counting 为真时先显示「正在统计影响范围…」再列出。
  */
-export function ConsequenceDialog({ open, title, subject, effects, note, counting, confirmLabel, danger = true, busy, onConfirm, onClose }: { open: boolean; title: ReactNode; /** 对象那一行（可选，标题里已经带名字时不用） */ subject?: ReactNode; effects: Array<ReactNode | null | undefined | false>; /** 末尾一句补充（如「随时可以恢复」） */ note?: ReactNode; counting?: boolean; confirmLabel?: string; danger?: boolean; busy?: boolean; onConfirm: () => void; onClose: () => void }) {
+export function ConsequenceDialog({ open, title, subject, effects, note, counting, confirmLabel, danger = true, busy, challenge, onConfirm, onClose }: { open: boolean; title: ReactNode; /** 对象那一行（可选，标题里已经带名字时不用） */ subject?: ReactNode; effects: Array<ReactNode | null | undefined | false>; /** 末尾一句补充（如「随时可以恢复」） */ note?: ReactNode; counting?: boolean; confirmLabel?: string; danger?: boolean; busy?: boolean; /** 二次确认：照着输入 expected（如团队名）才能按确认 */ challenge?: { label: ReactNode; expected: string } | null; onConfirm: () => void; onClose: () => void }) {
   const list = effects.filter((e): e is ReactNode => !!e);
+  // 输入框的内容跟着「这次打开」走：关掉再开就清空（按 open 变化在渲染期重置，不用 effect）
+  const [typed, setTyped] = useState("");
+  const [seenOpen, setSeenOpen] = useState(open);
+  if (open !== seenOpen) { setSeenOpen(open); setTyped(""); }
+  const blocked = !!challenge && typed.trim() !== challenge.expected;
   return (
     <Dialog
       open={open}
@@ -534,7 +572,7 @@ export function ConsequenceDialog({ open, title, subject, effects, note, countin
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
-          <Button variant={danger ? "danger" : "primary"} disabled={busy || counting} onClick={onConfirm} autoFocus>
+          <Button variant={danger ? "danger" : "primary"} disabled={busy || counting || blocked} onClick={onConfirm} autoFocus={!challenge}>
             {confirmLabel ?? t("common.confirm")}
           </Button>
         </>
@@ -557,6 +595,11 @@ export function ConsequenceDialog({ open, title, subject, effects, note, countin
         )}
       </div>
       {note && <p className="text-caption text-ink-subtle">{note}</p>}
+      {challenge && !counting && (
+        <Field label={challenge.label}>
+          <Input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus autoComplete="off" spellCheck={false} onKeyDown={(e) => { if (e.key === "Enter" && !blocked && !busy) { e.preventDefault(); onConfirm(); } }} />
+        </Field>
+      )}
     </Dialog>
   );
 }

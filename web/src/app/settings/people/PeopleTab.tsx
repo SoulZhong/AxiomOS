@@ -65,6 +65,12 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
     return { openTasks, goals: walk(goals), agents: agents.filter((a) => a.owner.id === deactivatingId).length };
   }, [deactivatingId]);
 
+  // 删除团队前算影响范围（成员离开、下级上移、归口的目标与迭代）；只在对话框打开时取
+  // 结果带着团队 id 回来：换一个团队再打开时，上一个团队的数字对不上号就不用（useLoad 在请求中会留着旧值）
+  const deletingTeamId = deletingTeam?.id ?? null;
+  const impactLoad = useLoad(async () => (deletingTeamId ? { id: deletingTeamId, impact: await api.org.teamImpact(deletingTeamId) } : null), [deletingTeamId]);
+  const teamImpact = { data: impactLoad.data?.id === deletingTeamId ? impactLoad.data.impact : null, error: impactLoad.error };
+
   const allMembers = useMemo<PersonRow[]>(() => members.data ?? [], [members.data]);
   const allTeams = useMemo(() => teams.data ?? [], [teams.data]);
   const roleList = roles.data ?? [];
@@ -341,7 +347,23 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
       <ConsequenceDialog
         open={!!deletingTeam}
         title={deletingTeam ? t("settings.people.deleteTeamTitle", { name: deletingTeam.name }) : ""}
-        effects={[t("settings.people.deactivateTeamEffect.tree"), t("settings.people.deleteTeamEffect.gone")]}
+        counting={!!deletingTeam && !teamImpact.data && !teamImpact.error}
+        effects={(() => {
+          const im = teamImpact.data;
+          if (!deletingTeam) return [];
+          const occupied = !!im && (im.members > 0 || im.sub_teams > 0);
+          return [
+            t("settings.people.deactivateTeamEffect.tree"),
+            im && im.members > 0 && (im.only_team > 0 ? t("settings.people.deleteTeamEffect.membersOrphan", { n: im.members, m: im.only_team }) : t("settings.people.deleteTeamEffect.members", { n: im.members })),
+            im && im.sub_teams > 0 && (im.new_parent ? t("settings.people.deleteTeamEffect.subteams", { n: im.sub_teams, parent: im.new_parent }) : t("settings.people.deleteTeamEffect.subteamsTop", { n: im.sub_teams })),
+            im && im.goals > 0 && t("settings.people.deleteTeamEffect.goals", { n: im.goals }),
+            im && im.sprints > 0 && t("settings.people.deleteTeamEffect.sprints", { n: im.sprints }),
+            im?.is_boundary && t("settings.people.deleteTeamEffect.boundary"),
+            teamImpact.error && t("settings.people.deleteTeamEffect.unknown"),
+            occupied ? t("settings.people.deleteTeamEffect.gone") : t("settings.people.deleteTeamEffect.goneEmpty"),
+          ];
+        })()}
+        challenge={deletingTeam && (!teamImpact.data || teamImpact.data.members > 0 || teamImpact.data.sub_teams > 0) ? { label: t(teamImpact.data ? "settings.people.deleteTeamChallenge" : "settings.people.deleteTeamChallengeUnknown", { name: deletingTeam.name }), expected: deletingTeam.name } : null}
         confirmLabel={t("settings.people.deleteTeam")}
         danger
         busy={busy}
