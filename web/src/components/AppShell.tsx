@@ -160,6 +160,7 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
   // 签名图标（提案 §二）：目标 = 靴中的芽，任务 = 方块，Agent = 视窗；我的工作 / 概览 / 设置沿用通用图标
   const nav: Array<{ href: string; label: string; icon: ReactNode; badge?: number; match?: (p: string) => boolean }> = [
     { href: "/", label: t("nav.home"), icon: <IconHome />, badge: inbox },
+    { href: "/schedule", label: t("nav.schedule"), icon: <IconCalendar /> },
     { href: "/overview", label: t("nav.overview"), icon: <IconOverview /> },
     { href: "/goals", label: t("nav.goals"), icon: <IconGoal /> },
     // 迭代详情（/sprints/[id]）仍属于「任务」入口
@@ -172,7 +173,6 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
   const sub = (base: string, label: string, tabs: Array<[string, string, ReactNode]>) => tabs.map(([q, tl, icon]) => ({ href: `${base}${q}`, label: `${label} · ${tl}`, icon }));
   const palettePages = [
     ...nav.map((n) => ({ href: n.href === "/" ? "/" : `${n.href}/`, label: n.label, icon: n.icon })),
-    ...sub("/?tab=", t("nav.home"), [["schedule", t("schedule.title"), <IconCalendar key="cal" />]]),
     ...sub("/tasks/?view=", t("nav.tasks"), [["board", t("tasks.view.board"), <IconBoard key="b" />], ["gantt", t("tasks.view.gantt"), <IconGanttFlight key="g" />], ["sprints", t("tasks.view.sprints"), <IconSprint key="s" />], ["backlog", t("tasks.view.backlog"), <IconBacklog key="k" />]]),
     ...sub("/overview/?tab=", t("nav.overview"), [["cost", t("overview.tab.cost"), <IconChart key="c" />], ["efficiency", t("overview.tab.efficiency"), <IconChart key="e" />], ["agents", t("overview.tab.agents"), <IconAgent key="a" />]]),
     { href: "/proposals/", label: `${t("proposals.title")} · ${t("proposals.history")}`, icon: <IconApprove key="p" /> },

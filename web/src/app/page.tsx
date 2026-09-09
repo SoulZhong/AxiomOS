@@ -1,14 +1,14 @@
 "use client";
-import { useCallback, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type BlockKey, type LayoutBlock, type Workspace } from "@/lib/api";
+import { useRouter } from "next/navigation";
 import { errorMessage, setQueryParams, useLoad, useQueryParam } from "@/lib/hooks";
 import { t, useLocale } from "@/lib/i18n";
 import { useSession } from "@/components/AppShell";
 import { WorkspaceGrid } from "@/components/blocks/WorkspaceGrid";
-import { ScheduleView } from "@/components/schedule/ScheduleView";
 import { IconEdit } from "@/components/icons";
 import { useToast } from "@/components/toast";
-import { Button, Empty, ErrorBox, ListSkeleton, PageHeader, Panel, Tabs } from "@/components/ui";
+import { Button, Empty, ErrorBox, ListSkeleton, PageHeader, Panel } from "@/components/ui";
 
 /*
  * 我的工作 = 工作台（DESIGN.md §12 / §13，ADR 0015 补记二、补记四）：
@@ -20,15 +20,12 @@ import { Button, Empty, ErrorBox, ListSkeleton, PageHeader, Panel, Tabs } from "
  * 头部右侧出现 ×，网格下方「添加区块」。
  * 保存前所有改动只在本地（draft）；保存 = PUT /workspace/me，成功后按服务端返回的画并提示，失败保留编辑态并把后端的句子放进 Toast。
  */
-/** 「我的工作」的两个页签：工作台（默认）与日程（ADR 0032）。?tab=schedule 记在地址栏，不记本地。 */
-const HOME_TABS = ["workspace", "schedule"] as const;
-type HomeTab = (typeof HOME_TABS)[number];
-
 export default function HomePage() {
   const { session } = useSession();
+  const router = useRouter();
+  // 「日程」曾是这一页的页签（?tab=schedule），现在是侧栏的独立入口「我的日程」（ADR 0032 补记）：旧地址直接送过去
   const qTab = useQueryParam("tab");
-  const tab: HomeTab = qTab === "schedule" ? "schedule" : "workspace";
-  const switchTab = useCallback((k: HomeTab) => setQueryParams({ tab: k === "workspace" ? null : k }), []);
+  useEffect(() => { if (qTab === "schedule") router.replace("/schedule/"); }, [qTab, router]);
   const { locale } = useLocale();
   const toast = useToast();
   const ws = useLoad(() => api.workspace.get(), []);
@@ -111,20 +108,15 @@ export default function HomePage() {
     <div>
       <PageHeader
         title={session ? t("home.greeting", { name: session.member.name }) : t("home.title")}
-        description={tab === "schedule" ? t("schedule.description") : editing ? sourceText : t("home.description")}
+        description={editing ? sourceText : t("home.description")}
         actions={
-          tab === "workspace" && workspace?.can_customize !== false && !editing ? (
+          workspace?.can_customize !== false && !editing ? (
             <Button size="sm" variant="ghost" icon={<IconEdit />} onClick={beginEdit} disabled={!workspace}>
               {t("workspace.edit")}
             </Button>
           ) : undefined
         }
       />
-      {!editing && (
-        <Tabs value={tab} label={t("home.tabs")} items={HOME_TABS.map((k) => ({ key: k, label: t(`home.tab.${k}`) }))} onChange={switchTab} className="mb-4" />
-      )}
-      {tab === "schedule" ? <ScheduleView /> : (
-      <>
 
       {editing && (
         <div className="ws-editbar mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-hairline bg-surface-1 px-3 py-2 shadow-panel" role="toolbar" aria-label={t("workspace.editing")}>
@@ -175,8 +167,6 @@ export default function HomePage() {
         </Panel>
       ) : (
         <WorkspaceGrid blocks={workspace.blocks} catalog={catalog.data} titles={titles} />
-      )}
-      </>
       )}
     </div>
   );

@@ -66,7 +66,7 @@ const getServerPending = () => null;
 /** 每个前缀能接的第二个键（提示与快捷键表共用） */
 export const CHORDS: Record<Prefix, Array<[string, () => string]>> = {
   t: [["c", () => t("shortcuts.newTask")]],
-  g: [["t", () => t("shortcuts.goTasks")], ["g", () => t("shortcuts.goGoals")], ["c", () => t("shortcuts.newGoal")]],
+  g: [["t", () => t("shortcuts.goTasks")], ["g", () => t("shortcuts.goGoals")], ["s", () => t("shortcuts.goSchedule")], ["c", () => t("shortcuts.newGoal")]],
   v: [["l", () => t("tasks.view.list")], ["b", () => t("tasks.view.board")], ["g", () => t("tasks.view.gantt")], ["s", () => t("tasks.view.sprints")], ["k", () => t("tasks.view.backlog")]],
   n: [["o", () => t("shortcuts.goInbox")]],
 };
@@ -89,6 +89,7 @@ export function useGlobalShortcuts({ onHelp, onPalette, onSidebar }: { onHelp: (
       if (prefix === "t" && key === "c") { call("new-task", () => go("/tasks/?new=1")); return true; }
       if (prefix === "g" && key === "t") { go("/tasks/"); return true; }
       if (prefix === "g" && key === "g") { go("/goals/"); return true; }
+      if (prefix === "g" && key === "s") { go("/schedule/"); return true; }
       if (prefix === "g" && key === "c") { call("new-goal", () => go("/goals/?new=1")); return true; }
       if (prefix === "n" && key === "o") { go("/"); return true; }
       if (prefix === "v" && VIEW_OF[key]) { const v = VIEW_OF[key]; call("view", () => go(`/tasks/?view=${v}`), v); return true; }
@@ -191,6 +192,7 @@ export function ShortcutHelp({ open, onClose }: { open: boolean; onClose: () => 
     [t("shortcuts.group.go"), [
       [["g", "t"], t("shortcuts.goTasks")],
       [["g", "g"], t("shortcuts.goGoals")],
+      [["g", "s"], t("shortcuts.goSchedule")],
       [["n", "o"], t("shortcuts.goInbox")],
     ]],
     [t("shortcuts.group.create"), [

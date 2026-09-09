@@ -58,6 +58,7 @@ const zh = {
 
   // 导航
   "nav.home": "我的工作",
+  "nav.schedule": "我的日程",
   "nav.goals": "目标",
   "nav.tasks": "任务",
   "nav.agents": "Agent",
@@ -74,11 +75,8 @@ const zh = {
   "home.title": "我的工作",
   "home.greeting": "{name}，你好",
   "home.description": "按你的角色配置的工作台；等你处理的事默认在最上面，位置和大小都可以自己调。",
-  "home.tabs": "我的工作",
-  "home.tab.workspace": "工作台",
-  "home.tab.schedule": "日程",
   // 日程（ADR 0032）
-  "schedule.title": "日程",
+  "schedule.title": "我的日程",
   "schedule.description": "占据你时间的安排放在一起看：任务的计划与截止、目标的计划、里程碑、外部日历里的会议。这里不能改日期，去任务页、路线图或你的日历软件改。",
   "schedule.prev": "上一段",
   "schedule.next": "下一段",
@@ -810,6 +808,7 @@ const zh = {
   "shortcuts.search": "聚焦搜索",
   "shortcuts.goTasks": "去任务",
   "shortcuts.goGoals": "去目标",
+  "shortcuts.goSchedule": "去我的日程",
   "shortcuts.newTask": "新建任务",
   "shortcuts.help": "打开这个说明",
   "shortcuts.then": "然后",
@@ -2875,6 +2874,7 @@ const en: Record<Key, string> = {
   "api.notFound": "No such endpoint in sample data: {method} {path}",
 
   "nav.home": "My work",
+  "nav.schedule": "My schedule",
   "nav.goals": "Goals",
   "nav.tasks": "Tasks",
   "nav.agents": "Agents",
@@ -2889,11 +2889,8 @@ const en: Record<Key, string> = {
   "home.title": "My work",
   "home.greeting": "Hello, {name}",
   "home.description": "Your workspace, laid out for your roles; what is waiting on you sits on top by default, and every block can be moved and resized.",
-  "home.tabs": "My work",
-  "home.tab.workspace": "Workspace",
-  "home.tab.schedule": "Schedule",
   // Schedule (ADR 0032)
-  "schedule.title": "Schedule",
+  "schedule.title": "My schedule",
   "schedule.description": "Everything that takes your time in one place: task plans and deadlines, goal plans, milestones, meetings from external calendars. Dates are changed on the task page, the roadmap or your calendar app, not here.",
   "schedule.prev": "Previous",
   "schedule.next": "Next",
@@ -3608,6 +3605,7 @@ const en: Record<Key, string> = {
   "shortcuts.search": "Focus search",
   "shortcuts.goTasks": "Go to tasks",
   "shortcuts.goGoals": "Go to goals",
+  "shortcuts.goSchedule": "Go to my schedule",
   "shortcuts.newTask": "New task",
   "shortcuts.help": "Show this help",
   "shortcuts.then": "then",
