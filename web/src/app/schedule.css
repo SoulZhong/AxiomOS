@@ -370,3 +370,59 @@
   .sc-team { grid-template-columns: 96px repeat(var(--cols), minmax(0, 1fr)); }
   .sc-src, .sc-time { display: none; }
 }
+
+/* ---------- 团队 · 月：负载格 ---------- */
+.sc-team-month {
+  grid-template-columns: 140px repeat(var(--cols), minmax(18px, 1fr));
+}
+.sc-head-tiny {
+  padding: 6px 0 4px;
+}
+.sc-head-tiny .sc-dn {
+  font-size: 11px;
+  font-weight: 500;
+}
+.sc-head-tiny.sc-today .sc-dn {
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+}
+.sc-load {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--c-hairline);
+  border-bottom: 1px solid var(--c-hairline);
+  background: transparent;
+  cursor: pointer;
+}
+.sc-load.sc-weekend {
+  background: var(--c-surface-2);
+}
+.sc-load.sc-today {
+  background: color-mix(in srgb, var(--c-accent) 4%, transparent);
+}
+.sc-load:hover {
+  background: var(--c-surface-3);
+}
+.sc-load-heavy {
+  background: var(--c-warning-bg);
+}
+.sc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--c-neutral);
+}
+.sc-dot-task { background: var(--c-accent); }
+.sc-dot-milestone { background: var(--c-ink-muted); transform: rotate(45deg); border-radius: 1px; }
+.sc-dot-event { background: var(--c-ink-tertiary); }
+.sc-load-n {
+  font-family: var(--font-jetbrains), "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--c-ink);
+}
