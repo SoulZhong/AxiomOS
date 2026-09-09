@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,12 @@ func init() {
 			i18n.T("在「应用能力」里启用机器人", "Enable the bot capability under “App capabilities”"),
 		},
 		NewMessenger: func(creds map[string]string, opts Options) (Messenger, error) { return NewFeishu(creds, opts) },
+		// 外部日历（ADR 0032）：同一个应用，要开通日历只读权限；按成员的飞书身份读它的主日历。
+		CalendarPrerequisites: []i18n.Text{
+			i18n.T("为应用开通日历只读权限（读取日历、读取日程），并发布版本", "Grant the app read-only calendar permissions (read calendars and events) and release a version"),
+			i18n.T("成员要先通过 IM 集成同步进来，日程按他的飞书身份拉取", "Members must be synced through the IM integration first; events are pulled by their Feishu identity"),
+		},
+		NewCalendar: func(creds map[string]string, opts Options) (Calendar, error) { return NewFeishu(creds, opts) },
 	})
 }
 
@@ -714,4 +721,95 @@ func (f *Feishu) DiagnoseMessaging(ctx context.Context) Check {
 		c.Detail = rawText("飞书认可了发消息的权限（试发给一个不存在的人时它说：%s）。", "Feishu recognised the messaging permission (sending to a non-existent user, it said: %s).", msg)
 	}
 	return c
+}
+
+// ---------- 外部日历（ADR 0032） ----------
+//
+//	POST /open-apis/calendar/v4/calendars/primary?user_id_type=open_id  {user_ids:[…]}  → data.calendars[{calendar{calendar_id}, user_id}]
+//	GET  /open-apis/calendar/v4/calendars/{id}/events/instance_view?start_time=&end_time=&user_id_type=open_id → data.items[{event_id, summary, start_time{timestamp|date}, end_time, free_busy_status, app_link}]
+
+type feishuPrimary struct {
+	Calendars []struct {
+		Calendar struct {
+			CalendarID string `json:"calendar_id"`
+		} `json:"calendar"`
+		UserID string `json:"user_id"`
+	} `json:"calendars"`
+}
+
+type feishuInstances struct {
+	Items []struct {
+		EventID   string `json:"event_id"`
+		Summary   string `json:"summary"`
+		StartTime struct {
+			Timestamp string `json:"timestamp"`
+			Date      string `json:"date"`
+		} `json:"start_time"`
+		EndTime struct {
+			Timestamp string `json:"timestamp"`
+			Date      string `json:"date"`
+		} `json:"end_time"`
+		FreeBusy string `json:"free_busy_status"`
+		AppLink  string `json:"app_link"`
+	} `json:"items"`
+}
+
+// Events 读某个成员主日历在区间里的日程视图（循环日程已展开）。
+func (f *Feishu) Events(ctx context.Context, externalUserID string, from, to time.Time) ([]CalendarEvent, error) {
+	env, err := f.do(ctx, http.MethodPost, "/open-apis/calendar/v4/calendars/primary", url.Values{"user_id_type": {"open_id"}}, map[string]any{"user_ids": []string{externalUserID}}, true)
+	if err != nil {
+		return nil, err
+	}
+	var pr feishuPrimary
+	_ = json.Unmarshal(env.Data, &pr)
+	if len(pr.Calendars) == 0 || pr.Calendars[0].Calendar.CalendarID == "" {
+		return nil, &RejectedError{Code: 404, Msg: "primary calendar not found for " + externalUserID}
+	}
+	calID := pr.Calendars[0].Calendar.CalendarID
+	q := url.Values{"start_time": {strconv.FormatInt(from.Unix(), 10)}, "end_time": {strconv.FormatInt(to.Unix(), 10)}, "user_id_type": {"open_id"}}
+	env, err = f.do(ctx, http.MethodGet, "/open-apis/calendar/v4/calendars/"+url.PathEscape(calID)+"/events/instance_view", q, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	var inst feishuInstances
+	_ = json.Unmarshal(env.Data, &inst)
+	out := make([]CalendarEvent, 0, len(inst.Items))
+	for _, it := range inst.Items {
+		ev := CalendarEvent{ExternalID: it.EventID, Title: it.Summary, Busy: it.FreeBusy != "free", URL: it.AppLink}
+		if it.StartTime.Date != "" {
+			ev.AllDay = true
+			ev.Start, _ = time.ParseInLocation("2006-01-02", it.StartTime.Date, time.Local)
+			ev.End, _ = time.ParseInLocation("2006-01-02", it.EndTime.Date, time.Local)
+		} else {
+			s, _ := strconv.ParseInt(it.StartTime.Timestamp, 10, 64)
+			e, _ := strconv.ParseInt(it.EndTime.Timestamp, 10, 64)
+			ev.Start, ev.End = time.Unix(s, 0), time.Unix(e, 0)
+		}
+		if ev.ExternalID == "" || ev.End.IsZero() {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out, nil
+}
+
+// DiagnoseCalendar 接入检查：拿得到 token、有日历权限（用 freebusy 接口探一下）。
+func (f *Feishu) DiagnoseCalendar(ctx context.Context) ([]Check, error) {
+	var checks []Check
+	if _, err := f.Token(ctx); err != nil {
+		checks = append(checks, Check{Key: "token", Status: CheckBlocked, Title: i18n.T("拿到应用凭证", "Obtain app credentials"), Detail: rawText("App ID 或 App Secret 不对：%s", "App ID or App Secret is wrong: %s", oneLine(err.Error()))})
+		return checks, nil
+	}
+	checks = append(checks, Check{Key: "token", Status: CheckOK, Title: i18n.T("拿到应用凭证", "Obtain app credentials")})
+	_, err := f.do(ctx, http.MethodGet, "/open-apis/calendar/v4/calendars", url.Values{"page_size": {"1"}}, nil, true)
+	code, _, _ := rejectedCode(err)
+	switch {
+	case err == nil:
+		checks = append(checks, Check{Key: "calendar", Status: CheckOK, Title: i18n.T("日历只读权限", "Calendar read permission")})
+	case code == 99991672 || code == 99991663:
+		checks = append(checks, Check{Key: "calendar", Status: CheckTodo, Title: i18n.T("日历只读权限", "Calendar read permission"), Detail: i18n.T("应用还没有日历权限，去开发者后台开通「读取日历」「读取日程」并发布版本。", "The app has no calendar permission yet; grant “read calendars” and “read events” in the developer console and release a version.")})
+	default:
+		checks = append(checks, Check{Key: "calendar", Status: CheckBlocked, Title: i18n.T("日历只读权限", "Calendar read permission"), Detail: rawText("读日历失败：%s", "Reading calendars failed: %s", oneLine(err.Error()))})
+	}
+	return checks, nil
 }

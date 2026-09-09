@@ -563,6 +563,86 @@ export interface MyNotifications {
 }
 export interface MyNotificationsInput { rules?: Record<string, string[]>; quiet_hours?: QuietHours | null }
 
+// ---------- 日程与外部日历（ADR 0032） ----------
+
+export type ScheduleKind = "task" | "goal" | "milestone" | "event";
+/** 日程里的一条：读的时候从任务、目标、里程碑、外部日历拼出来 */
+export interface ScheduleItem {
+  kind: ScheduleKind;
+  id: ID;
+  title: string;
+  member_id: ID;
+  /** 跨天的一段（含首尾） */
+  start_date?: ISODate;
+  end_date?: ISODate;
+  /** 单日的一枚 */
+  date?: ISODate;
+  /** 会议：精确起止与全天 */
+  starts_at?: ISODateTime;
+  ends_at?: ISODateTime;
+  all_day?: boolean;
+  number?: number;
+  state?: TaskState;
+  progress?: number;
+  /** 这枚是任务的截止日 */
+  deadline?: boolean;
+  assignee_id?: ID;
+  status?: string;
+  goal_id?: ID;
+  milestone_status?: "upcoming" | "reached" | "overdue";
+  provider?: string;
+  url?: string;
+  busy?: boolean;
+  /** 别人的会议只画成「忙」 */
+  title_hidden?: boolean;
+  overdue?: boolean;
+}
+export interface ScheduleView {
+  from: ISODate;
+  to: ISODate;
+  who: string;
+  members: Array<{ id: ID; name: string }>;
+  items: ScheduleItem[];
+  sources: string[];
+}
+/** 组织设置里一家外部日历的连接状态 */
+export interface CalendarProviderView {
+  provider: string;
+  provider_title: string;
+  configured: boolean;
+  enabled: boolean;
+  per_member: boolean;
+  fields: DirectoryField[];
+  prerequisites: string[];
+  tip?: { text: string; url?: string };
+  credentials: Record<string, string>;
+  secrets_set: Record<string, boolean>;
+  proxy_url: string;
+  inherits_directory: boolean;
+  last_sync_at?: ISODateTime;
+  last_status: string;
+  last_status_title: string;
+  last_error?: string;
+  connected_members: number;
+  redirect_url?: string;
+}
+export interface CalendarsView { providers: CalendarProviderView[] }
+export interface CalendarInput { credentials?: Record<string, string>; proxy_url?: string; enabled?: boolean }
+export interface CalendarTestResult { ok: boolean; checks: DirectoryCheck[]; error?: string }
+export interface CalendarSyncResult { provider: string; members: number; events: number; errors: string[]; status: string }
+/** 成员自己看到的某家外部日历连没连 */
+export interface MyCalendarView {
+  provider: string;
+  provider_title: string;
+  org_configured: boolean;
+  per_member: boolean;
+  connected: boolean;
+  email?: string;
+  external_user_id?: string;
+  connected_at?: ISODateTime;
+  auth_url?: string;
+}
+
 // ---------- 代码平台与外部事件（ADR 0020） ----------
 
 export interface CodeRepo { id: string; full_name: string; enabled: boolean; hook_ok: boolean; hook_error?: string }
@@ -1611,6 +1691,11 @@ export type EventKind =
   | "NotificationPreferencesUpdated"
   | "CodePlatformConfigured"
   | "CodePlatformDisconnected"
+  | "CalendarConfigured"
+  | "CalendarDisconnected"
+  | "CalendarSyncRan"
+  | "CalendarIdentityBound"
+  | "CalendarIdentityRemoved"
   | "CodeIdentityBound"
   | "ExternalLinkAdded"
   | "ExternalLinkUpdated"
@@ -2391,6 +2476,15 @@ export const api = {
       get: () => request<CodeIdentity>("GET", "/me/code-identity"),
       save: (login: string) => request<CodeIdentity>("PUT", "/me/code-identity", { login }),
     },
+    /** 我的外部日历（ADR 0032）：飞书 / 企业微信沿用外部目录的身份，Google 自己授权一次 */
+    calendars: {
+      list: () => request<MyCalendarView[]>("GET", "/me/calendars"),
+      disconnect: (provider: string) => request<void>("DELETE", `/me/calendars/${encodeURIComponent(provider)}`),
+    },
+  },
+  /** 日程（ADR 0032）：who 为空是我自己，成员 ID 看那个人，团队 ID 看团队全部成员 */
+  schedule: {
+    get: (params: { from: ISODate; to: ISODate; who?: string }) => request<ScheduleView>("GET", "/schedule", undefined, params),
   },
   /** 组织设置：组织负责人或持有 org_settings 权限的角色。 */
   org: {
@@ -2481,6 +2575,14 @@ export const api = {
       repos: () => request<CodeRepo[]>("GET", "/org/code-platform/repos"),
       /** 断开：删掉凭据与仓库选择，已经挂上的外部链接与历史动态都留着。幂等。 */
       disconnect: () => request<CodePlatform>("DELETE", "/org/code-platform"),
+    },
+    /** 外部日历（ADR 0032）：一家提供方一份连接，只读同步 */
+    calendars: {
+      list: () => request<CalendarsView>("GET", "/org/calendars"),
+      save: (provider: string, input: CalendarInput) => request<CalendarProviderView>("PUT", `/org/calendars/${encodeURIComponent(provider)}`, input),
+      test: (provider: string) => request<CalendarTestResult>("POST", `/org/calendars/${encodeURIComponent(provider)}/test`, {}),
+      sync: (provider: string) => request<CalendarSyncResult>("POST", `/org/calendars/${encodeURIComponent(provider)}/sync`, {}),
+      disconnect: (provider: string) => request<void>("DELETE", `/org/calendars/${encodeURIComponent(provider)}`),
     },
   },
   /** 邀请接受（公开，不需要登录）。 */

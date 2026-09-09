@@ -120,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	s.inboxRoutes(auth)
 	s.notifyRoutes(auth)
 	s.codePlatformRoutes(auth, pub)
+	s.calendarRoutes(auth, pub)
 
 	auth("GET /api/v1/events", s.events)
 	auth("GET /api/v1/notifications", s.notifications)

@@ -280,6 +280,25 @@ func EventSummary(e *store.EventRow, names map[string]string, taskTitle map[stri
 		return i18n.Trf(loc, "ev.CodePlatformDisconnected", who, SourceTitle(s("provider"), loc))
 	case "DirectoryDisconnected":
 		return i18n.Trf(loc, "ev.DirectoryDisconnected", who, SourceTitle(s("provider"), loc))
+	case "CalendarConfigured":
+		fresh, _ := e.Data["fresh"].(bool)
+		if names := FieldTitles(s("provider"), e.Data["fields"], loc); names != "" && !fresh {
+			return i18n.Trf(loc, "ev.CalendarFieldsChanged", who, SourceTitle(s("provider"), loc), names)
+		}
+		return i18n.Trf(loc, "ev.CalendarConfigured", who, SourceTitle(s("provider"), loc))
+	case "CalendarDisconnected":
+		return i18n.Trf(loc, "ev.CalendarDisconnected", who, SourceTitle(s("provider"), loc))
+	case "CalendarSyncRan":
+		if s("status") != "ok" {
+			return i18n.Trf(loc, "ev.CalendarSyncFailed", SourceTitle(s("provider"), loc), s("error"))
+		}
+		mc, _ := NumOf(e.Data["members"])
+		ec, _ := NumOf(e.Data["events"])
+		return i18n.Trf(loc, "ev.CalendarSyncRan", SourceTitle(s("provider"), loc), i18n.Tr(loc, "directory.status.ok"), mc, ec)
+	case "CalendarIdentityBound":
+		return i18n.Trf(loc, "ev.CalendarIdentityBound", who, SourceTitle(s("provider"), loc))
+	case "CalendarIdentityRemoved":
+		return i18n.Trf(loc, "ev.CalendarIdentityRemoved", who, SourceTitle(s("provider"), loc))
 	case "CodePlatformConfigured":
 		fresh, _ := e.Data["fresh"].(bool)
 		switched, _ := e.Data["provider_switched"].(bool)

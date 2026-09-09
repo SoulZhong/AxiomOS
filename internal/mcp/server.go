@@ -422,7 +422,15 @@ func newServer(a *app.App, sess *app.Session) *sdk.Server {
 		return jsonResult(t)
 	})
 	sdk.AddTool(s, tool("heartbeat"), func(ctx context.Context, req *sdk.CallToolRequest, in heartbeatIn) (*sdk.CallToolResult, any, error) {
-		t, err := a.Heartbeat(ctx, sess, in.TaskID, in.Usage)
+		// 任务引用与别的工具一样可以写 #序号（ADR 0025）；不带任务的心跳只更新 Agent 的最后活跃时间
+		id := ""
+		if in.TaskID != "" {
+			var err error
+			if id, err = tid(ctx, in.TaskID); err != nil {
+				return f(err)
+			}
+		}
+		t, err := a.Heartbeat(ctx, sess, id, in.Usage)
 		if err != nil {
 			return f(err)
 		}
@@ -763,7 +771,7 @@ var instructionsText = i18n.T(`你是 AxiomOS 里的执行者「%s」。%s
 ## 看动态、统计与组织
 20. 要知道团队这段时间在做什么：list_sprints / get_sprint 看迭代待办与燃尽，get_board 看看板，list_events 看动态（可按任务、目标、时间起点筛，句子与网页一样）。
 21. 复盘或汇报用数字：get_goal_metrics（目标含子树的进度、任务分布、逾期、成本对预算、周期）、get_task_metrics（任务的周期、打回次数、执行记录、用量）、get_my_metrics（你自己的手上的活、逾期、成本与用量、并发余量）。汇报前或决定要不要再领活时先看 get_my_metrics。
-22. 规划与指派前先 get_org_context 看组织背景（货币、可见性、你的范围与授权、团队、能力标签、目标类型、任务类型、角色）；list_teams、list_capabilities、list_members、list_task_types 各看一类。
+22. 规划与指派前先 get_org_context 看组织背景（货币、可见性、你的范围与授权、团队、能力标签、目标类型、任务类型、角色）；list_teams、list_capabilities、list_members、list_task_types 各看一类。给任务排计划、或人问"我这周有什么"时用 get_my_schedule 看所有者的日程（任务、目标、里程碑、外部日历里的会议）。
 23. 迭代：create_sprint / update_sprint 建与改（需要「创建任务」授权），add_tasks_to_sprint / remove_task_from_sprint 进出迭代待办；start_sprint / close_sprint 对你必经人确认。
 24. list_my_notifications 看与你有关的通知（被打回、有人评论、被指派），处理完用 mark_notifications_read 标已读。
 
@@ -801,7 +809,7 @@ var instructionsText = i18n.T(`你是 AxiomOS 里的执行者「%s」。%s
 ## Activity, numbers and the organization
 20. To see what the team is doing: list_sprints / get_sprint for sprint backlog and burndown, get_board for the board, list_events for the activity stream (filter by task, goal or start time; sentences are the same as on the web).
 21. Use numbers for retrospectives and reports: get_goal_metrics (a goal's progress, task distribution, overdue, cost against budget, lead time), get_task_metrics (a task's lead time, review rounds, execution records, usage), get_my_metrics (your own open and overdue work, cost and usage, concurrency headroom). Check get_my_metrics before reporting or before claiming more work.
-22. Before planning or assigning, read get_org_context (currency, visibility, your scope and grants, teams, capabilities, goal types, task types, roles); list_teams, list_capabilities, list_members and list_task_types each cover one part.
+22. Before planning or assigning, read get_org_context (currency, visibility, your scope and grants, teams, capabilities, goal types, task types, roles); list_teams, list_capabilities, list_members and list_task_types each cover one part. When planning task dates, or when the person asks what their week holds, use get_my_schedule to read the owner's schedule (tasks, goals, milestones, meetings from external calendars).
 23. Sprints: create_sprint / update_sprint to create and edit (requires the Create tasks grant), add_tasks_to_sprint / remove_task_from_sprint for the sprint backlog; start_sprint / close_sprint always need human confirmation for you.
 24. list_my_notifications shows notifications that concern you (sent back, commented, assigned); mark_notifications_read once handled.
 

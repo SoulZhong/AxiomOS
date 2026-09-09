@@ -181,6 +181,12 @@ export const IconBoundary = (p: IconProps) => (
     <circle cx="8" cy="8" r="1.75" />
   </Svg>
 );
+export const IconCalendar = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2.5" y="3.5" width="11" height="10" rx="1.5" />
+    <path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
+  </Svg>
+);
 export const IconClock = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="8" cy="8" r="5.5" />

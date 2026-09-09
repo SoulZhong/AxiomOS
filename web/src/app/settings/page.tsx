@@ -6,6 +6,7 @@ import { useSession } from "@/components/AppShell";
 import { ErrorBox, ListSkeleton, PageHeader, Panel } from "@/components/ui";
 import { BasicTab } from "./BasicTab";
 import { CapabilitiesTab } from "./CapabilitiesTab";
+import { CalendarTab } from "./CalendarTab";
 import { CodePlatformTab } from "./CodePlatformTab";
 import { DirectoryTab } from "./DirectoryTab";
 import { GoalTypesTab } from "./GoalTypesTab";
@@ -21,7 +22,7 @@ import { WorkspaceTab } from "./WorkspaceTab";
 // 「流程」原来是独立入口，按 DESIGN.md §10 并入组织设置（/task-types 跳到 ?tab=workflows）
 // 「成员」「团队」「邀请」三个页签按 DESIGN.md §16 合并为「成员与团队」（people）；旧地址仍能打开
 // 「我的偏好」（DESIGN.md §20）每个成员都有：有组织设置入口的人排在「基本信息」之后，其他人排第一
-const TABS = ["basic", "me", "visibility", "workspace", "people", "roles", "directory", "notifications", "code", "capabilities", "goal-types", "pricing", "workflows"] as const;
+const TABS = ["basic", "me", "visibility", "workspace", "people", "roles", "directory", "notifications", "code", "calendar", "capabilities", "goal-types", "pricing", "workflows"] as const;
 type Tab = (typeof TABS)[number];
 const LEGACY: Record<string, Tab> = { members: "people", teams: "people", invitations: "people" };
 
@@ -58,6 +59,7 @@ export default function SettingsPage() {
           {current === "directory" && <DirectoryTab />}
           {current === "notifications" && <NotificationsTab />}
           {current === "code" && <CodePlatformTab />}
+          {current === "calendar" && <CalendarTab />}
           {current === "capabilities" && <CapabilitiesTab />}
           {current === "goal-types" && <GoalTypesTab />}
           {current === "pricing" && <PricingTab />}
