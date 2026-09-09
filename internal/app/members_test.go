@@ -267,24 +267,28 @@ func TestTeamMoveDeactivateDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	impact, err := a.TeamDeleteImpact(ctx, jia, f.dev.ID)
-	if err != nil || impact.Members != 1 || impact.OnlyTeam != 1 || impact.SubTeams != 1 || impact.NewParentID != f.prod.ID || impact.NewParent != "产品事业部" {
-		t.Fatalf("研发部的影响范围应是 1 人（且只在这一个团队）、1 个下级、上移到产品事业部，实际 %+v %v", impact, err)
+	if err != nil || impact.Members != 1 || impact.OnlyTeam != 1 || impact.SubTeams != 1 || len(impact.SubTeamNames) != 1 || impact.SubTeamNames[0] != "测试组" {
+		t.Fatalf("研发部的影响范围应是 1 人（且只在这一个团队）、1 个下级「测试组」一起删，实际 %+v %v", impact, err)
 	}
 	if err := a.DeleteTeam(ctx, jia, f.dev.ID); err != nil {
 		t.Fatalf("有成员有下级的手工团队也应能删: %v", err)
 	}
-	if qa := teamByName(t, a, ctx, jia, "测试组"); qa.ParentID != f.prod.ID {
-		t.Fatalf("下级应上移到产品事业部，实际 parent=%q", qa.ParentID)
+	if left, _ := a.ListTeams(ctx, jia); func() bool {
+		for _, x := range left {
+			if x.ID == f.dev.ID || x.ID == f.qa.ID {
+				return true
+			}
+		}
+		return false
+	}() {
+		t.Fatal("研发部和它的下级测试组应一起被删掉")
 	}
 	if m := memberByID(t, a, ctx, jia, yi.MemberID); m.TeamID != "" || len(m.TeamIDs) != 0 {
 		t.Fatalf("成员应不再属于任何团队，实际 team_id=%q team_ids=%v", m.TeamID, m.TeamIDs)
 	}
-	if err := a.DeleteTeam(ctx, jia, f.qa.ID); err != nil {
-		t.Fatalf("空手工团队应能删: %v", err)
-	}
 
 	after := eventTypes(t, a, ctx, orgID)
-	if after["TeamMoved"]-before["TeamMoved"] != 1 || after["TeamDeactivated"]-before["TeamDeactivated"] != 2 || after["TeamReactivated"]-before["TeamReactivated"] != 1 || after["TeamDeleted"]-before["TeamDeleted"] != 2 || after["TeamUpdated"]-before["TeamUpdated"] != 1 {
+	if after["TeamMoved"]-before["TeamMoved"] != 1 || after["TeamDeactivated"]-before["TeamDeactivated"] != 2 || after["TeamReactivated"]-before["TeamReactivated"] != 1 || after["TeamDeleted"]-before["TeamDeleted"] != 1 || after["TeamUpdated"]-before["TeamUpdated"] != 1 {
 		t.Fatalf("动态不符 before=%v after=%v", before, after)
 	}
 }

@@ -3485,9 +3485,10 @@ on("PATCH", "/org/teams/:id", (m, body) => {
   return viewOrgTeam(tm);
 });
 const teamImpactOf = (tm: (typeof TEAMS)[number]) => {
-  const elsewhere = new Set(TEAMS.filter((x) => x.id !== tm.id).flatMap((x) => x.member_ids));
-  const parent = TEAMS.find((x) => x.id === tm.parent_id);
-  return { members: tm.member_ids.length, only_team: tm.member_ids.filter((id) => !elsewhere.has(id)).length, sub_teams: TEAMS.filter((x) => x.parent_id === tm.id).length, goals: 0, sprints: 0, new_parent_id: tm.parent_id ?? null, new_parent: parent?.name ?? "", is_boundary: !!tm.is_boundary };
+  const ids = new Set(teamSubtree(tm.id));
+  const inTree = new Set(TEAMS.filter((x) => ids.has(x.id)).flatMap((x) => x.member_ids));
+  const elsewhere = new Set(TEAMS.filter((x) => !ids.has(x.id)).flatMap((x) => x.member_ids));
+  return { members: inTree.size, only_team: [...inTree].filter((id) => !elsewhere.has(id)).length, sub_teams: ids.size - 1, sub_team_names: TEAMS.filter((x) => ids.has(x.id) && x.id !== tm.id).map((x) => x.name), goals: 0, sprints: 0, is_boundary: !!tm.is_boundary };
 };
 on("GET", "/org/teams/:id/impact", (m) => { requireOrgAdmin(); return teamImpactOf(getTeam(m.groups!.id)); });
 on("DELETE", "/org/teams/:id", (m) => {
@@ -3495,8 +3496,8 @@ on("DELETE", "/org/teams/:id", (m) => {
   const tm = getTeam(m.groups!.id);
   // 手工团队有人有下级也能删（成员离开、下级上移）；同步团队只能停用
   if (isSyncedRow(tm)) throw new ApiError(409, t("mock.people.syncedTeamDelete", { name: sourceTitle(tm.source) }));
-  for (const x of TEAMS) if (x.parent_id === tm.id) x.parent_id = tm.parent_id ?? null;
-  TEAMS.splice(TEAMS.indexOf(tm), 1);
+  // 连同全部下级一起删
+  for (const id of teamSubtree(tm.id)) { const i = TEAMS.findIndex((x) => x.id === id); if (i >= 0) TEAMS.splice(i, 1); }
   return undefined;
 });
 
@@ -4483,6 +4484,7 @@ on("GET", "/schedule", (_m, _b, q): ScheduleView => {
   const team = TEAMS.find((x) => x.id === who);
   let members: ID[] = [];
   if (team) { const under = (id: ID): ID[] => [id, ...TEAMS.filter((x) => x.parent_id === id).flatMap((x) => under(x.id))]; members = [...new Set(under(team.id).flatMap((id) => TEAMS.find((x) => x.id === id)?.member_ids ?? []))]; }
+  else if (who === ORG.id) members = Object.values(MEMBERS).filter((m) => m.active).map((m) => m.id);
   else members = [who === "me" ? ME : who];
   const overlaps = (a: string | null, b: string | null) => !!a && !!b && b >= from && a <= to;
   const items: ScheduleItem[] = [];

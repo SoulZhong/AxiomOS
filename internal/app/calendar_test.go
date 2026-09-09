@@ -146,6 +146,11 @@ func TestScheduleAndCalendarSync(t *testing.T) {
 		t.Fatalf("团队日程应含乙的全部安排，实际 %d 人 %d 条", len(ts.Members), len(ts.Items))
 	}
 	// 超过 62 天、结束早于开始都拒
+	// 整个组织（who = 组织 ID）：能看整个组织的人（甲是负责人）看到全部在职成员
+	whole, err := a.ScheduleOf(ctx, jia, orgID, *day(0), *day(6))
+	if err != nil || len(whole.Members) < len(ts.Members) || len(whole.Items) < len(ts.Items) {
+		t.Fatalf("整个组织的日程至少包含团队的：members=%d/%d items=%d/%d %v", len(whole.Members), len(ts.Members), len(whole.Items), len(ts.Items), err)
+	}
 	if _, err := a.ScheduleOf(ctx, yi, "me", *day(0), *day(62)); err == nil || !strings.Contains(err.Error(), "62") {
 		t.Fatalf("含首尾 63 天应被拒，实际 %v", err)
 	}

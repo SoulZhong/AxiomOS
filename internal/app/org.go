@@ -1272,48 +1272,75 @@ func (a *App) teamHasActiveContent(ctx context.Context, tx pgx.Tx, teams []*doma
 
 // DeleteTeam 删除团队：只有没有成员、没有下级团队的手工团队才能删；来自IM 集成的团队只能停用（ADR 0017）。
 // TeamImpact 是删除一个团队会波及什么：确认对话框先给人看，DeleteTeam 用同一段算法记进动态。
+// 删的是整棵子树：下级团队一起删，数字都按子树算。
 type TeamImpact struct {
-	Members  int `json:"members"`   // 直接成员，会离开这个团队
+	Members  int `json:"members"`   // 子树里的成员（不重复），会离开这些团队
 	OnlyTeam int `json:"only_team"` // 其中从此不属于任何团队的人
-	SubTeams int `json:"sub_teams"` // 直接下级团队，会上移到新上级
-	Goals    int `json:"goals"`     // 归口到它的目标，改成不归口
-	Sprints  int `json:"sprints"`   // 属于它的迭代，改成按组织
-	// NewParentID / NewParent 是下级上移后的新上级；空 = 顶层
-	NewParentID string `json:"new_parent_id"`
-	NewParent   string `json:"new_parent"`
-	IsBoundary  bool   `json:"is_boundary"`
+	SubTeams int `json:"sub_teams"` // 全部下级团队（含下级的下级），一起删除
+	Goals    int `json:"goals"`     // 归口到子树里任一团队的目标，改成不归口
+	Sprints  int `json:"sprints"`   // 属于子树里任一团队的迭代，改成按组织
+	// SubTeamNames 是下级团队的名字（自上而下），对话框里点几个名
+	SubTeamNames []string `json:"sub_team_names"`
+	IsBoundary   bool     `json:"is_boundary"`
 }
 
-func (a *App) teamImpact(ctx context.Context, tx pgx.Tx, teams []*domain.Team, t *domain.Team) (*TeamImpact, error) {
+// teamSubtree 按自上而下的顺序返回 root 和它的全部下级。
+func teamSubtree(teams []*domain.Team, root string) []*domain.Team {
+	byParent := map[string][]*domain.Team{}
+	for _, t := range teams {
+		byParent[t.ParentID] = append(byParent[t.ParentID], t)
+	}
+	var out []*domain.Team
+	var walk func(id string)
+	walk = func(id string) {
+		for _, c := range byParent[id] {
+			out = append(out, c)
+			walk(c.ID)
+		}
+	}
+	if r := teamsByID(teams)[root]; r != nil {
+		out = append(out, r)
+		walk(root)
+	}
+	return out
+}
+
+func (a *App) teamImpact(ctx context.Context, tx pgx.Tx, teams []*domain.Team, t *domain.Team) (*TeamImpact, []*domain.Team, error) {
 	members, err := a.Store.TeamMembers(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := &TeamImpact{Members: len(members[t.ID]), NewParentID: t.ParentID, IsBoundary: t.IsBoundary}
-	if p := teamsByID(teams)[t.ParentID]; p != nil {
-		out.NewParent = p.Name
+	sub := teamSubtree(teams, t.ID)
+	inTree := map[string]bool{}
+	ids := make([]string, 0, len(sub))
+	out := &TeamImpact{SubTeamNames: []string{}, IsBoundary: t.IsBoundary}
+	for _, x := range sub {
+		inTree[x.ID] = true
+		ids = append(ids, x.ID)
+		if x.ID != t.ID {
+			out.SubTeams++
+			out.SubTeamNames = append(out.SubTeamNames, x.Name)
+		}
 	}
 	elsewhere := map[string]bool{}
+	mine := map[string]bool{}
 	for tid, ms := range members {
-		if tid == t.ID {
-			continue
-		}
 		for _, m := range ms {
-			elsewhere[m] = true
+			if inTree[tid] {
+				mine[m] = true
+			} else {
+				elsewhere[m] = true
+			}
 		}
 	}
-	for _, m := range members[t.ID] {
+	for m := range mine {
+		out.Members++
 		if !elsewhere[m] {
 			out.OnlyTeam++
 		}
 	}
-	for _, x := range teams {
-		if x.ParentID == t.ID {
-			out.SubTeams++
-		}
-	}
-	out.Goals, out.Sprints, err = a.Store.TeamRefCounts(ctx, tx, t.ID)
-	return out, err
+	out.Goals, out.Sprints, err = a.Store.TeamRefCounts(ctx, tx, ids)
+	return out, sub, err
 }
 
 // TeamDeleteImpact 删除前看影响范围（GET /org/teams/{id}/impact）。
@@ -1331,14 +1358,14 @@ func (a *App) TeamDeleteImpact(ctx context.Context, sess *Session, id string) (*
 		if t == nil {
 			return Bad("err.team_missing")
 		}
-		out, err = a.teamImpact(ctx, tx, teams, t)
+		out, _, err = a.teamImpact(ctx, tx, teams, t)
 		return err
 	})
 	return out, err
 }
 
-// DeleteTeam 删除手工建的团队，有成员、有下级也能删：成员离开它，下级上移到它的上级，归口到它的目标与迭代改成不归口。
-// 界面上删除前要经过带影响范围的二次确认。来自IM 集成的团队只能停用（下次同步还会对上）。
+// DeleteTeam 删除手工建的团队连同它的全部下级：成员离开这些团队，归口到它们的目标与迭代改成不归口。
+// 界面上删除前要经过带影响范围的二次确认。来自IM 集成的团队只能停用（下次同步还会对上），子树里混着同步团队也不能删。
 func (a *App) DeleteTeam(ctx context.Context, sess *Session, id string) error {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return err
@@ -1355,15 +1382,22 @@ func (a *App) DeleteTeam(ctx context.Context, sess *Session, id string) error {
 		if t.Source != domain.SourceManual {
 			return Bad("err.team_delete_synced", SourceText(t.Source))
 		}
-		impact, err := a.teamImpact(ctx, tx, teams, t)
+		impact, sub, err := a.teamImpact(ctx, tx, teams, t)
 		if err != nil {
 			return err
 		}
-		if err := a.Store.DeleteTeam(ctx, tx, id, t.ParentID); err != nil {
+		ids := make([]string, 0, len(sub))
+		for _, x := range sub {
+			if x.Source != domain.SourceManual {
+				return Bad("err.team_delete_synced_child", x.Name, SourceText(x.Source))
+			}
+			ids = append(ids, x.ID)
+		}
+		if err := a.Store.DeleteTeams(ctx, tx, ids); err != nil {
 			return err
 		}
 		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "TeamDeleted", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{
-			"team_id": id, "name": t.Name, "members": impact.Members, "sub_teams": impact.SubTeams, "goals": impact.Goals, "sprints": impact.Sprints, "new_parent_id": t.ParentID,
+			"team_id": id, "name": t.Name, "members": impact.Members, "sub_teams": impact.SubTeams, "sub_team_names": impact.SubTeamNames, "goals": impact.Goals, "sprints": impact.Sprints,
 		}}})
 	})
 }
