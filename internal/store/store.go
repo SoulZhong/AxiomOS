@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/base32"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -121,6 +122,9 @@ func NewID(prefix string) string {
 
 // ErrNotFound 表示没有这条记录。
 var ErrNotFound = fmt.Errorf("没有找到这条记录")
+
+// ErrStale 表示写回时对象已被别人改过（版本不符，ADR 0028）；调用方重读后再试。
+var ErrStale = errors.New("stale")
 
 func isNoRows(err error) bool { return err == pgx.ErrNoRows }
 

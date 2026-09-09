@@ -1,0 +1,112 @@
+# AxiomOS Agent 接入（{{.ClientTitle}}，Windows PowerShell）：申请设备码 → 你在网页里批准 → 写入 MCP 配置。
+# 令牌只会写进 MCP 客户端的配置文件，不会写到别处；本脚本不落任何日志。
+# 用法：irm '{{.BaseURL}}/api/v1/agent-auth/connect.ps1?client={{.Client}}' | iex
+# 可选环境变量：AXIOMOS_AGENT_NAME（Agent 名称）、AXIOMOS_NO_BROWSER=1（不自动开浏览器）
+$ErrorActionPreference = "Stop"
+$BASE = "{{.BaseURL}}"
+$CLIENT = "{{.Client}}"
+$NAME = if ($env:AXIOMOS_AGENT_NAME) { $env:AXIOMOS_AGENT_NAME } else { "" }
+function Say($s) { Write-Host $s }
+function Die($s) { throw $s }
+$utf8 = New-Object System.Text.UTF8Encoding $false
+
+Say "{{.T.requesting}}"
+try {
+  $resp = Invoke-RestMethod -Method Post -Uri "$BASE/api/v1/agent-auth/device" -ContentType "application/json; charset=utf-8" `
+    -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ client = $CLIENT; name = $NAME } | ConvertTo-Json -Compress)))
+} catch { Die "{{.T.request_fail}}" }
+$DEVICE = $resp.device_code
+$CODE = $resp.user_code
+$URL = $resp.verification_url
+$INTERVAL = if ($resp.interval) { [int]$resp.interval } else { 5 }
+$EXPIRES = if ($resp.expires_in) { [int]$resp.expires_in } else { 900 }
+if (-not $DEVICE -or -not $CODE) { Die "{{.T.request_fail}}" }
+
+Say ""
+Say "  {{.T.open}} $URL"
+Say "  {{.T.enter}} $CODE {{.T.approve}}"
+Say ""
+if (-not $env:AXIOMOS_NO_BROWSER -and -not $env:CI) { try { Start-Process $URL | Out-Null } catch { } }
+
+Say "{{.T.waiting}}"
+$deadline = (Get-Date).AddSeconds($EXPIRES)
+$status = "pending"
+$body = $null
+while ($true) {
+  Start-Sleep -Seconds $INTERVAL
+  try {
+    $body = Invoke-RestMethod -Method Post -Uri "$BASE/api/v1/agent-auth/token" -ContentType "application/json" `
+      -Body (@{ device_code = $DEVICE } | ConvertTo-Json -Compress)
+    $status = $body.status
+  } catch { }  # 429（问得太快）与网络抖动：等满间隔再问
+  if ($status -eq "approved") { break }
+  if ($status -eq "denied") { Die "{{.T.denied}}" }
+  if ($status -eq "expired") { Die "{{.T.expired}}" }
+  if ((Get-Date) -ge $deadline) { Die "{{.T.expired}}" }
+}
+
+$TOKEN = $body.token
+$MCP = $body.mcp_url
+$AGENT = $body.agent.name
+if (-not $TOKEN) { Die "{{.T.no_token}}" }
+if (-not $MCP) { $MCP = "$BASE/mcp" }
+Say "{{.T.approved}} $AGENT"
+
+$JSON_SNIPPET = @"
+{{.Cfg.JSON}}
+"@
+
+switch ($CLIENT) {
+  "claude-code" {
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+      try { & claude mcp remove axiomos 2>$null | Out-Null } catch { }
+      & {{.Cfg.ClaudeCLI}}
+      Say "{{.T.written}} Claude Code (mcp: axiomos)"
+    } else {
+      Say "{{.T.no_claude}}"
+      Say $JSON_SNIPPET
+    }
+    Say "{{.T.try_claude}}"
+  }
+  "cursor" {
+    $dir = Join-Path $HOME ".cursor"
+    $f = Join-Path $dir "mcp.json"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $data = if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) { Get-Content $f -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
+    if (-not $data.mcpServers) { $data | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force }
+    $data.mcpServers | Add-Member -NotePropertyName axiomos -NotePropertyValue ([pscustomobject]@{ url = $MCP; headers = [pscustomobject]@{ Authorization = "Bearer $TOKEN" } }) -Force
+    [System.IO.File]::WriteAllText($f, (($data | ConvertTo-Json -Depth 10) + "`n"), $utf8)
+    Say "{{.T.merged}} $f"
+    Say "{{.T.try_cursor}}"
+  }
+  "codex" {
+    $dir = Join-Path $HOME ".codex"
+    $f = Join-Path $dir "config.toml"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $snip = @"
+{{.Cfg.CodexTOML}}
+"@
+    $existing = if (Test-Path $f) { Get-Content $f -Raw } else { "" }
+    if ($existing -match '(?m)^\[mcp_servers\.axiomos\]') {
+      # 旧的那一段（到下一个段落头或文件尾）整段换掉
+      $existing = [regex]::Replace($existing, '(?ms)^\[mcp_servers\.axiomos\]\r?\n.*?(?=^\[|\z)', '')
+      Say "{{.T.replaced}} $f"
+    } else {
+      Say "{{.T.written}} $f"
+    }
+    [System.IO.File]::WriteAllText($f, ($existing.TrimEnd() + "`n" + $snip.Trim() + "`n"), $utf8)
+    Say "{{.T.try_codex}}"
+  }
+  default {
+    Say "{{.T.custom}}"
+    Say $JSON_SNIPPET
+  }
+}
+
+# 连接检查：调一次 whoami，网页向导据此显示这个 Agent 已可用
+Say "{{.T.checking}}"
+try {
+  Invoke-RestMethod -Method Post -Uri $MCP -Headers @{ Authorization = "Bearer $TOKEN"; Accept = "application/json, text/event-stream" } `
+    -ContentType "application/json" -Body '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}' | Out-Null
+} catch { }
+Say "{{.T.done}}"

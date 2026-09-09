@@ -201,6 +201,8 @@ export interface OrgMember extends Member {
   team_ids?: ID[];
   /** 「可能与 X 重复」（ADR 0017 补记四）：用同步同一套认法在手工成员与同步成员之间找到的疑似重复，两边都带 */
   possible_duplicate_of?: DirectoryDuplicateHint[];
+  /** 名下没被吊销的 Agent 数；0 = 还没接入（推广接入时用） */
+  agent_count?: number;
 }
 export interface DirectoryDuplicateHint { id: ID; name: string; reason: DirectoryMatchReason; reason_text: string; can_be_merged_away?: boolean; keep_reason?: string }
 /** 待激活成员的邀请链接：两种字段形态都认 */
@@ -890,6 +892,48 @@ export interface ProposalApproval {
   proposal: Proposal;
   result?: unknown;
 }
+
+/** 确认时的选择（只有目标方案收，ADR 0026）：跳过哪些键、把全部任务改派给谁。 */
+export interface ProposalApproveOptions {
+  skip?: string[];
+  assignee_id?: ID;
+}
+
+// ---------- 目标方案（ADR 0026）：action 为 goal.plan 的待确认操作，payload 是整套拆解 ----------
+
+export interface GoalPlanTask {
+  key: string;
+  title: string;
+  description?: string;
+  type_name?: string;
+  estimate_hours?: number | null;
+  planned_start?: ISODateTime | null;
+  planned_end?: ISODateTime | null;
+  /** 0（最高）到 3 */
+  priority?: number | null;
+  required_capabilities?: string[];
+  assignee_id?: ID;
+  parent_key?: string;
+  depends_on?: string[];
+}
+
+export interface GoalPlanMilestone {
+  key: string;
+  title: string;
+  description?: string;
+  due_on: ISODateTime | null;
+}
+
+export interface GoalPlanPayload {
+  goal_id: ID;
+  rationale?: string;
+  tasks: GoalPlanTask[];
+  milestones?: GoalPlanMilestone[];
+  /** 目标负责人（拍板的人） */
+  decider_id?: ID;
+}
+
+export const isGoalPlan = (p: Pick<Proposal, "action">) => p.action === "goal.plan";
 
 export interface ProposalCount {
   pending: number;
@@ -2232,6 +2276,8 @@ export const api = {
   agents: {
     list: () => request<Agent[]>("GET", "/agents"),
     create: (input: AgentInput) => request<AgentRegistration>("POST", "/agents", input),
+    /** 改名字、能力标签、授权、最多同时任务数；令牌不变。公共与否改不了 */
+    update: (id: ID, input: Partial<AgentInput>) => request<Agent>("PATCH", `/agents/${encodeURIComponent(id)}`, input),
     remove: (id: ID) => request<void>("DELETE", `/agents/${encodeURIComponent(id)}`),
     /** 连接检查：现在的状态、最近一次活动 / 工具，附一句现在该做什么 */
     check: (id: ID) => request<AgentCheck>("GET", `/agents/${encodeURIComponent(id)}/check`),
@@ -2245,6 +2291,8 @@ export const api = {
     token: (deviceCode: string) => request<DeviceToken>("POST", "/agent-auth/token", { device_code: deviceCode }),
     /** 接入脚本的完整地址（在 Agent 所在机器上 `curl … | sh`）；浏览器里用页面自己的来源，避免把 localhost 写进命令 */
     scriptUrl: (client: DeviceClient) => `${publicBase()}/api/v1/agent-auth/connect.sh?client=${encodeURIComponent(client)}`,
+    /** Windows PowerShell 版接入脚本：与 connect.sh 做的事完全一样 */
+    scriptUrlPS: (client: DeviceClient) => `${publicBase()}/api/v1/agent-auth/connect.ps1?client=${encodeURIComponent(client)}`,
     /**
      * 给 Agent 的接入链接（ADR 0024）：人把它贴给自己的 Agent。
      * 同一条地址，Agent / curl 拿到写给它看的操作说明（Markdown），浏览器被跳到 /connect/ 这张落地页。
@@ -2253,6 +2301,8 @@ export const api = {
     onboardUrl: (client?: DeviceClient) => `${publicBase()}/connect${client ? `?client=${encodeURIComponent(client)}` : ""}`,
       /** 贴给 Agent 的一整句话：光给网址它多半只会去读一下然后问你要做什么，得把要做的事说出来 */
       onboardPrompt: (client?: DeviceClient) => t("onboard.prompt", { url: `${publicBase()}/connect${client ? `?client=${client}` : ""}` }),
+      /** 给团队群发的接入说明（一段可直接贴进飞书 / 企业微信的文字）：链接 + 三步 + 授权预设建议 */
+      rolloutText: () => t("agents.rolloutText", { link: `${publicBase()}/connect`, org: "" }).trim(),
   },
   /** 显示偏好：个人 → 角色 → 默认（逐字段）。Agent 调用一律 403。 */
   preferences: {
@@ -2271,7 +2321,7 @@ export const api = {
     list: (q: ProposalQuery = {}) => request<Proposal[]>("GET", "/proposals", undefined, q as Query),
     get: (id: ID) => request<Proposal>("GET", `/proposals/${encodeURIComponent(id)}`),
     /** 确认并立即执行；执行失败时后端保持 pending 并返回一句完整的失败理由。 */
-    approve: (id: ID) => request<ProposalApproval>("POST", `/proposals/${encodeURIComponent(id)}/approve`, {}),
+    approve: (id: ID, opts: ProposalApproveOptions = {}) => request<ProposalApproval>("POST", `/proposals/${encodeURIComponent(id)}/approve`, opts),
     reject: (id: ID, reason: string) => request<Proposal>("POST", `/proposals/${encodeURIComponent(id)}/reject`, { reason }),
     count: () => request<ProposalCount>("GET", "/proposals/count"),
   },

@@ -107,24 +107,31 @@
   line-height: 1;
   color: var(--c-ink-subtle);
 }
-/* 目标类型（ADR 0023）：标题旁一枚类型色点 + 名字，淡一级 */
-/* 第二行：类型标签 + 成果指标 */
+/* 第二行：上级目标 + 成果指标。左边让开信心度圆点（7px + 6px 间距），与标题文字对齐 */
 .rt-sub {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  padding-left: 13px;
 }
+/* 目标类型（ADR 0023）：标题同一行、标题之后的一枚小芯片——类型色点 + 名字，
+   淡一级、有底色，让它读成"分类"而不是标题的一部分；标题先截断，芯片不缩 */
 .rt-type {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 4px;
-  max-width: 80px;
+  gap: 5px;
+  max-width: 96px;
+  height: 18px;
+  padding: 0 7px 0 6px;
+  border-radius: 999px;
+  background: var(--c-surface-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
+  line-height: 18px;
   color: var(--c-ink-tertiary);
 }
 .rt-type-dot {

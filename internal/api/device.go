@@ -22,12 +22,18 @@ import (
 //go:embed connect.sh.tmpl
 var connectScript string
 
+//go:embed connect.ps1.tmpl
+var connectScriptPS string
+
+var connectTmplPS = template.Must(template.New("connect.ps1").Parse(connectScriptPS))
+
 var connectTmpl = template.Must(template.New("connect.sh").Parse(connectScript))
 
 func (s *Server) deviceRoutes(auth, pub func(string, http.HandlerFunc)) {
 	pub("POST /api/v1/agent-auth/device", s.deviceRequest)
 	pub("POST /api/v1/agent-auth/token", s.deviceToken)
 	pub("GET /api/v1/agent-auth/connect.sh", s.connectScript)
+	pub("GET /api/v1/agent-auth/connect.ps1", s.connectScriptPS)
 	// 接入链接（ADR 0024）：短地址 /connect 另挂在根 mux 上（见 cmd/axiomd 与 ConnectAlias）
 	pub("GET /api/v1/agent-auth/onboard", s.onboard)
 	pub("GET /connect", s.onboard)
@@ -158,15 +164,44 @@ var connectText = map[string]i18n.Text{
 	"no_claude":    i18n.T("没找到 claude 命令。把下面这段加进 Claude Code 的 MCP 配置（~/.claude.json 的 mcpServers，或项目里的 .mcp.json）：", "The claude command was not found. Add the following to Claude Code's MCP config (mcpServers in ~/.claude.json, or .mcp.json in the project):"),
 	"no_python":    i18n.T("已有配置文件但没有 python3 帮忙合并。把下面这段加进", "The config file exists but python3 is unavailable to merge. Add the following to"),
 	"codex_exists": i18n.T("里已经有 [mcp_servers.axiomos]，请把它换成：", "already contains [mcp_servers.axiomos]; replace it with:"),
+	"replaced":     i18n.T("已替换掉旧的 [mcp_servers.axiomos]：", "Replaced the old [mcp_servers.axiomos] in"),
 	"custom":       i18n.T("把下面这段加进你的 MCP 客户端配置：", "Add the following to your MCP client's configuration:"),
-	"try_claude":   i18n.T("在 Claude Code 里说「看看我在 AxiomOS 上有什么任务」试试。", "In Claude Code, try: \"What tasks do I have in AxiomOS?\""),
+	"try_claude":   i18n.T("重启 Claude Code（或在 /mcp 里重连）后，说「看看我在 AxiomOS 上有什么任务」试试。配置是全局的，任何目录里都能用。", "Restart Claude Code (or reconnect in /mcp), then try: \"What tasks do I have in AxiomOS?\" The config is user-wide and works from any directory."),
 	"try_cursor":   i18n.T("重启 Cursor 后，在对话里让它看看 AxiomOS 上的任务。", "Restart Cursor, then ask it about your tasks in AxiomOS."),
 	"try_codex":    i18n.T("重启 Codex 后，让它看看 AxiomOS 上的任务。", "Restart Codex, then ask it about your tasks in AxiomOS."),
 	"done":         i18n.T("接入完成。回到网页的接入向导，它会显示这个 Agent 已可用。", "Done. Go back to the web wizard; it will show this agent as ready."),
 	"checking":     i18n.T("正在做一次连接检查（调用 whoami）……", "Running a connection check (calling whoami)..."),
 }
 
+// connectScript 是 POSIX sh 版接入脚本（macOS / Linux / WSL）。
 func (s *Server) connectScript(w http.ResponseWriter, r *http.Request) {
+	s.connectScriptWith(w, r, connectTmpl, "text/x-shellscript; charset=utf-8", func(mcpURL, token string) map[string]string {
+		return map[string]string{
+			"JSON":       cfgJSON,
+			"CursorJSON": cfgCursorJSON,
+			"CodexTOML":  cfgCodexTOML,
+			"ClaudeCLI":  fmt.Sprintf(cfgClaudeCLI, `"`+mcpURL+`"`, token),
+		}
+	})
+}
+
+// connectScriptPS 是 Windows PowerShell 版：同一批配置写法、同一批句子，只是换成 PowerShell 的写法。
+// 用法 irm '<PUBLIC_URL>/api/v1/agent-auth/connect.ps1?client=claude-code' | iex。
+func (s *Server) connectScriptPS(w http.ResponseWriter, r *http.Request) {
+	s.connectScriptWith(w, r, connectTmplPS, "text/plain; charset=utf-8", func(mcpURL, token string) map[string]string {
+		// PowerShell 的 here-string 里 $MCP / $TOKEN 自己会展开，所以配置写法直接还原成多行文本
+		return map[string]string{
+			"JSON":       renderConfig(cfgJSON, mcpURL, token),
+			"CursorJSON": renderConfig(cfgCursorJSON, mcpURL, token),
+			"CodexTOML":  renderConfig(cfgCodexTOML, mcpURL, token),
+			"ClaudeCLI":  fmt.Sprintf(cfgClaudeCLI, mcpURL, token),
+		}
+	})
+}
+
+// connectScriptWith 渲染一份接入脚本：校验 client、选语言、把配置写法与句子填进模板。
+// cfgOf 拿到的是脚本里代表 MCP 地址与令牌的变量名（$MCP、$TOKEN），不是真值——脚本运行时才有。
+func (s *Server) connectScriptWith(w http.ResponseWriter, r *http.Request, tmpl *template.Template, contentType string, cfgOf func(mcpURL, token string) map[string]string) {
 	client := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("client")))
 	if client == "" {
 		client = "claude-code"
@@ -192,17 +227,12 @@ func (s *Server) connectScript(w http.ResponseWriter, r *http.Request) {
 	base := strings.TrimRight(s.App.PublicURL, "/")
 	var buf bytes.Buffer
 	// 配置写法与接入说明共用同一批常量，两条路不会各写各的（ADR 0024）
-	cfg := map[string]string{
-		"JSON":       cfgJSON,
-		"CursorJSON": cfgCursorJSON,
-		"CodexTOML":  cfgCodexTOML,
-		"ClaudeCLI":  fmt.Sprintf(cfgClaudeCLI, `"$MCP"`, "$TOKEN"),
-	}
-	if err := connectTmpl.Execute(&buf, map[string]any{"BaseURL": base, "Client": client, "ClientTitle": i18n.Tr(loc, "device.client."+client), "T": t, "Cfg": cfg}); err != nil {
+	cfg := cfgOf("$MCP", "$TOKEN")
+	if err := tmpl.Execute(&buf, map[string]any{"BaseURL": base, "Client": client, "ClientTitle": i18n.Tr(loc, "device.client."+client), "T": t, "Cfg": cfg}); err != nil {
 		writeErr(w, r, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(200)
 	_, _ = w.Write(buf.Bytes())
@@ -217,7 +247,9 @@ const (
 	cfgJSON       = `{\n  "mcpServers": {\n    "axiomos": {\n      "type": "http",\n      "url": "%s",\n      "headers": { "Authorization": "Bearer %s" }\n    }\n  }\n}`
 	cfgCursorJSON = `{\n  "mcpServers": {\n    "axiomos": {\n      "url": "%s",\n      "headers": { "Authorization": "Bearer %s" }\n    }\n  }\n}`
 	cfgCodexTOML  = `\n[mcp_servers.axiomos]\nurl = "%s"\nhttp_headers = { Authorization = "Bearer %s" }\n`
-	cfgClaudeCLI  = `claude mcp add --transport http axiomos %s --header "Authorization: Bearer %s"`
+	// --scope user：写进 ~/.claude.json 的用户级配置，任何目录里都能用。默认的 local 只对当前项目目录生效，
+	// 换个目录打开 Claude Code 就没有 axiomos 了（接入现状核对 2026-09-08 的第一条卡点）。
+	cfgClaudeCLI = `claude mcp add --transport http --scope user axiomos %s --header "Authorization: Bearer %s"`
 )
 
 // renderConfig 把上面的写法还原成给人（和 Agent）看的多行文本。

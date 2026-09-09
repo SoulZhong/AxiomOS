@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -180,20 +181,76 @@ type UpdateGoalInput struct {
 	DatePrecision *domain.DatePrecision `json:"date_precision"`
 	Rank          *float64              `json:"rank"`
 	Clear         []string              `json:"clear,omitempty"` // budget | deadline | planned_start | planned_end | progress_override | rank
+	// ExpectStatus 是改状态时对「现在是什么状态」的要求（达成只能从进行中来，重新开始只能从已放弃来）。
+	// 它随输入一起进待确认操作的载荷，所以人确认时会按目标那时的状态再校验一遍，不会拿旧结论盖掉新状态。
+	ExpectStatus []domain.GoalStatus `json:"expect_status,omitempty"`
 }
 
 // UpdateGoal 修改目标；只有目标负责人、上级目标负责人或组织负责人可以。
 // 每个真正变了的字段各记一条 GoalFieldChanged 动态（带旧值与新值），没有变化就不记。
 // 换上级（parent_id）时整棵子树跟着走：目标不能挂到自己或自己的子目标下面，上级必须在调用者看得到的范围里。
 func (a *App) UpdateGoal(ctx context.Context, sess *Session, id string, in UpdateGoalInput) (*domain.Goal, error) {
+	return idempotent(ctx, a, sess, "update_goal", goalPatchPayload{GoalID: id, Input: in}, func() (*domain.Goal, error) {
+		return a.updateGoal(ctx, sess, id, in)
+	})
+}
+
+// goalPatchPayload 是「对哪个目标改什么」：既是幂等键的指纹，也是待确认操作里记下的载荷。
+type goalPatchPayload struct {
+	GoalID string          `json:"goal_id"`
+	Input  UpdateGoalInput `json:"input"`
+}
+
+// goalUpdateMustConfirm 判断 Agent 的这次目标修改要不要先经人确认（ADR 0003 补记）：
+// 负责人、上级、团队、状态（达成 / 放弃 / 重新开始）是目标的问责链与结论，Agent 改动一律待确认；
+// 其余字段按「创建目标」授权的模式。正在重放一条已确认的待确认操作时不再拦。
+func goalUpdateMustConfirm(sess *Session, in UpdateGoalInput) bool {
+	if !sess.IsAgent() || sess.ApprovedByID != "" {
+		return false
+	}
+	if in.OwnerMemberID != nil || in.ParentID != nil || in.TeamID != nil || in.Status != nil {
+		return true
+	}
+	return domain.NeedsApproval(sess.Actor, domain.GrantCreateGoal)
+}
+
+// goalUpdateDraft 按改的是什么挑动作名与说明句子：状态变化各有自己的名字，好让确认的人一眼看懂。
+func goalUpdateDraft(g *domain.Goal, title string, from domain.GoalStatus, in UpdateGoalInput, changed int) (string, i18n.Msg) {
+	if in.Status != nil {
+		switch *in.Status {
+		case domain.GoalAchieved:
+			return ActionGoalAchieve, i18n.M("proposal.summary.goal.achieve", title)
+		case domain.GoalAbandoned:
+			return ActionGoalAbandon, i18n.M("proposal.summary.goal.abandon", title)
+		case domain.GoalActive:
+			if from == domain.GoalAchieved {
+				return ActionGoalUnachieve, i18n.M("proposal.summary.goal.unachieve", title)
+			}
+			return ActionGoalRestart, i18n.M("proposal.summary.goal.restart", title)
+		}
+	}
+	return ActionGoalUpdate, i18n.M("proposal.summary.goal.update", title, changed)
+}
+
+func (a *App) updateGoal(ctx context.Context, sess *Session, id string, in UpdateGoalInput) (*domain.Goal, error) {
 	var g *domain.Goal
+	var prop *ProposalView
 	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
 		cur, err := a.Store.GoalByID(ctx, tx, id)
 		if err != nil {
-			return err
+			return NotFound("err.goal_missing")
+		}
+		origTitle, fromStatus := cur.Title, cur.Status
+		if sess.IsAgent() && !sess.Actor.HasGrant(domain.GrantCreateGoal) {
+			return Forbidden("err.agent_no_grant", i18n.Key("grant.create_goal"))
 		}
 		if !a.canEditGoal(ctx, tx, sess, cur) {
 			return Forbidden("err.goal_edit_forbidden")
+		}
+		if in.Status != nil && len(in.ExpectStatus) > 0 {
+			if err := checkGoalStatusChange(sess, cur, *in.Status, in.ExpectStatus); err != nil {
+				return err
+			}
 		}
 		org, err := a.Store.OrganizationByID(ctx, tx, sess.OrgID)
 		if err != nil {
@@ -380,16 +437,27 @@ func (a *App) UpdateGoal(ctx context.Context, sess *Session, id string, in Updat
 			cur.Rank = in.Rank
 			changes = append(changes, fieldChange{Field: "rank", Silent: true})
 		}
-		// 只看不做（ADR 0025）：字段算完、权限判完，就在写库之前停住。一个字段都没变时说「什么都不会变。」
-		if sess.Write.DryRun {
-			if len(changes) == 0 {
+		if len(changes) == 0 {
+			// 一个字段都没变：只看不做说「什么都不会变。」，真做也不记动态、不挂待确认操作。
+			if sess.Write.DryRun {
 				return dryRun(sess)
 			}
-			return dryRun(sess, i18n.M("will.goal.update", cur.Title, len(changes)))
-		}
-		if len(changes) == 0 {
 			g = cur
 			return nil
+		}
+		// Agent 的闸（ADR 0003）：校验都过了才挂待确认操作，免得人确认了一条注定失败的。
+		if goalUpdateMustConfirm(sess, in) {
+			action, summary := goalUpdateDraft(cur, origTitle, fromStatus, in, len(changes))
+			if sess.Write.DryRun {
+				return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), summary)
+			}
+			prop, err = a.createProposal(ctx, tx, sess, proposalDraft{Action: action, Grant: domain.GrantCreateGoal, TargetKind: "goal",
+				TargetID: cur.ID, TargetTitle: origTitle, Payload: goalPatchPayload{GoalID: cur.ID, Input: in}, Summary: summary})
+			return err
+		}
+		// 只看不做（ADR 0025）：字段算完、权限判完，就在写库之前停住。
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.goal.update", cur.Title, len(changes)))
 		}
 		if err := a.Store.UpdateGoal(ctx, tx, cur); err != nil {
 			return err
@@ -408,7 +476,47 @@ func (a *App) UpdateGoal(ctx context.Context, sess *Session, id string, in Updat
 		}
 		return a.insertEvents(ctx, tx, sess, events)
 	})
-	return g, err
+	if err != nil {
+		return nil, err
+	}
+	if prop != nil {
+		return nil, pending(sess, prop)
+	}
+	return g, nil
+}
+
+// ChangeGoalStatus 是达成 / 撤销达成 / 放弃 / 重新开始四个闭环动作的共同入口：
+// 目标现在的状态配不配这样改（理由是完整句子）由 UpdateGoal 按 ExpectStatus 判，
+// 待确认操作重放时同样再判一遍；Agent 一律待确认。from 为空表示不限来源状态。
+func (a *App) ChangeGoalStatus(ctx context.Context, sess *Session, id string, to domain.GoalStatus, from []domain.GoalStatus) (*domain.Goal, error) {
+	st := to
+	expect := from
+	if len(expect) == 0 {
+		// 不限来源时也要带上「不能已经是它」的检查：把除目标状态外的全部状态列为可来源
+		for _, x := range []domain.GoalStatus{domain.GoalDraft, domain.GoalActive, domain.GoalAchieved, domain.GoalAbandoned} {
+			if x != to {
+				expect = append(expect, x)
+			}
+		}
+	}
+	return a.UpdateGoal(ctx, sess, id, UpdateGoalInput{Status: &st, ExpectStatus: expect})
+}
+
+// checkGoalStatusChange 判断目标现在的状态允不允许改成 to：已经是 to 了说「什么都不用做」，
+// 不在 expect 里说「现在是 X，只有 Y 的目标才能这样改」。
+func checkGoalStatusChange(sess *Session, cur *domain.Goal, to domain.GoalStatus, expect []domain.GoalStatus) error {
+	loc := sess.Loc()
+	if cur.Status == to {
+		return Bad("err.goal_status_same", cur.Title, i18n.Tr(loc, "goal.status."+string(to)))
+	}
+	names := make([]string, 0, len(expect))
+	for _, f := range expect {
+		if cur.Status == f {
+			return nil
+		}
+		names = append(names, i18n.Tr(loc, "goal.status."+string(f)))
+	}
+	return Bad("err.goal_status_expect", cur.Title, i18n.Tr(loc, "goal.status."+string(cur.Status)), strings.Join(names, i18n.Tr(loc, "sep.list")))
 }
 
 // goalDescendants 返回某个目标的全部子孙（不含自己）。

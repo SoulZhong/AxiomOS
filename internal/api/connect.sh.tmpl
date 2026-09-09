@@ -110,8 +110,22 @@ PY
     mkdir -p "$HOME/.codex"
     SNIP=$(printf '{{.Cfg.CodexTOML}}' "$MCP" "$TOKEN")
     if [ -s "$F" ] && grep -q '^\[mcp_servers\.axiomos\]' "$F"; then
-      say "$F {{.T.codex_exists}}"
-      say "$SNIP"
+      if command -v python3 >/dev/null 2>&1; then
+        # 旧的那一段（到下一个段落头或文件尾）整段换掉，换令牌重接的人不用手改
+        python3 - "$F" "$SNIP" <<'PY'
+import re, sys
+path, snip = sys.argv[1:3]
+with open(path) as f:
+    text = f.read()
+text = re.sub(r'(?ms)^\[mcp_servers\.axiomos\]\r?\n.*?(?=^\[|\Z)', '', text)
+with open(path, 'w') as f:
+    f.write(text.rstrip('\n') + '\n' + snip.strip('\n') + '\n')
+PY
+        say "{{.T.replaced}} $F"
+      else
+        say "$F {{.T.codex_exists}}"
+        say "$SNIP"
+      fi
     else
       printf '%s\n' "$SNIP" >> "$F"
       say "{{.T.written}} $F"

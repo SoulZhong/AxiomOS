@@ -30,6 +30,8 @@ const (
 	RefGoal   RefKind = "goal"
 	RefMember RefKind = "member"
 	RefSprint RefKind = "sprint"
+	// RefGoalType 是目标类型（ADR 0023）：类型 ID，或名字里的一段。
+	RefGoalType RefKind = "goal_type"
 )
 
 // refCandidate 是一个候选：Ref 是该用的确切写法，Label 是给人看的一行。
@@ -93,8 +95,43 @@ func (a *App) resolveRef(ctx context.Context, tx pgx.Tx, sess *Session, kind Ref
 		return a.resolveMember(ctx, tx, sess, ref)
 	case RefSprint:
 		return a.resolveSprint(ctx, tx, sess, ref)
+	case RefGoalType:
+		return a.resolveGoalType(ctx, tx, sess, ref)
 	}
 	return ref, nil
+}
+
+// ---------- 目标类型 ----------
+
+func (a *App) resolveGoalType(ctx context.Context, tx pgx.Tx, sess *Session, ref string) (string, error) {
+	types, err := a.Store.ListGoalTypes(ctx, tx)
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(ref, "gtype_") {
+		for _, t := range types {
+			if t.ID == ref {
+				return ref, nil
+			}
+		}
+		return "", NotFound("err.goal_type_missing")
+	}
+	if _, rest, ok := cutRefPrefix(ref); ok {
+		ref = rest
+	}
+	var hits []refCandidate
+	for _, t := range types {
+		if strings.EqualFold(strings.TrimSpace(t.Name), strings.TrimSpace(ref)) {
+			return t.ID, nil
+		}
+		if fragmentHit(t.Name, ref) {
+			hits = append(hits, refCandidate{Ref: t.ID, Label: t.Name})
+		}
+	}
+	if len(hits) == 1 {
+		return hits[0].Ref, nil
+	}
+	return "", refErr(sess, RefGoalType, ref, hits)
 }
 
 // ---------- 任务 ----------

@@ -6,7 +6,7 @@ import { api, type AgentCheck, type DeviceApproveInput, type DeviceGrantChoice, 
 import { fmtRelative } from "@/lib/format";
 import { errorMessage, useCapabilityTitles, useLoad, useQueryParam } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
-import { agentStateTitle, capabilityTitle, GRANT_ORDER, grantTitle } from "@/lib/terms";
+import { GRANT_ORDER, GRANT_PRESETS, GRANT_PRESET_MODES, type GrantPreset, agentStateTitle, capabilityTitle, grantPresetTitle, grantTitle, matchGrantPreset } from "@/lib/terms";
 import { useSession } from "@/components/AppShell";
 import { clientTitle } from "@/components/agents/ConnectWizard";
 import { WizardSteps } from "@/components/agents/WizardSteps";
@@ -160,6 +160,18 @@ function ApproveForm({ request, onDecided }: { request: DeviceRequest; onDecided
         </FormSection>
         <FormSection title={t("form.access")}>
           <p className="text-caption text-ink-muted">{t("connect.grantsHint")}</p>
+          {/* 授权预设（DESIGN.md §21）：按角色一键填好，再逐项微调；正好等于某个预设时高亮它，否则显示「自定义」 */}
+          <div className="flex flex-wrap items-center gap-2" data-grant-presets="">
+            <span className="text-caption text-ink-subtle">{t("connect.presetLabel")}</span>
+            <Segmented
+              size="sm"
+              value={matchGrantPreset(grants) ?? "custom"}
+              onChange={(p) => { if (p !== "custom") setGrants(Object.fromEntries(GRANT_ORDER.map((g) => [g, GRANT_PRESET_MODES[p][g] ?? "deny"])) as Record<GrantName, DeviceGrantChoice>); }}
+              options={[...GRANT_PRESETS.map((p) => [p, grantPresetTitle(p)] as [GrantPreset | "custom", string]), ["custom", t("connect.presetCustom")]]}
+              aria-label={t("connect.presetLabel")}
+            />
+          </div>
+          <p className="text-caption text-ink-subtle">{t("connect.presetHint")}</p>
           <div className="space-y-1.5" data-grants="">
             {GRANT_ORDER.map((g) => {
               const options = (g === "manage_workflows" ? CHOICES.filter((c) => c !== "allow") : CHOICES).map((c) => [c, choiceTitle(c)] as [DeviceGrantChoice, string]);

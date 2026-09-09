@@ -18,6 +18,7 @@ type Context struct {
 	Types        map[string]*TaskType // 前置任务与 Bug 的任务类型，按名字
 	ActiveRun    *Run                 // 本任务进行中的执行记录，可为 nil
 	ActorRuns    int                  // 触发者当前进行中的执行记录数（并发上限用）
+	MandateID    string               // 触发者在这个任务上活动中的委托（ADR 0028）；开出的执行记录记在它名下
 	Now          time.Time
 	NewID        func(prefix string) string
 }
@@ -339,7 +340,9 @@ func Available(c *Context, actor *Executor, p Payload) []Availability {
 		if tr.To == "$previous" && t.PreviousState == "" {
 			reasons = append(reasons, i18n.M("reject.no_previous"))
 		}
-		out = append(out, Availability{Transition: tr, Available: len(reasons) == 0, NeedsApproval: NeedsApproval(actor, g), Reasons: reasons})
+		tr := tr
+		act := Action{Kind: ActTransition, Grant: g, Transition: &tr, ToLabel: c.toLabel(tr)}
+		out = append(out, Availability{Transition: tr, Available: len(reasons) == 0, NeedsApproval: NeedsApprovalFor(actor, t.ID, act), Reasons: reasons})
 	}
 	return out
 }
@@ -429,7 +432,7 @@ func maxConcurrent(e *Executor) int {
 
 func (c *Context) openRun(o *Outcome, executorID string) {
 	now := c.now()
-	r := &Run{ID: c.newID("run"), TaskID: c.Task.ID, State: c.Task.State, ExecutorID: executorID, StartedAt: now, LastBeat: now}
+	r := &Run{ID: c.newID("run"), TaskID: c.Task.ID, State: c.Task.State, ExecutorID: executorID, StartedAt: now, LastBeat: now, MandateID: c.MandateID}
 	o.OpenedRun = r
 	c.ActiveRun = r
 	if c.Task.ActualStart == nil {
@@ -573,7 +576,7 @@ func applyStep(c *Context, actor *Executor, tr Transition, p Payload) (*Outcome,
 
 	// 进入进行中：只有触发者本人就是（或代表）负责人时才开始执行记录（ADR 0006）。
 	// 外部事件不是执行者，永远不为谁开执行记录。
-	if toDef.Label == LabelActive && actor.Kind != ExecutorExternal && isPrincipal(actor, t.AssigneeID) && !(actor.Kind == ExecutorAgent && t.HumanOnly) {
+	if toDef.Label == LabelActive && actor.Kind != ExecutorExternal && actor.Kind != ExecutorSystem && isPrincipal(actor, t.AssigneeID) && !(actor.Kind == ExecutorAgent && t.HumanOnly) {
 		c.openRun(o, actor.ID)
 	}
 	return o, nil
@@ -611,7 +614,7 @@ func Begin(c *Context, actor *Executor) (*Outcome, error) {
 	if reasons := CanBegin(c, actor); len(reasons) > 0 {
 		return nil, &Rejection{Reasons: reasons}
 	}
-	if NeedsApproval(actor, GrantExecute) {
+	if NeedsApprovalFor(actor, c.Task.ID, Action{Kind: ActBegin, Grant: GrantExecute}) {
 		return nil, needsApproval(GrantExecute)
 	}
 	o := &Outcome{Task: c.Task}
@@ -703,6 +706,7 @@ func AddArtifact(c *Context, actor *Executor, a Artifact) *Outcome {
 	a.CreatedAt = c.now()
 	c.Task.Artifacts = append(c.Task.Artifacts, a)
 	o := &Outcome{Task: c.Task}
+	EnsureRun(c, actor, o)
 	o.emit(c, "ArtifactAttached", actor.ID, map[string]any{"type": a.Type, "title": a.Title})
 	return o
 }
@@ -712,12 +716,15 @@ func AddComment(c *Context, actor *Executor, text string, isNote bool) (*Outcome
 	if actor.Kind == ExecutorAgent && !actor.HasGrant(GrantComment) {
 		return nil, reject("reject.agent_no_grant", i18n.Key("grant.comment"))
 	}
-	if NeedsApproval(actor, GrantComment) {
+	if NeedsApprovalFor(actor, c.Task.ID, Action{Kind: ActComment, Grant: GrantComment}) {
 		return nil, needsApproval(GrantComment)
 	}
 	cm := Comment{ID: c.newID("cmt"), ByID: actor.ID, Text: text, IsNote: isNote, CreatedAt: c.now()}
 	c.Task.Comments = append(c.Task.Comments, cm)
 	o := &Outcome{Task: c.Task}
+	if isNote {
+		EnsureRun(c, actor, o)
+	}
 	typ := "CommentAdded"
 	if isNote {
 		typ = "NoteAdded"
@@ -742,7 +749,7 @@ func Link(c *Context, actor *Executor, typ RelationType, otherID string, blocksO
 			return nil, reject("reject.dup_relation")
 		}
 	}
-	if NeedsApproval(actor, GrantLink) {
+	if NeedsApprovalFor(actor, c.Task.ID, Action{Kind: ActLink, Grant: GrantLink}) {
 		return nil, needsApproval(GrantLink)
 	}
 	c.Task.Relations = append(c.Task.Relations, Relation{Type: typ, OtherID: otherID})
@@ -768,4 +775,74 @@ func WouldCycle(fromID, toID string, blocksOf func(id string) []string) bool {
 		stack = append(stack, blocksOf(cur)...)
 	}
 	return false
+}
+
+// ReviewStep 挑出当前状态下的验收步骤（Agent 的 review_task 用）：accept 为真时找需要「验收」授权、
+// 去向是已完成类型状态的那一步；为假时找需要「验收」授权、去向不是已完成的那一步（打回）。
+// 只看步骤自己的声明（授权、去向状态的类型），不认步骤名（ADR 0005）。找不到返回空。
+func ReviewStep(c *Context, accept bool) string {
+	return ReviewStepOf(c.Task, c.Type, accept)
+}
+
+// ReviewStepOf 是 ReviewStep 不用 Context 的版本（列表与收件箱用）。
+func ReviewStepOf(t *Task, tt *TaskType, accept bool) string {
+	if tt == nil {
+		return ""
+	}
+	wf := &tt.Workflow
+	cur := wf.State(t.State)
+	for _, tr := range wf.Transitions {
+		applies := false
+		for _, f := range tr.From {
+			if f == "*" {
+				applies = cur != nil && !cur.Label.IsTerminal()
+			} else if f == t.State {
+				applies = true
+			}
+		}
+		if !applies || grantOf(tr) != GrantReview {
+			continue
+		}
+		to := tr.To
+		if to == "$previous" {
+			to = t.PreviousState
+		}
+		done := false
+		if st := wf.State(to); st != nil {
+			done = st.Label == LabelTerminalSuccess
+		}
+		if done == accept {
+			return tr.Name
+		}
+	}
+	return ""
+}
+
+// IsReviewer 判断触发者是不是这个任务的验收人（Agent 按所有者算）。
+func IsReviewer(t *Task, actor *Executor) bool {
+	return isPrincipal(actor, t.ReviewerID)
+}
+
+// Unlink 解除一条关联（与 Link 同一项「建立关联」授权）。关联不存在是一句完整的拒绝理由。
+func Unlink(c *Context, actor *Executor, typ RelationType, otherID string) (*Outcome, error) {
+	if actor.Kind == ExecutorAgent && !actor.HasGrant(GrantLink) {
+		return nil, reject("reject.agent_no_grant", i18n.Key("grant.link"))
+	}
+	idx := -1
+	for i, r := range c.Task.Relations {
+		if r.Type == typ && r.OtherID == otherID {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return nil, reject("reject.no_relation")
+	}
+	if NeedsApproval(actor, GrantLink) {
+		return nil, needsApproval(GrantLink)
+	}
+	c.Task.Relations = append(c.Task.Relations[:idx:idx], c.Task.Relations[idx+1:]...)
+	c.Task.UpdatedAt = c.now()
+	o := &Outcome{Task: c.Task}
+	o.emit(c, "RelationRemoved", actor.ID, map[string]any{"type": string(typ), "other_id": otherID})
+	return o, nil
 }

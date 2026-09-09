@@ -34,6 +34,9 @@ type CreateTaskInput struct {
 	Points               *int              `json:"points"`
 	SprintID             string            `json:"sprint_id"`
 	Ready                bool              `json:"ready"` // 创建后直接就绪（跳过草稿）
+	// ADR 0028：验收方式（human 默认 / auto）与来自哪份目标方案；只有方案落库时填。
+	AcceptanceMode string `json:"acceptance_mode,omitempty"`
+	PlanID         string `json:"plan_id,omitempty"`
 }
 
 // commentOp 是评论 / 工作日志在幂等键里记的操作名（两者是两个工具，不该互相顶替）。
@@ -79,7 +82,22 @@ func (a *App) createTask(ctx context.Context, sess *Session, in CreateTaskInput)
 		if !sess.Actor.HasGrant(g) {
 			return nil, Forbidden("err.agent_no_grant", i18n.Key("grant."+string(g)))
 		}
-		if domain.NeedsApproval(sess.Actor, g) {
+		// 在上级任务的委托之内建子任务不问人（ADR 0028 白名单）；装载点仍是 executorFor
+		needs := domain.NeedsApproval(sess.Actor, g)
+		if needs && in.ParentID != "" {
+			_ = a.tx(ctx, sess, func(tx pgx.Tx) error {
+				parent, err := a.Store.TaskByID(ctx, tx, in.ParentID)
+				if err != nil {
+					return nil
+				}
+				actor, _, err := a.executorFor(ctx, tx, sess, parent)
+				if err == nil {
+					needs = domain.NeedsApprovalFor(actor, parent.ID, domain.Action{Kind: domain.ActSubtask, Grant: g})
+				}
+				return nil
+			})
+		}
+		if needs {
 			return nil, a.proposeOrFail(ctx, sess, func(tx pgx.Tx) (proposalDraft, error) {
 				d := proposalDraft{Action: action, Grant: g, Payload: in,
 					Summary: i18n.M("proposal.summary.task.create", in.Title)}
@@ -96,7 +114,24 @@ func (a *App) createTask(ctx context.Context, sess *Session, in CreateTaskInput)
 		}
 	}
 	var task *domain.Task
-	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+	err := a.tx(ctx, sess, func(tx pgx.Tx) (err error) {
+		task, err = a.createTaskTx(ctx, tx, sess, in)
+		return err
+	})
+	return task, err
+}
+
+// createTaskTx 是创建任务在事务里的那一段：校验类型 / 上级 / 目标 / 迭代 / 参与角色，写入，记动态，通知，
+// 要求就绪时再走第一步。目标方案的批量落库（ADR 0026）在一个事务里逐个调它。授权在调用方判。
+func (a *App) createTaskTx(ctx context.Context, tx pgx.Tx, sess *Session, in CreateTaskInput) (*domain.Task, error) {
+	if in.Title == "" {
+		return nil, Bad("err.title_required")
+	}
+	if in.TypeName == "" {
+		in.TypeName = "generic"
+	}
+	var task *domain.Task
+	err := func() error {
 		tt, err := a.Store.CurrentTaskType(ctx, tx, in.TypeName)
 		if err != nil {
 			return Bad("err.type_missing", in.TypeName)
@@ -132,6 +167,10 @@ func (a *App) createTask(ctx context.Context, sess *Session, in CreateTaskInput)
 			RequiredCapabilities: in.RequiredCapabilities, HumanOnly: in.HumanOnly, State: tt.Workflow.Initial,
 			Participants: map[string]string{}, Fields: in.Fields, Priority: priority, EstimateHours: in.EstimateHours,
 			PlannedStart: in.PlannedStart, PlannedEnd: in.PlannedEnd, Points: in.Points,
+			AcceptanceMode: in.AcceptanceMode, PlanID: in.PlanID,
+		}
+		if task.AcceptanceMode == "" {
+			task.AcceptanceMode = domain.AcceptanceHuman
 		}
 		var sprint *domain.Sprint
 		if in.SprintID != "" {
@@ -182,6 +221,14 @@ func (a *App) createTask(ctx context.Context, sess *Session, in CreateTaskInput)
 		if err := a.notify(ctx, tx, sess, tt, task, events); err != nil {
 			return err
 		}
+		// 人把新任务直接指派给 Agent 即发委托（ADR 0028）；方案里的任务由方案落库时统一发（带方案编号）
+		if in.PlanID == "" && isAgentID(task.AssigneeID) {
+			if issuer := issuerOf(sess); issuer != "" {
+				if _, err := a.issueMandate(ctx, tx, sess, task, task.AssigneeID, issuer, "", MandateOptions{}); err != nil {
+					return err
+				}
+			}
+		}
 		if in.Ready {
 			// 内置类型的第一步由创建者触发；自定义类型没有这一步就保持初始状态
 			c, err := a.loadContext(ctx, tx, sess, task.ID)
@@ -203,7 +250,7 @@ func (a *App) createTask(ctx context.Context, sess *Session, in CreateTaskInput)
 			}
 		}
 		return nil
-	})
+	}()
 	return task, err
 }
 
@@ -720,7 +767,7 @@ func (a *App) AddArtifact(ctx context.Context, sess *Session, taskID string, art
 			Summary: i18n.M("proposal.summary.task.artifact", c.Task.Title, title)}, nil
 	}
 	return a.taskCommand(ctx, sess, writeOp{"attach_artifact", map[string]any{"task_id": taskID, "type": art.Type, "title": art.Title, "ref": art.Ref}}, taskID, draft, func(c *domain.Context) (*domain.Outcome, error) {
-		if domain.NeedsApproval(sess.Actor, domain.GrantExecute) {
+		if domain.NeedsApprovalFor(sess.Actor, c.Task.ID, domain.Action{Kind: domain.ActArtifact, Grant: domain.GrantExecute}) {
 			return nil, &domain.ErrNeedsApproval{Grant: domain.GrantExecute}
 		}
 		return domain.AddArtifact(c, sess.Actor, art), nil
@@ -852,6 +899,12 @@ type WorkflowView struct {
 	CanClaim    bool             `json:"can_claim"`
 	ClaimWhyNot []string         `json:"claim_reasons,omitempty"`
 	Progress    int              `json:"progress"`
+	// 验收契约（Agent 能力补齐）：我是不是验收人；现在能走的验收通过 / 打回两步的名字（没有就空）。
+	IsReviewer   bool   `json:"is_reviewer"`
+	ReviewAccept string `json:"review_accept_step,omitempty"`
+	ReviewReject string `json:"review_reject_step,omitempty"`
+	// 委托（ADR 0028）：我在这个任务上有没有委托、委托里仍要问人的事、对外动作许可。
+	Mandate *MandateStatus `json:"mandate,omitempty"`
 }
 
 // StateView 是状态的展示形式（已按请求者语言渲染）。
@@ -913,5 +966,13 @@ func (a *App) workflowView(c *domain.Context, sess *Session) *WorkflowView {
 	v.CanBegin = len(v.BeginWhyNot) == 0
 	v.ClaimWhyNot = domain.RenderReasons(loc, domain.CanClaim(c, actor))
 	v.CanClaim = len(v.ClaimWhyNot) == 0
+	v.IsReviewer = domain.IsReviewer(c.Task, actor)
+	v.ReviewAccept, v.ReviewReject = domain.ReviewStep(c, true), domain.ReviewStep(c, false)
+	if sess.IsAgent() {
+		v.Mandate = &MandateStatus{}
+		if actor != nil && actor.InMandate(c.Task.ID) {
+			v.Mandate = &MandateStatus{InMandate: true, MandateID: actor.Mandate.ID, SideEffects: actor.Mandate.SideEffects}
+		}
+	}
 	return v
 }

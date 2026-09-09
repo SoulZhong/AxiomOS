@@ -247,6 +247,7 @@ const (
 type Goal struct {
 	ID       string `json:"id"`
 	OrgID    string `json:"org_id"`
+	Version  int    `json:"version"` // 每次写入加一（ADR 0028）
 	ParentID string `json:"parent_id,omitempty"`
 	TeamID   string `json:"team_id,omitempty"`
 	// TypeID 是目标类型（ADR 0023），可空：空表示「未分类」。类型只做分类与显示，不带任何行为。

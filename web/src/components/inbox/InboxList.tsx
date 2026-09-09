@@ -8,6 +8,7 @@ import { errorMessage, useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { prefersReducedMotion } from "@/lib/motion";
 import { IconApprove, IconChevronRight, IconPlay } from "@/components/icons";
+import { ProposalDetails } from "@/components/proposals/ProposalDetails";
 import { HELM_MS } from "@/components/proposals/RejectDialog";
 import { refreshShipTelemetry } from "@/components/ship-status/telemetry";
 import { useToast } from "@/components/toast";
@@ -298,7 +299,8 @@ function Group({ group, handled, autoRead, helm, busy, onApprove, onReject, onBe
           timer = 0;
         }
       },
-      { threshold: 0.5 },
+      // 阈值 0：通知一多，整组比视口还高，50% 永远到不了，自动标已读就永远不触发；露出来就开始计时
+      { threshold: 0 },
     );
     io.observe(ref.current);
     return () => {
@@ -415,6 +417,8 @@ function ProposalRow({ p, helm, busy, onApprove, onReject }: { p: Proposal; helm
           <RelativeTime iso={p.created_at} className="ml-auto shrink-0 text-caption text-ink-subtle" />
         </span>
         <span className="mt-0.5 line-clamp-1 block text-caption text-ink-muted" title={p.summary}>{p.summary}</span>
+        {/* 要确认的到底是什么：说明、交付物、方案规模……不让人对着一句「确认后会推进」拍板 */}
+        <ProposalDetails p={p} className="mt-1 space-y-0.5" />
       </span>
       <Tip tip={mayDecide ? null : t("proposals.cannotDecide")} className="inline-flex shrink-0 items-center gap-1">
         <span className="helm-turn inline-flex" data-motion={helm ? "helm" : undefined}>

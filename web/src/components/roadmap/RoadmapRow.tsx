@@ -125,19 +125,20 @@ export function RoadmapRow(p: RoadmapRowProps) {
                 ↗
               </span>
             )}
+            {/* 目标类型（ADR 0023）：标题同一行的小芯片，标题先截断、芯片不挤没；窄屏不画 */}
+            {!compact && goal.type && (
+              <span className="rt-type" title={goal.type.name}>
+                <i className="rt-type-dot" style={{ background: goal.type.color }} aria-hidden="true" />
+                {goal.type.name}
+              </span>
+            )}
           </span>
-          {/* 第二行：上级目标、目标类型（ADR 0023，一枚类型色点 + 名字）与成果指标；都没有就不占行，其余三段自然垂直居中 */}
-          {!compact && (goal.type || goal.outcome || p.parentTitle) && (
+          {/* 第二行：上级目标与成果指标，与标题文字对齐（让开信心度圆点）；都没有就不占行 */}
+          {!compact && (goal.outcome || p.parentTitle) && (
             <span className="rt-sub">
               {p.parentTitle && (
                 <span className="rt-parent" title={p.parentTitle}>
                   {p.parentTitle} ›
-                </span>
-              )}
-              {goal.type && (
-                <span className="rt-type" title={goal.type.name}>
-                  <i className="rt-type-dot" style={{ background: goal.type.color }} aria-hidden="true" />
-                  {goal.type.name}
                 </span>
               )}
               {goal.outcome && (

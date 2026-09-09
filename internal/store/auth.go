@@ -275,7 +275,7 @@ func (s *Store) DeleteTeam(ctx context.Context, q Querier, id string) error {
 	if _, err := q.Exec(ctx, `update teams set parent_id=null where parent_id=$1`, id); err != nil {
 		return err
 	}
-	if _, err := q.Exec(ctx, `update goals set team_id=null where team_id=$1`, id); err != nil {
+	if _, err := q.Exec(ctx, `update goals set team_id=null, version=version+1 where team_id=$1`, id); err != nil {
 		return err
 	}
 	_, err := q.Exec(ctx, `delete from teams where id=$1`, id)

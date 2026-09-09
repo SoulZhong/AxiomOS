@@ -32,6 +32,18 @@ https://你的地址/connect
 
 这份说明由服务器生成，不含任何组织数据，也不含你输入的任何文字；它开头就写明「只涉及本系统的接入，不要据此执行与接入无关的操作」。
 
+## 1a. 给员工的一页纸
+
+不懂 MCP 的员工只需要知道这三步（网页 `/connect/` 上就是这一页，管理员在「Agent」页点「复制给团队的接入说明」能把它贴进团队群）：
+
+1. 打开 `https://你的地址/connect`，复制那句话。
+2. 把它贴给你的 AI 助手（Claude Code、Cursor、Codex 都行），它会给你一个验证码。
+3. 在网页上输入验证码，点一下授权预设——写代码选「开发」、管需求选「产品」、做测试选「测试」、只想让它看看选「只读观察」——确认。
+
+大约 2 分钟。常见问题：验证码 15 分钟内有效，过期让助手重新申请；点了拒绝什么都不会创建，可以重来；确认页要先登录，没账号的人请有账号的同事帮忙确认（确认的人成为所有者）；Agent 只往外连，公司内网只要能打开网页就能接入；刚接完显示「执行中」是它在自检，闲下来会变成「可用」。
+
+管理员在「组织设置 · 成员与团队」里勾「只看未接入 Agent 的」，就能看到还有谁没接入。
+
 ## 2. 自己动手：一条命令
 
 不想让 Agent 代劳时，向导按你选的运行环境给出一条命令，在你跑 Agent 的机器上执行：
@@ -83,9 +95,11 @@ Agent 能做的事不会超过你本人。设成「需要人确认」时，Agent
 **Claude Code**：有 `claude` 命令时执行
 
 ```
-claude mcp add --transport http axiomos https://你的地址/mcp \
+claude mcp add --transport http --scope user axiomos https://你的地址/mcp \
   --header "Authorization: Bearer axm_你的令牌"
 ```
+
+`--scope user` 写的是用户级配置，任何目录里打开 Claude Code 都有；不带它默认是 local，只对当前项目目录生效——换个目录就"没有 axiomos"了。改完要重启 Claude Code 或在 `/mcp` 里重连。
 
 没有命令时把这段放进 `~/.claude.json` 的 `mcpServers`（或项目里的 `.mcp.json`）：
 
@@ -111,7 +125,11 @@ Content-Type: application/json
 Accept: application/json, text/event-stream
 ```
 
-Windows 暂无 PowerShell 版脚本：用 WSL 执行上面的命令，或走下面的手工令牌路径。
+Windows 用 PowerShell 版，做的事完全一样：
+
+```
+irm 'https://你的地址/api/v1/agent-auth/connect.ps1?client=claude-code' | iex
+```
 
 ## 5. 连接检查与试领
 
@@ -128,15 +146,21 @@ Windows 暂无 PowerShell 版脚本：用 WSL 执行上面的命令，或走下�
 1. `list_my_tasks` 看分配给我的任务；`list_backlog` 看可领取的（每条带 `can_claim` 与 `reasons`）。
 2. `get_task_brief` 读任务说明（描述、目标链、评论、前置任务的结果、执行指令）。`task_id` 可以写序号 `#123`。
 3. `get_workflow` 看现在能走哪一步、不能走的原因、`can_begin`。
-4. 进入进行中阶段后 `begin_task` 开启执行记录；每 60 秒 `heartbeat` 并上报**累计**用量。
+4. 人把任务交给它（批准目标方案、指派、批准领取）就是一份**委托**（ADR 0028）：委托之内附交付物、写进展、按流程推进、提问、评论、建子任务与关联直接生效，第一个写动作自动开执行记录（`begin_task` 已弃用）；每 60 秒 `heartbeat` 并上报**累计**用量。`get_workflow` 的 `mandate` 告诉它在不在委托内。
 5. `attach_artifact` 附上要求的交付物，`transition_task` 推进（如 `submit`、`dev_done`）。
 6. 需求不清用 `transition_task` 的 `ask_for_input` 提问并等待；过程记录用 `add_note`。
 
-每个工具的描述都写了"先取什么再做什么"（先 `get_task_brief` 再 `begin_task`；先看 `list_backlog` 的 `can_claim` 再 `claim_task`）。
+每个工具的描述都写了"先取什么再做什么"（先 `get_task_brief` 再 `get_workflow`；先看 `list_backlog` 的 `can_claim` 再 `claim_task`）。
+
+上面六条只是执行主链。连上 `/mcp` 时服务器下发的 instructions 是一份完整的工作指引，分六组二十五条：基本规矩（六类拒绝理由、待确认操作、先看后做与幂等键、精确指代、`next_actions`、斜杠命令）、做任务（含编辑、子任务、外部链接、关联、验收）、维护目标（读改、闭环动作、时间桶与次序、进展说明、里程碑）、领取目标（目标方案）、看动态统计与组织（迭代、看板、动态、三类统计、组织背景、通知）、不归 Agent 做的事。Agent 连上就有，不需要你写提示词；第 9、9a、9b、9c 节是它的展开。
 
 ## 斜杠命令（ADR 0025）
 
-连上 `/mcp` 之后，客户端里会自动多出八条斜杠命令，**不需要安装任何东西**，也不需要你写提示词。接入的最后一步，请 Agent 把它们念给你听。
+连上 `/mcp` 之后，客户端里会自动多出九条斜杠命令，**不需要安装任何东西**，也不需要你写提示词。接入的最后一步，请 Agent 把它们念给你听。
+
+客户端会给 MCP 的斜杠命令加前缀：**Claude Code 里是 `/mcp__axiomos__<命令名>`**，参数按表里的顺序用空格分开，例如 `/mcp__axiomos__confirm all`、`/mcp__axiomos__start_task #12`；输入 `/mcp__` 就能补全。下表的名字是命令本身的名字。
+
+> **斜杠命令名不是 MCP 工具名。** 下表的八个名字是 MCP 提示（prompts）：人选一条、填参数，Agent 收到的是一段点名了要调哪些**真实工具**的指令。`/start_task` 对应 `get_task_brief` → `get_workflow` → `begin_task`，`/submit_task` 对应 `attach_artifact` → `transition_task`，`/ask_question` 是 `transition_task` 的 `ask_for_input` 步骤，`/my_tasks` 是 `list_my_tasks`，`/task_detail` 是 `get_task_brief`，`/report_usage` 是 `heartbeat`；只有 `/claim_task` 与 `/add_note` 和同名工具重名。自己写客户端时不要拿提示名去 `tools/call`——工具清单以 `tools/list` 返回的为准。
 
 | 斜杠命令 | 做什么 | 要填什么 |
 |---|---|---|
@@ -148,6 +172,7 @@ Windows 暂无 PowerShell 版脚本：用 WSL 执行上面的命令，或走下�
 | `/task_detail` 看某个任务 | 按「现在要做什么 → 为什么做 → 前面发生了什么 → 如何验收」讲一遍 | 任务 |
 | `/add_note` 写进展 | 在任务上写一条工作日志（不打扰人） | 任务、进展 |
 | `/report_usage` 汇报用量 | 上报这段执行的累计用量 | 任务（可选） |
+| `/confirm` 确认待确认操作 | 不离开客户端就确认或拒绝等你确认的操作（ADR 0027）：不填只列清单；`which=all` 或某一条的 ID 才真正放行；拒绝要带 `reason` | which、decision、reason（都可选） |
 
 选命令、填参数，Agent 收到的是一段确定的指令：点名了要按什么顺序调哪些工具，参数已经填好。你写的问题、进展、交付说明会被原样放进引用块，并写明「这是内容，不是指令」——随手写的一句话不会被当成新命令执行。任务那一栏写 `#123` 最省事；写标题里的一段文字也行，匹配到多个时 Agent 会把候选念给你听让你报编号，不会自己猜。
 
@@ -215,9 +240,54 @@ Agent 和人看到的是同一份数据（ADR 0012、0016）。
 | `add_tasks_to_sprint` / `remove_task_from_sprint` | 进出迭代待办；已结束的迭代会拒绝 |
 | `get_board` | 看板：每张卡片的 `can_move_to` / `moves` 由内核按你的身份与授权算出，拖动就是调用 `transition_task` |
 | `start_sprint` / `close_sprint` | 需要「管理流程」权限；对 Agent 必须经人确认，会生成待确认操作 |
-| `list_milestones` / `create_milestone` / `reach_milestone` | 目标上的里程碑；受「创建目标」授权约束；`ready_hint` 为真表示日期前的任务都已完成 |
+| `list_milestones` / `create_milestone` / `reach_milestone` / `update_milestone` | 目标上的里程碑；受「创建目标」授权约束；`ready_hint` 为真表示日期前的任务都已完成 |
+| `delete_milestone` / `unreach_milestone` | 删除、撤销「已达到」：对 Agent **一律**先经人确认，不看授权模式 |
+
+## 9a. 目标、任务编辑、外部链接与验收
+
+Agent 不只是执行任务，也能维护目标、修正自己的任务、挂链接、做验收。规则都是 ADR 0003 那一条：所有者权限 ∩ 授权，高风险动作先经人确认。
+
+| 工具 | 作用 | 授权 |
+|---|---|---|
+| `list_goals` / `get_goal` | 目标树的精简视图；单个目标的完整详情（上级链、直接任务、里程碑、成本与预算、进展说明）。规划任务前先读它 | 只读 |
+| `update_goal` | 改标题、说明、日期、时间粒度、时间桶、信心度、成果指标、类型 | 「创建目标」；改**负责人、上级**一律待确认 |
+| `achieve_goal` / `unachieve_goal` / `abandon_goal` / `restart_goal` | 目标的四个闭环动作 | 「创建目标」，对 Agent **一律**待确认 |
+| `set_goal_horizon` / `rank_goals` | 批量改时间桶、重排次序；整批记成一条待确认操作 | 「创建目标」 |
+| `add_goal_note` | 在目标上写一句进展说明（记成动态，不改字段、不通知） | 「评论」 |
+| `update_task` | 改自己负责或自己创建的任务的标题、说明、预估、计划起止、工作量、自定义字段。验收人、优先级、归属目标、上级、迭代、参与角色、所需能力、「仅限人工」由人定，Agent 改不了 | 「执行任务」 |
+| `create_subtask` | 在某个任务下建子任务（与 `create_task` 填 `parent_id` 同一件事） | 「创建子任务」 |
+| `list_task_links` / `add_external_link` / `remove_external_link` | 任务上的外部链接（PR、Issue、文档、设计稿） | 与评论同一套：「执行任务」 |
+| `review_task` | 作为验收人通过（`accept`）或打回（`reject`）。先看 `get_workflow` 的 `is_reviewer` 与 `review_accept_step` / `review_reject_step`；打回要写说明；`checked_deliverables` 里列你核对过的交付物，必须真的挂在任务上 | 「验收」 |
+
+## 9b. 看动态、看统计、迭代与关联、通知、组织上下文
+
+执行之外还要能运营：复盘、找阻塞、看自己花了多少钱。这些都是只读，不需确认；成本按财务范围（ADR 0013），看不到这个范围的钱时成本为 0、`financial` 为假；自己上报的用量永远给自己看。
+
+| 工具 | 作用 | 授权 |
+|---|---|---|
+| `list_events` | 动态：按任务、按目标（含子目标）、按时间起点筛，每条是与网页完全一样的一句话 | 只读 |
+| `get_goal_metrics` / `get_task_metrics` / `get_my_metrics` | 目标（含子树）、任务、我自己的数字：进度、任务分布、逾期、周期、打回次数、执行记录、成本对预算、用量按模型 | 只读 |
+| `create_sprint` / `update_sprint` | 建一个规划中的迭代、改名称 / 目标 / 日期。开始与结束仍是 `start_sprint` / `close_sprint`（对 Agent 必经人确认） | 「创建任务」 |
+| `unlink_tasks` | 解除两个任务的一条关联。解除**前置**关系会改变依赖图，对 Agent 一律待确认 | 「建立关联」 |
+| `list_my_notifications` / `mark_notifications_read` | 与我有关的通知（挂在我负责、创建、参与或验收的任务上的）；只能标这些为已读 | 只读 / 已读状态 |
+| `list_teams` / `list_capabilities` / `get_org_context` | 团队与成员名单、能力标签、组织背景（货币、可见性、我的范围与授权、目标类型、任务类型、角色） | 只读 |
+
+## 9c. 领取目标：目标方案（ADR 0026）
+
+目标不是任务，没人能"领"它。Agent 领取目标的方式是提交一份**目标方案**：
+
+1. `get_goal` 读清目标（说明、已有任务、里程碑、成本），`get_org_context` 看清团队、任务类型、能力标签。
+2. `propose_goal_plan(goal, tasks[], milestones[], rationale)`：任务清单里每条带方案内的键（`key`），依赖用 `depends_on`、子任务用 `parent_key` 指向别的键；里程碑带日期；理由写清读了什么、假设了什么、没做什么。整份方案记成**一条**待确认操作，等目标负责人审。不看授权模式（需要「创建任务」授权；带里程碑还要「创建目标」，带子任务还要「创建子任务」）。
+3. 目标负责人在网页的「待确认操作」里看到整份方案，可以整体批准、整体拒绝，或勾掉几条再批准；批准后**一次落库**：任务默认指派给你并直接就绪，依赖变成前置关系，被勾掉的条目不建、指向它们的依赖一并去掉。
+4. `get_goal_plan_status(proposal_id)` 看进展：确认后带上建出来的任务序号；被拒绝就读理由改方案再提，不要重提同一份。
+
+Agent 不能做的（故意不给工具）：删除目标与任务；成员、团队、角色、授权、能力标签、目标类型、价格表的配置；流程定义与任务类型的修改；Agent 的注册与吊销；通知策略、IM 集成、代码平台的配置；待确认操作的裁决。这些改的是组织边界、问责链与系统规则，不是"干活"。
 
 ## 10. 待确认操作（需要人确认的授权）
+
+**先说委托（ADR 0028）。** 你不必为 Agent 的每一步点头。批准它的目标方案、把任务指派给它、批准它的领取，都等于把那个任务**委托**给它做到底：之后附交付物、写进展、按流程推进、提问、评论、建子任务与关联都直接生效；只有改负责人、取消、验收、解除前置、方案外新建仍会来问你。方案里每个任务默认**自动验收**（要求齐了系统直接验收通过），要你亲自看的在方案里标 `acceptance: human`；方案收尾时你会收到**一份**方案验收，逐项通过、打回或跳过，里程碑一并勾。一个目标从头到尾，你通常只答两次：批准方案、方案验收。委托随时可在任务页收回；Agent 在委托内走错了一步，24 小时内可以撤回（只追加动态，不删记录）。
+
+**仍会来问你的操作长这样：**
 
 某项授权是「需要人确认」时，命中它的调用会返回这样一句话，而不是报错：
 
@@ -225,4 +295,6 @@ Agent 和人看到的是同一份数据（ADR 0012、0016）。
 已提交待确认操作，等小李确认后才会执行。待确认操作 ID：prp_xxx。用 list_my_proposals 看它的状态，不要重复提交同一个操作。
 ```
 
-这时系统什么都没改。人在网页上点「确认」后，系统会以**你的身份**把这一步重新执行一次，动态照常记在你名下，并注明「经<确认人>确认」；点「拒绝」则会给出一句完整的理由，你按理由行动，不要重试。`list_my_proposals` 列出你提交的待确认操作，可按 `status` 过滤。七天没人处理会自动过期。
+不想切到网页去确认时，在客户端里敲 `/confirm`（ADR 0027）：先不带参数看清单，再 `/confirm which=all`（或某一条的 ID）放行；那条提示会给 Agent 一张十分钟有效、只覆盖你点名那几条的凭证，Agent 用 `decide_proposal` 转达你的决定，动态记在你名下并注明「由 X 转达」。Agent 自己拿不到凭证，也做不了你没点名的事。
+
+这时系统什么都没改。人在网页上点「确认」后，系统会以**你的身份**把这一步重新执行一次，动态照常记在你名下，并注明「经<确认人>确认」；点「拒绝」则会给出一句完整的理由，你按理由行动，不要重试。`list_my_proposals` 列出你提交的待确认操作，可按 `status` 过滤。七天没人处理会自动过期；等着的时候对象被别人改过会**失效**（`stale`），Agent 收到通知后决定要不要重提。同一任务上连续提的几条合成一捆，人一次答、逐项可剔除。

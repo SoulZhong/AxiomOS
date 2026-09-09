@@ -29,6 +29,7 @@ export function ConnectWizard({ open, onClose, onManual }: { open: boolean; onCl
     if (open) { setStep(0); setManualOpen(false); setTermOpen(false); setCode(""); }
   }
   const command = `curl -fsSL '${api.agentAuth.scriptUrl(client)}' | sh`;
+  const commandPS = `irm '${api.agentAuth.scriptUrlPS(client)}' | iex`;
   // 贴给 Agent 的链接（ADR 0024）：带上选好的运行环境，说明书里就只给那一种客户端的配置写法
   const prompt = api.agentAuth.onboardPrompt(client);
   const goCode = (e: FormEvent) => {
@@ -85,7 +86,10 @@ export function ConnectWizard({ open, onClose, onManual }: { open: boolean; onCl
             {termOpen && (
               <div className="mt-2 space-y-2">
                 <p className="text-caption text-ink-muted">{t("connect.commandHint", { client: clientTitle(client) })}</p>
+                <p className="text-caption text-ink-subtle">{t("connect.cmdUnix")}</p>
                 <CopyLine text={command} />
+                <p className="text-caption text-ink-subtle">{t("connect.cmdWindows")}</p>
+                <CopyLine text={commandPS} />
                 <p className="text-caption text-ink-subtle">{t("connect.commandNote")}</p>
               </div>
             )}

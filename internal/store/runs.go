@@ -8,7 +8,7 @@ import (
 	"github.com/teemo/axiomos/internal/domain"
 )
 
-const runCols = `id,task_id,state,executor_id,started_at,ended_at,coalesce(outcome,''),last_heartbeat,usage,cost`
+const runCols = `id,task_id,state,executor_id,started_at,ended_at,coalesce(outcome,''),last_heartbeat,usage,cost,mandate_id`
 
 type RunRow struct {
 	domain.Run
@@ -19,7 +19,7 @@ func scanRun(r interface{ Scan(...any) error }) (*RunRow, error) {
 	rr := &RunRow{}
 	var usage []byte
 	var outcome string
-	err := r.Scan(&rr.ID, &rr.TaskID, &rr.State, &rr.ExecutorID, &rr.StartedAt, &rr.EndedAt, &outcome, &rr.LastBeat, &usage, &rr.Cost)
+	err := r.Scan(&rr.ID, &rr.TaskID, &rr.State, &rr.ExecutorID, &rr.StartedAt, &rr.EndedAt, &outcome, &rr.LastBeat, &usage, &rr.Cost, &rr.MandateID)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -37,8 +37,8 @@ func (s *Store) InsertRun(ctx context.Context, q Querier, orgID string, r *domai
 	if r.Usage == nil {
 		usage = []byte("[]")
 	}
-	_, err := q.Exec(ctx, `insert into runs(id,org_id,task_id,state,executor_id,started_at,ended_at,outcome,last_heartbeat,usage) values($1,$2,$3,$4,$5,$6,$7,nullif($8,''),$9,$10)`,
-		r.ID, orgID, r.TaskID, r.State, r.ExecutorID, r.StartedAt, r.EndedAt, string(r.Outcome), r.LastBeat, usage)
+	_, err := q.Exec(ctx, `insert into runs(id,org_id,task_id,state,executor_id,started_at,ended_at,outcome,last_heartbeat,usage,mandate_id) values($1,$2,$3,$4,$5,$6,$7,nullif($8,''),$9,$10,$11)`,
+		r.ID, orgID, r.TaskID, r.State, r.ExecutorID, r.StartedAt, r.EndedAt, string(r.Outcome), r.LastBeat, usage, r.MandateID)
 	return err
 }
 
@@ -172,6 +172,31 @@ func (s *Store) ListEvents(ctx context.Context, q Querier, taskID string, limit 
 	} else {
 		rows, err = q.Query(ctx, `select id,type,coalesce(task_id,''),coalesce(actor_id,''),at,data from events order by id desc limit $1`, limit)
 	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*EventRow
+	for rows.Next() {
+		e := &EventRow{}
+		var data []byte
+		if err := rows.Scan(&e.ID, &e.Type, &e.TaskID, &e.ActorID, &e.At, &data); err != nil {
+			return nil, err
+		}
+		e.Data = map[string]any{}
+		_ = json.Unmarshal(data, &e.Data)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ListEventsByGoal 取挂在某个目标上的动态（目标创建、字段修改、里程碑、进展说明），按时间倒序。
+// 目标类动态没有 task_id，目标在 data.goal_id 里。
+func (s *Store) ListEventsByGoal(ctx context.Context, q Querier, goalID string, limit int) ([]*EventRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := q.Query(ctx, `select id,type,coalesce(task_id,''),coalesce(actor_id,''),at,data from events where data->>'goal_id'=$1 order by id desc limit $2`, goalID, limit)
 	if err != nil {
 		return nil, err
 	}

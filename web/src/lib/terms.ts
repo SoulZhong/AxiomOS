@@ -25,6 +25,35 @@ export const GRANT_ORDER: GrantName[] = [
 export const grantTitle = (g: GrantName) => t(`grant.${g}` as Key);
 export const grantModeTitle = (m: GrantMode) => t(`grantMode.${m}` as Key);
 
+/**
+ * 授权预设（DESIGN.md §21）：确认页与注册抽屉上按角色一键填好十项授权，再逐项微调。
+ * 预设只是预填，不改授权模型（ADR 0003：所有者 ∩ 授权，高风险动作需要人确认），
+ * 所以这张表是界面常量，不是组织可配置的词表（ADR 0014：先写死，等有人要改再开）。
+ * 值：allow = 直接生效，with_approval = 需要人确认，没列的 = 不给。
+ */
+export type GrantPreset = "developer" | "pm" | "tester" | "observer";
+export const GRANT_PRESETS: GrantPreset[] = ["developer", "pm", "tester", "observer"];
+export const GRANT_PRESET_MODES: Record<GrantPreset, Partial<Record<GrantName, "allow" | "with_approval">>> = {
+  // 开发：自己领、自己做、随手记；建子任务与关联直接生效，验收与指派不给
+  developer: { execute: "allow", claim_backlog: "allow", comment: "allow", create_subtask: "allow", link: "allow", create_task: "with_approval" },
+  // 产品：拆任务、建目标、指派；执行与验收都要人确认
+  pm: { create_task: "allow", create_subtask: "allow", comment: "allow", link: "allow", create_goal: "with_approval", assign: "with_approval", execute: "with_approval", review: "with_approval" },
+  // 测试：领测试任务、做验收、报 Bug（创建任务直接生效，Bug 要及时进系统）
+  tester: { execute: "allow", claim_backlog: "allow", review: "allow", comment: "allow", create_task: "allow", link: "allow" },
+  // 只读观察：一项授权都不给，只能看（读工具不要授权）
+  observer: {},
+};
+export const grantPresetTitle = (p: GrantPreset) => t(`grantPreset.${p}` as Key);
+/** 当前这组选择正好等于哪个预设（没有就 null，界面显示「自定义」）。 */
+export function matchGrantPreset(modes: Partial<Record<GrantName, "allow" | "with_approval" | "deny" | "direct" | "">>): GrantPreset | null {
+  const norm = (v: string | undefined) => (v === "direct" ? "allow" : v === "deny" ? "" : v ?? "");
+  for (const p of GRANT_PRESETS) {
+    const want = GRANT_PRESET_MODES[p];
+    if (GRANT_ORDER.every((g) => norm(modes[g]) === (want[g] ?? ""))) return p;
+  }
+  return null;
+}
+
 // Agent 状态（CONTEXT.md「Agent 状态」）：执行中 / 可用 / 已停用。后端也给 state_title，
 // 但界面自己译一遍，切换语言时不用等下一次请求。
 export const AGENT_STATES: AgentState[] = ["running", "ready", "inactive"];

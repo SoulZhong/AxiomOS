@@ -203,6 +203,12 @@ func TestRejectionsSayTheSameThingOnBothSurfaces(t *testing.T) {
 	// 3. 需要确认：「执行任务」授权是需要人确认
 	tokApproval, agApproval := w.agent(t, w.yi, "需确认 Agent", map[domain.Grant]domain.GrantMode{domain.GrantExecute: domain.GrantWithApproval}, 1)
 	tApproval := w.task(t, w.jia, "需确认任务", agApproval.Actor.ID)
+	// 人指派给 Agent 即发委托（ADR 0028），委托内开始不问人；这里要的是「需要人确认」，先把委托收回
+	if ms, err := a.TaskMandates(ctx, w.jia, tApproval.ID); err != nil || len(ms) != 1 {
+		t.Fatalf("指派给 Agent 应发一份委托：%v %+v", err, ms)
+	} else if _, err := a.RevokeMandate(ctx, w.jia, ms[0].ID, "先逐条确认"); err != nil {
+		t.Fatal(err)
+	}
 
 	// 4. 前置未完成：前置任务还在待办
 	tPre := w.task(t, w.jia, "前置任务", w.yi.MemberID)
@@ -252,6 +258,8 @@ func TestRejectionsSayTheSameThingOnBothSurfaces(t *testing.T) {
 			httpCode: 409, method: "POST", path: "/tasks/" + tGrant.ID + "/comments", body: map[string]any{"body": "你好"}, tool: "add_comment", args: map[string]any{"task_id": tGrant.ID, "text": "你好"}},
 		{name: "范围不可见", token: tokExec, expect: func(l i18n.Locale) string { return i18n.Tr(l, "err.task_hidden") },
 			httpCode: 403, method: "GET", path: "/tasks/" + tHidden.ID, tool: "get_task", args: map[string]any{"task_id": tHidden.ID}},
+		{name: "范围不可见·动态", token: tokExec, expect: func(l i18n.Locale) string { return i18n.Tr(l, "err.task_hidden") },
+			httpCode: 403, method: "GET", path: "/events?task=" + tHidden.ID, tool: "list_events", args: map[string]any{"task_id": tHidden.ID}},
 		{name: "不存在", token: tokExec, expect: func(l i18n.Locale) string { return i18n.Tr(l, "err.not_found") },
 			httpCode: 404, method: "GET", path: "/tasks/tsk_nope", tool: "get_task_brief", args: map[string]any{"task_id": "tsk_nope"}},
 		{name: "需要确认", token: tokApproval, expect: func(l i18n.Locale) string { return i18n.Trf(l, "proposal.pending_msg", "乙") }, prefix: true,

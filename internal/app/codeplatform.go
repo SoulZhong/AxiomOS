@@ -773,6 +773,12 @@ func (a *App) TaskLinks(ctx context.Context, sess *Session, taskID string) ([]Li
 // AddTaskLink 给任务挂一条手工外部链接（POST /tasks/{id}/links）。
 // Agent 与评论同一套规则：要有「执行任务」授权，是「需要人确认」时记一条待确认操作。
 func (a *App) AddTaskLink(ctx context.Context, sess *Session, taskID string, in LinkInput) (*LinkView, error) {
+	return idempotent(ctx, a, sess, "add_external_link", map[string]any{"task_id": taskID, "kind": in.Kind, "url": in.URL, "title": in.Title}, func() (*LinkView, error) {
+		return a.addTaskLink(ctx, sess, taskID, in)
+	})
+}
+
+func (a *App) addTaskLink(ctx context.Context, sess *Session, taskID string, in LinkInput) (*LinkView, error) {
 	kind := strings.TrimSpace(in.Kind)
 	if kind == "" {
 		kind = "other"
@@ -803,13 +809,21 @@ func (a *App) AddTaskLink(ctx context.Context, sess *Session, taskID string, in 
 			if !sess.Actor.HasGrant(domain.GrantExecute) {
 				return &domain.Rejection{Reasons: []domain.Reason{i18n.M("reject.agent_no_grant", i18n.Key("grant.execute"))}}
 			}
-			if domain.NeedsApproval(sess.Actor, domain.GrantExecute) {
+			if domain.NeedsApprovalFor(sess.Actor, c.Task.ID, domain.Action{Kind: domain.ActExternalLink, Grant: domain.GrantExecute}) {
+				summary := i18n.M("proposal.summary.task.external_link", c.Task.Title, title)
+				if sess.Write.DryRun {
+					return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), summary)
+				}
 				pv, err = a.createProposal(ctx, tx, sess, proposalDraft{Action: ActionTaskExternalLink, Grant: domain.GrantExecute,
 					TargetKind: "task", TargetID: c.Task.ID, TargetTitle: c.Task.Title,
 					Payload: map[string]any{"task_id": c.Task.ID, "kind": kind, "url": link, "title": title},
-					Summary: i18n.M("proposal.summary.task.external_link", c.Task.Title, title)})
+					Summary: summary})
 				return err
 			}
+		}
+		// 只看不做（ADR 0025）：地址、种类、权限都校验过了，写库之前停住。
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.task.external_link", taskRefText(c.Task), title))
 		}
 		l := &store.ExternalLink{OrgID: sess.OrgID, TaskID: c.Task.ID, Kind: kind, URL: link, Title: title, CreatedBy: sess.Actor.ID}
 		created, err := a.Store.UpsertLink(ctx, tx, l)
@@ -835,8 +849,20 @@ func (a *App) AddTaskLink(ctx context.Context, sess *Session, taskID string, in 
 }
 
 // RemoveTaskLink 摘掉一条外部链接（DELETE /tasks/{id}/links/{link_id}）。动态 ExternalLinkRemoved。
+// Agent 与挂链接同一套规则：要有「执行任务」授权，是「需要人确认」时先记一条待确认操作。
 func (a *App) RemoveTaskLink(ctx context.Context, sess *Session, taskID, linkID string) error {
-	return a.tx(ctx, sess, func(tx pgx.Tx) error {
+	_, err := idempotent(ctx, a, sess, "remove_external_link", map[string]any{"task_id": taskID, "link_id": linkID}, func() (map[string]any, error) {
+		if err := a.removeTaskLink(ctx, sess, taskID, linkID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"task_id": taskID, "removed": linkID}, nil
+	})
+	return err
+}
+
+func (a *App) removeTaskLink(ctx context.Context, sess *Session, taskID, linkID string) error {
+	var pv *ProposalView
+	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
 		c, err := a.loadContext(ctx, tx, sess, taskID)
 		if err != nil {
 			return err
@@ -848,6 +874,19 @@ func (a *App) RemoveTaskLink(ctx context.Context, sess *Session, taskID, linkID 
 		if err != nil || l.TaskID != taskID {
 			return NotFound("err.link_missing")
 		}
+		if sess.Actor.Kind == domain.ExecutorAgent && domain.NeedsApprovalFor(sess.Actor, c.Task.ID, domain.Action{Kind: domain.ActExternalLink, Grant: domain.GrantExecute}) {
+			summary := i18n.M("proposal.summary.task.external_link_remove", c.Task.Title, l.Title)
+			if sess.Write.DryRun {
+				return dryRunPending(sess, a.executorName(ctx, tx, sess.MemberID), summary)
+			}
+			pv, err = a.createProposal(ctx, tx, sess, proposalDraft{Action: ActionTaskExternalLinkRemove, Grant: domain.GrantExecute,
+				TargetKind: "task", TargetID: c.Task.ID, TargetTitle: c.Task.Title,
+				Payload: map[string]any{"task_id": c.Task.ID, "link_id": l.ID, "title": l.Title}, Summary: summary})
+			return err
+		}
+		if sess.Write.DryRun {
+			return dryRun(sess, i18n.M("will.task.external_link_remove", taskRefText(c.Task), l.Title))
+		}
 		ok, err := a.Store.DeleteLink(ctx, tx, taskID, linkID)
 		if err != nil {
 			return err
@@ -858,6 +897,13 @@ func (a *App) RemoveTaskLink(ctx context.Context, sess *Session, taskID, linkID 
 		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "ExternalLinkRemoved", TaskID: c.Task.ID, ActorID: sess.Actor.ID, At: time.Now(),
 			Data: map[string]any{"kind": l.Kind, "url": l.URL, "title": l.Title}}})
 	})
+	if err != nil {
+		return err
+	}
+	if pv != nil {
+		return pending(sess, pv)
+	}
+	return nil
 }
 
 // ---------- webhook 入口 ----------

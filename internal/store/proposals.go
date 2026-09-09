@@ -10,14 +10,14 @@ import (
 	"github.com/teemo/axiomos/internal/domain"
 )
 
-const proposalCols = `id,org_id,agent_id,owner_id,action,grant_name,target_kind,target_id,target_title,payload,summary,status,coalesce(decided_by,''),decided_at,reason,created_at,expires_at`
+const proposalCols = `id,org_id,agent_id,owner_id,action,grant_name,target_kind,target_id,target_title,payload,summary,status,coalesce(decided_by,''),decided_at,reason,created_at,expires_at,bundle_id,target_version,grants_snapshot`
 
 func scanProposal(r interface{ Scan(...any) error }) (*domain.Proposal, error) {
 	p := &domain.Proposal{}
-	var payload, summary []byte
+	var payload, summary, grants []byte
 	var status, grant string
 	err := r.Scan(&p.ID, &p.OrgID, &p.AgentID, &p.OwnerID, &p.Action, &grant, &p.TargetKind, &p.TargetID, &p.TargetTitle,
-		&payload, &summary, &status, &p.DecidedBy, &p.DecidedAt, &p.Reason, &p.CreatedAt, &p.ExpiresAt)
+		&payload, &summary, &status, &p.DecidedBy, &p.DecidedAt, &p.Reason, &p.CreatedAt, &p.ExpiresAt, &p.BundleID, &p.TargetVersion, &grants)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -29,6 +29,8 @@ func scanProposal(r interface{ Scan(...any) error }) (*domain.Proposal, error) {
 	p.Payload = map[string]any{}
 	_ = json.Unmarshal(payload, &p.Payload)
 	_ = json.Unmarshal(summary, &p.Summary)
+	p.GrantsSnapshot = map[domain.Grant]domain.GrantMode{}
+	_ = json.Unmarshal(grants, &p.GrantsSnapshot)
 	return p, nil
 }
 
@@ -57,16 +59,55 @@ func (s *Store) InsertProposal(ctx context.Context, q Querier, p *domain.Proposa
 	if err != nil {
 		return err
 	}
-	_, err = q.Exec(ctx, `insert into proposals(id,org_id,agent_id,owner_id,action,grant_name,target_kind,target_id,target_title,payload,summary,status,created_at,expires_at)
-		values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+	if p.GrantsSnapshot == nil {
+		p.GrantsSnapshot = map[domain.Grant]domain.GrantMode{}
+	}
+	grants, err := json.Marshal(p.GrantsSnapshot)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `insert into proposals(id,org_id,agent_id,owner_id,action,grant_name,target_kind,target_id,target_title,payload,summary,status,created_at,expires_at,bundle_id,target_version,grants_snapshot)
+		values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		p.ID, p.OrgID, p.AgentID, p.OwnerID, p.Action, string(p.Grant), p.TargetKind, p.TargetID, p.TargetTitle,
-		payload, summary, string(p.Status), p.CreatedAt, p.ExpiresAt)
+		payload, summary, string(p.Status), p.CreatedAt, p.ExpiresAt, p.BundleID, p.TargetVersion, grants)
 	return err
 }
 
 // ProposalByID 读取一条待确认操作。
 func (s *Store) ProposalByID(ctx context.Context, q Querier, id string) (*domain.Proposal, error) {
 	return scanProposal(q.QueryRow(ctx, `select `+proposalCols+` from proposals where id=$1`, id))
+}
+
+// ProposalByIDForUpdate 锁住一条待确认操作再读（答的时候用，同一条只会被答一次；ADR 0028 第 7 条）。
+func (s *Store) ProposalByIDForUpdate(ctx context.Context, q Querier, id string) (*domain.Proposal, error) {
+	return scanProposal(q.QueryRow(ctx, `select `+proposalCols+` from proposals where id=$1 for update`, id))
+}
+
+// PendingProposalOnTask 找同一 Agent 在同一任务上仍在等待的一条，用于并入同一捆。
+func (s *Store) PendingProposalOnTask(ctx context.Context, q Querier, agentID, targetKind, targetID string) (*domain.Proposal, error) {
+	p, err := scanProposal(q.QueryRow(ctx, `select `+proposalCols+` from proposals where agent_id=$1 and target_kind=$2 and target_id=$3 and status='pending' order by created_at limit 1`, agentID, targetKind, targetID))
+	if err == ErrNotFound {
+		return nil, nil
+	}
+	return p, err
+}
+
+// ProposalsInBundle 列出一捆里的全部待确认操作，按提出顺序。
+func (s *Store) ProposalsInBundle(ctx context.Context, q Querier, bundleID string) ([]*domain.Proposal, error) {
+	rows, err := q.Query(ctx, `select `+proposalCols+` from proposals where bundle_id=$1 order by created_at`, bundleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Proposal
+	for rows.Next() {
+		p, err := scanProposal(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // UpdateProposalDecision 记录确认 / 拒绝 / 过期的结果。
@@ -82,6 +123,7 @@ type ProposalFilter struct {
 	AgentID  string
 	OwnerID  string   // 只看这个成员名下 Agent 提交的
 	Actions  []string // 只看这些动作
+	TargetID string   // 只看针对这个对象的
 	Limit    int
 	OnlyOpen bool // 只看还在等人确认的
 }
@@ -102,6 +144,9 @@ func (s *Store) ListProposals(ctx context.Context, q Querier, f ProposalFilter) 
 	}
 	if f.OwnerID != "" {
 		where = append(where, "owner_id="+arg(f.OwnerID))
+	}
+	if f.TargetID != "" {
+		where = append(where, "target_id="+arg(f.TargetID))
 	}
 	if len(f.Actions) > 0 {
 		where = append(where, "action = any("+arg(f.Actions)+")")
