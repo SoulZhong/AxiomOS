@@ -38,6 +38,12 @@
   background: var(--c-surface-1);
 }
 
+.sc-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--c-ink-subtle);
+}
+
 /* ---------- 图例 ---------- */
 .sc-legend {
   display: flex;

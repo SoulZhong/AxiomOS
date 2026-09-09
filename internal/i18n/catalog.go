@@ -350,7 +350,6 @@ var catalog = map[string]Text{
 	"err.team_synced_name":             T("来自%s的团队名称由同步决定。", "The name of a team from %s is decided by the sync."),
 	"err.team_deactivate_blocked":      T("先把成员和下级团队挪走，再停用这个团队。", "Move its members and sub-teams out first, then deactivate this team."),
 	"err.team_delete_synced":           T("来自%s的团队不能删除，只能停用。", "A team from %s cannot be deleted, only deactivated."),
-	"err.team_delete_not_empty":        T("先把成员和下级团队挪走，再删除这个团队。", "Move its members and sub-teams out first, then delete this team."),
 	"err.csv_empty":                    T("CSV 里没有数据行。", "The CSV has no data rows."),
 	"err.csv_header":                   T("CSV 第一行要有表头，至少包含「邮箱」这一列；可用的列是姓名、邮箱、团队、角色。", "The first CSV row must be a header with at least an \"email\" column; the recognised columns are name, email, team and roles."),
 	"err.csv_parse":                    T("CSV 第 %d 行读不出来：%s", "CSV line %d could not be read: %s"),

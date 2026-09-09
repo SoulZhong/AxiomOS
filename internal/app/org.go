@@ -1271,6 +1271,74 @@ func (a *App) teamHasActiveContent(ctx context.Context, tx pgx.Tx, teams []*doma
 }
 
 // DeleteTeam 删除团队：只有没有成员、没有下级团队的手工团队才能删；来自IM 集成的团队只能停用（ADR 0017）。
+// TeamImpact 是删除一个团队会波及什么：确认对话框先给人看，DeleteTeam 用同一段算法记进动态。
+type TeamImpact struct {
+	Members  int `json:"members"`   // 直接成员，会离开这个团队
+	OnlyTeam int `json:"only_team"` // 其中从此不属于任何团队的人
+	SubTeams int `json:"sub_teams"` // 直接下级团队，会上移到新上级
+	Goals    int `json:"goals"`     // 归口到它的目标，改成不归口
+	Sprints  int `json:"sprints"`   // 属于它的迭代，改成按组织
+	// NewParentID / NewParent 是下级上移后的新上级；空 = 顶层
+	NewParentID string `json:"new_parent_id"`
+	NewParent   string `json:"new_parent"`
+	IsBoundary  bool   `json:"is_boundary"`
+}
+
+func (a *App) teamImpact(ctx context.Context, tx pgx.Tx, teams []*domain.Team, t *domain.Team) (*TeamImpact, error) {
+	members, err := a.Store.TeamMembers(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	out := &TeamImpact{Members: len(members[t.ID]), NewParentID: t.ParentID, IsBoundary: t.IsBoundary}
+	if p := teamsByID(teams)[t.ParentID]; p != nil {
+		out.NewParent = p.Name
+	}
+	elsewhere := map[string]bool{}
+	for tid, ms := range members {
+		if tid == t.ID {
+			continue
+		}
+		for _, m := range ms {
+			elsewhere[m] = true
+		}
+	}
+	for _, m := range members[t.ID] {
+		if !elsewhere[m] {
+			out.OnlyTeam++
+		}
+	}
+	for _, x := range teams {
+		if x.ParentID == t.ID {
+			out.SubTeams++
+		}
+	}
+	out.Goals, out.Sprints, err = a.Store.TeamRefCounts(ctx, tx, t.ID)
+	return out, err
+}
+
+// TeamDeleteImpact 删除前看影响范围（GET /org/teams/{id}/impact）。
+func (a *App) TeamDeleteImpact(ctx context.Context, sess *Session, id string) (*TeamImpact, error) {
+	if err := a.requireOrgSettings(sess); err != nil {
+		return nil, err
+	}
+	var out *TeamImpact
+	err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+		teams, err := a.Store.ListTeams(ctx, tx)
+		if err != nil {
+			return err
+		}
+		t := teamsByID(teams)[id]
+		if t == nil {
+			return Bad("err.team_missing")
+		}
+		out, err = a.teamImpact(ctx, tx, teams, t)
+		return err
+	})
+	return out, err
+}
+
+// DeleteTeam 删除手工建的团队，有成员、有下级也能删：成员离开它，下级上移到它的上级，归口到它的目标与迭代改成不归口。
+// 界面上删除前要经过带影响范围的二次确认。来自IM 集成的团队只能停用（下次同步还会对上）。
 func (a *App) DeleteTeam(ctx context.Context, sess *Session, id string) error {
 	if err := a.requireOrgSettings(sess); err != nil {
 		return err
@@ -1287,22 +1355,16 @@ func (a *App) DeleteTeam(ctx context.Context, sess *Session, id string) error {
 		if t.Source != domain.SourceManual {
 			return Bad("err.team_delete_synced", SourceText(t.Source))
 		}
-		for _, x := range teams {
-			if x.ParentID == id {
-				return Bad("err.team_delete_not_empty")
-			}
-		}
-		members, err := a.Store.TeamMembers(ctx, tx)
+		impact, err := a.teamImpact(ctx, tx, teams, t)
 		if err != nil {
 			return err
 		}
-		if len(members[id]) > 0 {
-			return Bad("err.team_delete_not_empty")
-		}
-		if err := a.Store.DeleteTeam(ctx, tx, id); err != nil {
+		if err := a.Store.DeleteTeam(ctx, tx, id, t.ParentID); err != nil {
 			return err
 		}
-		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "TeamDeleted", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"team_id": id, "name": t.Name}}})
+		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "TeamDeleted", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{
+			"team_id": id, "name": t.Name, "members": impact.Members, "sub_teams": impact.SubTeams, "goals": impact.Goals, "sprints": impact.Sprints, "new_parent_id": t.ParentID,
+		}}})
 	})
 }
 

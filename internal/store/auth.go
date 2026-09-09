@@ -268,18 +268,28 @@ func (s *Store) UpdateTeam(ctx context.Context, q Querier, t *domain.Team) error
 	return err
 }
 
-func (s *Store) DeleteTeam(ctx context.Context, q Querier, id string) error {
+// DeleteTeam 删除团队：成员离开它，直接下级挪到 newParent 下（空 = 顶层），归口到它的目标与迭代改成不归口。
+func (s *Store) DeleteTeam(ctx context.Context, q Querier, id, newParent string) error {
 	if _, err := q.Exec(ctx, `delete from team_members where team_id=$1`, id); err != nil {
 		return err
 	}
-	if _, err := q.Exec(ctx, `update teams set parent_id=null where parent_id=$1`, id); err != nil {
+	if _, err := q.Exec(ctx, `update teams set parent_id=nullif($2,'') where parent_id=$1`, id, newParent); err != nil {
 		return err
 	}
 	if _, err := q.Exec(ctx, `update goals set team_id=null, version=version+1 where team_id=$1`, id); err != nil {
 		return err
 	}
+	if _, err := q.Exec(ctx, `update sprints set team_id=null where team_id=$1`, id); err != nil {
+		return err
+	}
 	_, err := q.Exec(ctx, `delete from teams where id=$1`, id)
 	return err
+}
+
+// TeamRefCounts 数归口到这个团队的目标数与迭代数（删除前的影响统计）。
+func (s *Store) TeamRefCounts(ctx context.Context, q Querier, id string) (goals, sprints int, err error) {
+	err = q.QueryRow(ctx, `select (select count(*) from goals where team_id=$1), (select count(*) from sprints where team_id=$1)`, id).Scan(&goals, &sprints)
+	return
 }
 
 // TeamMembers 返回团队 → 成员 ID 列表。

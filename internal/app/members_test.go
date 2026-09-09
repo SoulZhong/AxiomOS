@@ -259,25 +259,32 @@ func TestTeamMoveDeactivateDelete(t *testing.T) {
 		t.Fatalf("恢复应成功: %+v %v", dev, err)
 	}
 
-	// 删除：同步团队不能删；有下级 / 有成员不能删；空的手工团队能删
+	// 删除：同步团队不能删；手工团队有成员、有下级也能删——影响范围先算清楚，成员离开、下级上移到它的上级
 	if err := a.DeleteTeam(ctx, jia, f.synced.ID); err == nil || !strings.Contains(err.Error(), "不能删除，只能停用。") {
 		t.Fatalf("同步团队删除应被拒，实际 %v", err)
-	}
-	if err := a.DeleteTeam(ctx, jia, f.dev.ID); err == nil || err.Error() != "先把成员和下级团队挪走，再删除这个团队。" {
-		t.Fatalf("有下级的团队删除应被拒，实际 %v", err)
-	}
-	if err := a.DeleteTeam(ctx, jia, f.qa.ID); err != nil {
-		t.Fatalf("空手工团队应能删: %v", err)
 	}
 	if _, err := a.BulkMembers(ctx, jia, BulkMembersInput{MemberIDs: []string{yi.MemberID}, Action: "move_team", TeamID: f.dev.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.DeleteTeam(ctx, jia, f.dev.ID); err == nil || err.Error() != "先把成员和下级团队挪走，再删除这个团队。" {
-		t.Fatalf("有成员的团队删除应被拒，实际 %v", err)
+	impact, err := a.TeamDeleteImpact(ctx, jia, f.dev.ID)
+	if err != nil || impact.Members != 1 || impact.OnlyTeam != 1 || impact.SubTeams != 1 || impact.NewParentID != f.prod.ID || impact.NewParent != "产品事业部" {
+		t.Fatalf("研发部的影响范围应是 1 人（且只在这一个团队）、1 个下级、上移到产品事业部，实际 %+v %v", impact, err)
+	}
+	if err := a.DeleteTeam(ctx, jia, f.dev.ID); err != nil {
+		t.Fatalf("有成员有下级的手工团队也应能删: %v", err)
+	}
+	if qa := teamByName(t, a, ctx, jia, "测试组"); qa.ParentID != f.prod.ID {
+		t.Fatalf("下级应上移到产品事业部，实际 parent=%q", qa.ParentID)
+	}
+	if m := memberByID(t, a, ctx, jia, yi.MemberID); m.TeamID != "" || len(m.TeamIDs) != 0 {
+		t.Fatalf("成员应不再属于任何团队，实际 team_id=%q team_ids=%v", m.TeamID, m.TeamIDs)
+	}
+	if err := a.DeleteTeam(ctx, jia, f.qa.ID); err != nil {
+		t.Fatalf("空手工团队应能删: %v", err)
 	}
 
 	after := eventTypes(t, a, ctx, orgID)
-	if after["TeamMoved"]-before["TeamMoved"] != 1 || after["TeamDeactivated"]-before["TeamDeactivated"] != 2 || after["TeamReactivated"]-before["TeamReactivated"] != 1 || after["TeamDeleted"]-before["TeamDeleted"] != 1 || after["TeamUpdated"]-before["TeamUpdated"] != 1 {
+	if after["TeamMoved"]-before["TeamMoved"] != 1 || after["TeamDeactivated"]-before["TeamDeactivated"] != 2 || after["TeamReactivated"]-before["TeamReactivated"] != 1 || after["TeamDeleted"]-before["TeamDeleted"] != 2 || after["TeamUpdated"]-before["TeamUpdated"] != 1 {
 		t.Fatalf("动态不符 before=%v after=%v", before, after)
 	}
 }

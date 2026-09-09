@@ -120,8 +120,8 @@ export function TeamTree({ orgName, teams, members, counts, total, selected, onS
     ];
     if (inactive) items.push({ key: "restore", label: t("settings.people.reactivateTeam"), onSelect: () => actions.reactivateTeam(tm) });
     else if (synced) items.push({ key: "deactivate", label: t("settings.people.deactivateTeam"), onSelect: () => actions.deactivateTeam(tm), danger: true, disabled: occupied && t("settings.people.teamNotEmpty") });
-    // 删除比停用严：下级团队哪怕已停用也算占着（后端同样这么判）
-    if (!synced) items.push({ key: "delete", label: t("settings.people.deleteTeam"), onSelect: () => actions.deleteTeam(tm), danger: true, disabled: (tm.member_ids.length > 0 || hasChildren) && t("settings.people.teamNotEmptyDelete") });
+    // 手工团队有人有下级也能删：影响范围与二次确认在对话框里
+    if (!synced) items.push({ key: "delete", label: t("settings.people.deleteTeam"), onSelect: () => actions.deleteTeam(tm), danger: true });
     return (
       <li key={tm.id} role="none">
         <div

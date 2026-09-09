@@ -643,6 +643,51 @@ html[data-kbd] dialog[open]::backdrop {
   top: calc(100% + 6px);
   transform-origin: 50% 0;
 }
+/* 挂在 body 上的气泡（Tip 组件的常规路径）：fixed 定位，滚动容器裁不到；150ms 进入延迟 + 125ms 淡入缩放；键盘聚焦直接出现 */
+.tip-pop {
+  position: fixed;
+  z-index: 60;
+  transform: translate(-50%, -100%);
+  transform-origin: 50% 100%;
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+  border: 1px solid var(--c-hairline-strong);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  white-space: pre-line;
+  max-width: 280px;
+  width: max-content;
+  text-align: left;
+  pointer-events: none;
+  animation: tip-in 125ms var(--ease-out) 150ms both;
+}
+.tip-pop-bottom {
+  transform: translate(-50%, 0);
+  transform-origin: 50% 0;
+}
+.tip-pop-right {
+  transform: translate(0, -50%);
+  transform-origin: 0 50%;
+}
+.tip-pop[data-instant] {
+  animation: none;
+}
+@keyframes tip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (hover: hover) and (pointer: fine) {
+  @keyframes tip-in {
+    from { opacity: 0; scale: 0.97; }
+    to { opacity: 1; scale: 1; }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tip-pop { animation: none; }
+}
 @media (hover: hover) and (pointer: fine) {
   .tip[data-tip]::after {
     transform: translateX(-50%) scale(0.97);
@@ -2003,6 +2048,9 @@ html[data-kbd] tr[data-motion] > td {
 .sidebar .sb-tip[data-tip]::after {
   display: none;
 }
+.sidebar .sb-tip {
+  --tip-hidden: 1;
+}
 @media (min-width: 768px) {
   .sidebar {
     width: 220px;
@@ -2041,6 +2089,9 @@ html[data-kbd] tr[data-motion] > td {
   html:not([data-sidebar="expanded"]) .sidebar .sb-tip[data-tip]::after {
     display: block;
   }
+  html:not([data-sidebar="expanded"]) .sidebar .sb-tip {
+    --tip-hidden: 0;
+  }
 }
 @media (min-width: 1200px) {
   html[data-sidebar="collapsed"] .sidebar {
@@ -2070,6 +2121,9 @@ html[data-kbd] tr[data-motion] > td {
   }
   html[data-sidebar="collapsed"] .sidebar .sb-tip[data-tip]::after {
     display: block;
+  }
+  html[data-sidebar="collapsed"] .sidebar .sb-tip {
+    --tip-hidden: 0;
   }
 }
 /* 侧栏里的气泡：贴在图标右侧，与提示气泡同一套样式；侧栏 overflow hidden 会裁掉它，所以 .sb-tip 用 fixed 定位不可行——改为让侧栏在收起态允许溢出可见 */

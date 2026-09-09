@@ -9,7 +9,7 @@ import { usePersisted } from "@/lib/usePersisted";
 import { useSession } from "@/components/AppShell";
 import { SCOPE_ALL, useScopeState } from "@/lib/useScope";
 import { IconChevronLeft, IconChevronRight } from "@/components/icons";
-import { Button, Empty, ErrorBox, ListSkeleton, Segmented, Select, cx } from "@/components/ui";
+import { Button, ErrorBox, ListSkeleton, Segmented, Select, cx } from "@/components/ui";
 
 /*
  * 日程（ADR 0032，DESIGN.md §27）：目标、任务、里程碑与外部日历的一种看法。
@@ -88,20 +88,14 @@ export function ScheduleView() {
         <ErrorBox message={data.error} onRetry={data.reload} />
       ) : !data.data ? (
         <div className="sc-skeleton"><ListSkeleton rows={6} /></div>
-      ) : items.length === 0 ? (
-        <>
-          <Legend sources={data.data.sources} members={who === "team" ? members : undefined} />
-          <Empty text={t(who === "team" && members.length === 0 ? "schedule.emptyTeam" : effScale === "day" ? "schedule.emptyDay" : effScale === "week" ? "schedule.emptyWeek" : "schedule.emptyMonth")} />
-        </>
-      ) : effScale === "month" ? (
-        <>
-          <Legend sources={data.data.sources} members={who === "team" ? members : undefined} />
-          <MonthGrid range={range} anchor={anchor} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} />
-        </>
       ) : (
         <>
           <Legend sources={data.data.sources} members={who === "team" ? members : undefined} />
-          <WeekGrid range={range} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} />
+          {/* 没有安排也照样画格子——日历本身就是信息（今天在哪、周末在哪）；空只提示一句 */}
+          {items.length === 0 && <p className="sc-empty" role="status">{t(who === "team" && members.length === 0 ? "schedule.emptyTeam" : effScale === "day" ? "schedule.emptyDay" : effScale === "week" ? "schedule.emptyWeek" : "schedule.emptyMonth")}</p>}
+          {effScale === "month"
+            ? <MonthGrid range={range} anchor={anchor} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} />
+            : <WeekGrid range={range} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} />}
         </>
       )}
     </div>
@@ -184,7 +178,7 @@ function Chip({ it, day, meID, compact, names }: { it: ScheduleItem; day: string
   const [a, b] = daysOf(it);
   const first = a === day;
   const last = b === day;
-  const who = names ? names[it.member_id] ?? "" : "";
+  const who = names ? it.member_name ?? names[it.member_id] ?? "" : "";
   const label = it.kind === "task" && it.number ? `#${it.number} ${it.title}` : it.title;
   const tip = (who ? who + " · " : "") + (it.kind === "task" ? `#${it.number} ${it.title}${it.state ? " · " + it.state.title : ""}` : it.kind === "event" && it.starts_at && !it.all_day ? `${timeText(it)} ${it.title}` : it.title);
   const body: ReactNode = (
