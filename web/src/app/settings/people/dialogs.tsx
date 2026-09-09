@@ -40,6 +40,62 @@ export function TeamPickerList({ teams, value, onChange, exclude, excludeReason,
   );
 }
 
+/** 编辑团队：名称（同步来的不能改）、上级、负责人、共享边界，一次改好。只提交改过的字段。 */
+export function EditTeamDialog({ team, teams, members, onClose, onSaved }: { team: OrgTeam; teams: OrgTeam[]; members: OrgMember[]; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  const synced = isSynced(team);
+  const [name, setName] = useState(team.name);
+  const [parent, setParent] = useState<string | null>(team.parent_id ?? null);
+  const [lead, setLead] = useState<string>(team.lead_id ?? "");
+  const [boundary, setBoundary] = useState(!!team.is_boundary);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const exclude = subtreeIds(teams, team.id);
+  const parentRows = flattenTree(buildTree(teams.filter((x) => x.active !== false)));
+  const people = [...members].filter((m) => m.active !== false).sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+  const patch: Parameters<typeof api.org.updateTeam>[1] = {};
+  if (!synced && name.trim() && name.trim() !== team.name) patch.name = name.trim();
+  if (parent !== (team.parent_id ?? null)) patch.parent_id = parent;
+  if ((lead || null) !== (team.lead_id ?? null)) patch.lead_id = lead || null;
+  if (boundary !== !!team.is_boundary) patch.is_boundary = boundary;
+  const dirty = Object.keys(patch).length > 0;
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!dirty) return;
+    setBusy(true); setError(null);
+    try {
+      await api.org.updateTeam(team.id, patch);
+      toast.ok(t("toast.saved"));
+      onSaved(); onClose();
+    } catch (err) { setError(errorMessage(err)); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog open onClose={onClose} title={t("settings.people.editTeamTitle", { name: team.name })} footer={<><Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button><Button variant="primary" type="submit" form="edit-team" disabled={busy || !dirty || (!synced && !name.trim())}>{t("common.save")}</Button></>}>
+      <form id="edit-team" onSubmit={submit} className="flex flex-col gap-3">
+        <Field label={t("settings.teams.name")} hint={synced ? t("settings.teams.nameSynced", { name: team.source_title ?? team.source }) : undefined}>
+          <Input value={name} onChange={(e) => setName(e.target.value)} disabled={synced} maxLength={80} autoFocus={!synced} className="w-full" />
+        </Field>
+        <Field label={t("settings.teams.parent")} as="div">
+          <Select value={parent ?? ""} onChange={(e) => setParent(e.target.value || null)} className="w-full">
+            <option value="">{t("settings.teams.noParent")}</option>
+            {parentRows.map(({ team: x, depth }) => <option key={x.id} value={x.id} disabled={exclude.has(x.id)}>{"\u00a0\u00a0".repeat(depth)}{x.name}</option>)}
+          </Select>
+        </Field>
+        <Field label={t("settings.teams.lead")} as="div">
+          <Select value={lead} onChange={(e) => setLead(e.target.value)} className="w-full">
+            <option value="">{t("settings.teams.noLead")}</option>
+            {people.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </Select>
+        </Field>
+        <Field label={t("settings.teams.boundary")} hint={boundary ? t("settings.teams.boundaryOn") : t("settings.teams.boundaryOff")} as="div">
+          <Checkbox label={t("settings.teams.boundaryTag")} checked={boundary} onChange={(e) => setBoundary(e.target.checked)} />
+        </Field>
+        {error && <ErrorBox message={error} />}
+      </form>
+    </Dialog>
+  );
+}
+
 /** 移动团队：选一个新的上级（自己和下级不能选）。 */
 export function MoveTeamDialog({ team, teams, onClose, onMoved }: { team: OrgTeam | null; teams: OrgTeam[]; onClose: () => void; onMoved: () => void }) {
   const toast = useToast();

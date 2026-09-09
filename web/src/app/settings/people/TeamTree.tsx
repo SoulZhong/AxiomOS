@@ -14,10 +14,13 @@ import { buildTree, type TeamNode } from "./tree";
 export interface TreeActions {
   createTeam: (parentId: string | null, name: string) => Promise<boolean>;
   renameTeam: (team: OrgTeam, name: string) => Promise<boolean>;
+  editTeam: (team: OrgTeam) => void;
   moveTeam: (team: OrgTeam) => void;
   toggleBoundary: (team: OrgTeam) => void;
+  /** 同步来的团队只能停用（下次同步还会对上）；手工建的直接删除 */
   deactivateTeam: (team: OrgTeam) => void;
   reactivateTeam: (team: OrgTeam) => void;
+  deleteTeam: (team: OrgTeam) => void;
 }
 
 export function TeamTree({ orgName, teams, members, counts, total, selected, onSelect, expanded, onToggle, actions, className }: {
@@ -107,15 +110,18 @@ export function TeamTree({ orgName, teams, members, counts, total, selected, onS
     const open = isOpen(n);
     const isSel = selected === tm.id;
     const occupied = tm.member_ids.length > 0 || n.children.some((c) => c.team.active !== false);
+    // 菜单：新建下级 / 编辑 / 重命名 / 移动 / 边界，最后是危险项——同步来的团队只能停用，手工建的才能删除
     const items: MenuItem[] = [
       { key: "child", label: t("settings.people.newChild"), onSelect: () => startCreate(tm.id), disabled: inactive && t("settings.people.teamInactive") },
+      { key: "edit", label: t("settings.people.editTeam"), onSelect: () => actions.editTeam(tm) },
       { key: "rename", label: t("settings.people.rename"), onSelect: () => { setCreating(null); setRenaming(tm.id); }, disabled: synced && t("settings.people.syncedTeam", { name: sourceName }) },
       { key: "move", label: t("settings.people.moveTo"), onSelect: () => actions.moveTeam(tm) },
       { key: "boundary", label: tm.is_boundary ? t("settings.people.unsetBoundary") : t("settings.people.setBoundary"), onSelect: () => actions.toggleBoundary(tm) },
-      inactive
-        ? { key: "restore", label: t("settings.people.reactivateTeam"), onSelect: () => actions.reactivateTeam(tm) }
-        : { key: "deactivate", label: t("settings.people.deactivateTeam"), onSelect: () => actions.deactivateTeam(tm), danger: true, disabled: occupied && t("settings.people.teamNotEmpty") },
     ];
+    if (inactive) items.push({ key: "restore", label: t("settings.people.reactivateTeam"), onSelect: () => actions.reactivateTeam(tm) });
+    else if (synced) items.push({ key: "deactivate", label: t("settings.people.deactivateTeam"), onSelect: () => actions.deactivateTeam(tm), danger: true, disabled: occupied && t("settings.people.teamNotEmpty") });
+    // 删除比停用严：下级团队哪怕已停用也算占着（后端同样这么判）
+    if (!synced) items.push({ key: "delete", label: t("settings.people.deleteTeam"), onSelect: () => actions.deleteTeam(tm), danger: true, disabled: (tm.member_ids.length > 0 || hasChildren) && t("settings.people.teamNotEmptyDelete") });
     return (
       <li key={tm.id} role="none">
         <div

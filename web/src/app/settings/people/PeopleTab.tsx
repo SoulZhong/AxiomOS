@@ -9,7 +9,7 @@ import { IconChevronDown, IconChevronRight, IconDownload, IconPlus, IconUpload }
 import { useToast } from "@/components/toast";
 import { Button, Checkbox, ConsequenceDialog, Empty, ErrorBox, ListSkeleton, Menu, Panel, Segmented, Select, Tag, TableSkeleton, Tip, cx } from "@/components/ui";
 import { MergeDialog, type MergeSide } from "../MergeDialog";
-import { BulkTeamDialog, ChangeRolesDialog, ChangeTeamDialog, ImportDialog, InviteDialog, MoveTeamDialog } from "./dialogs";
+import { BulkTeamDialog, ChangeRolesDialog, ChangeTeamDialog, EditTeamDialog, ImportDialog, InviteDialog, MoveTeamDialog } from "./dialogs";
 import { EditMemberDrawer } from "./MemberDrawer";
 import { MemberTable, type PersonRow } from "./MemberTable";
 import { TeamTree, type TreeActions } from "./TeamTree";
@@ -49,7 +49,9 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
   const [deactivating, setDeactivating] = useState<OrgMember | null>(null);
   const [owning, setOwning] = useState<OrgMember | null>(null);
   const [movingTeam, setMovingTeam] = useState<OrgTeam | null>(null);
+  const [editingTeam, setEditingTeam] = useState<OrgTeam | null>(null);
   const [removingTeam, setRemovingTeam] = useState<OrgTeam | null>(null);
+  const [deletingTeam, setDeletingTeam] = useState<OrgTeam | null>(null);
   const [revoking, setRevoking] = useState<PersonRow | null>(null);
   const [merging, setMerging] = useState<{ kind: "member"; a: MergeSide; b: MergeSide; reason?: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -128,15 +130,21 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
       return ok;
     },
     renameTeam: (tm, name) => act(() => api.org.updateTeam(tm.id, { name }), t("settings.people.teamRenamed", { name })),
+    editTeam: (tm) => setEditingTeam(tm),
     moveTeam: (tm) => setMovingTeam(tm),
     toggleBoundary: (tm) => void act(() => api.org.updateTeam(tm.id, { is_boundary: !tm.is_boundary }), t("toast.saved")),
     deactivateTeam: (tm) => setRemovingTeam(tm),
     reactivateTeam: (tm) => void act(() => api.org.updateTeam(tm.id, { active: true }), t("settings.people.teamRestored", { name: tm.name })),
+    deleteTeam: (tm) => setDeletingTeam(tm),
   };
+  // 同步来的团队只停用（下次同步还会对上）；手工建的才真删
   const removeTeam = async (tm: OrgTeam) => {
-    // 手工建的空团队直接删掉；同步来的只能停用（下次同步还会对上）
-    const ok = await act(() => (isSynced(tm) ? api.org.updateTeam(tm.id, { active: false }) : api.org.deleteTeam(tm.id)), t("settings.people.teamRemoved", { name: tm.name }));
+    const ok = await act(() => api.org.updateTeam(tm.id, { active: false }), t("settings.people.teamRemoved", { name: tm.name }));
     if (ok) { setRemovingTeam(null); if (selectedTeam === tm.id) selectTeam(tm.parent_id ?? null); }
+  };
+  const deleteTeam = async (tm: OrgTeam) => {
+    const ok = await act(() => api.org.deleteTeam(tm.id), t("settings.people.teamDeleted", { name: tm.name }));
+    if (ok) { setDeletingTeam(null); if (selectedTeam === tm.id) selectTeam(tm.parent_id ?? null); }
   };
 
   // ---- 成员操作（表格行的菜单） ----
@@ -228,6 +236,7 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <h3 className="text-title text-ink">{inactiveView ? t("settings.people.inactiveView") : team?.name ?? orgName}</h3>
                   <span className="text-caption text-ink-subtle">{inactiveView ? t("settings.teams.memberCount", { n: scopeInactive }) : t("settings.people.total", { n: scopeTotal })}{hasChildren && !inactiveView && <> · {t("settings.people.totalHint")}</>}</span>
+                  {team?.lead_id && !inactiveView && <span className="text-caption text-ink-subtle">· {t("settings.teams.lead")} <button type="button" className="text-ink-muted hover:text-ink" onClick={() => { const m = allMembers.find((x) => x.id === team.lead_id); if (m) setEditing(m); }}>{allMembers.find((x) => x.id === team.lead_id)?.name ?? "—"}</button></span>}
                   {team?.is_boundary && <Tag tone="accent" title={t("settings.teams.boundaryOn")}>{t("settings.teams.boundaryTag")}</Tag>}
                   {team && isSynced(team) && <Tag title={t("settings.teams.nameSynced", { name: team.source_title ?? team.source })}>{t("settings.directory.from", { name: team.source_title ?? team.source })}</Tag>}
                   {team?.active === false && <Tag dark>{t("settings.people.teamInactive")}</Tag>}
@@ -296,6 +305,7 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
       {teamFor && <ChangeTeamDialog key={teamFor.id} member={teamFor} teams={allTeams} onClose={() => setTeamFor(null)} onSaved={reloadAll} onGoUnbind={onGoDirectory} />}
       {rolesFor && <ChangeRolesDialog key={rolesFor.id} member={rolesFor} roles={roleList} onClose={() => setRolesFor(null)} onSaved={reloadAll} />}
       {movingTeam && <MoveTeamDialog key={movingTeam.id} team={movingTeam} teams={allTeams} onClose={() => setMovingTeam(null)} onMoved={reloadAll} />}
+      {editingTeam && <EditTeamDialog key={editingTeam.id} team={editingTeam} teams={allTeams} members={allMembers} onClose={() => setEditingTeam(null)} onSaved={reloadAll} />}
       {dialog?.kind === "bulk" && <BulkTeamDialog key={dialog.key} open members={selectedVisible} teams={allTeams} defaultTeam={selectedTeam} onClose={() => setDialog(null)} onDone={() => { setSelected(new Set()); reloadAll(); }} onGoUnbind={onGoDirectory} />}
       {dialog?.kind === "invite" && <InviteDialog key={dialog.key} open roles={roleList} teams={allTeams} defaultTeam={selectedTeam} onClose={() => setDialog(null)} onInvited={() => { reloadAll(); }} />}
       {dialog?.kind === "import" && <ImportDialog key={dialog.key} open roles={roleList} teams={allTeams} onClose={() => setDialog(null)} onImported={reloadAll} />}
@@ -321,12 +331,22 @@ export function PeopleTab({ onGoDirectory }: { onGoDirectory?: () => void } = {}
       <ConsequenceDialog
         open={!!removingTeam}
         title={removingTeam ? t("settings.people.deactivateTeamTitle", { name: removingTeam.name }) : ""}
-        effects={[t("settings.people.deactivateTeamEffect.tree"), removingTeam && isSynced(removingTeam) ? t("settings.people.deactivateTeamEffect.synced", { source: removingTeam.source_title ?? removingTeam.source ?? "" }) : t("settings.people.deactivateTeamEffect.manual")]}
+        effects={[t("settings.people.deactivateTeamEffect.tree"), removingTeam && t("settings.people.deactivateTeamEffect.synced", { source: removingTeam.source_title ?? removingTeam.source ?? "" })]}
         confirmLabel={t("settings.people.deactivateTeam")}
         danger
         busy={busy}
         onConfirm={() => removingTeam && void removeTeam(removingTeam)}
         onClose={() => setRemovingTeam(null)}
+      />
+      <ConsequenceDialog
+        open={!!deletingTeam}
+        title={deletingTeam ? t("settings.people.deleteTeamTitle", { name: deletingTeam.name }) : ""}
+        effects={[t("settings.people.deactivateTeamEffect.tree"), t("settings.people.deleteTeamEffect.gone")]}
+        confirmLabel={t("settings.people.deleteTeam")}
+        danger
+        busy={busy}
+        onConfirm={() => deletingTeam && void deleteTeam(deletingTeam)}
+        onClose={() => setDeletingTeam(null)}
       />
     </Panel>
   );

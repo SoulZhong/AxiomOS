@@ -7,6 +7,7 @@ import { useLoad } from "@/lib/hooks";
 import { t, useLocale, type Key } from "@/lib/i18n";
 import { usePersisted } from "@/lib/usePersisted";
 import { useSession } from "@/components/AppShell";
+import { SCOPE_ALL, useScopeState } from "@/lib/useScope";
 import { IconChevronLeft, IconChevronRight } from "@/components/icons";
 import { Button, Empty, ErrorBox, ListSkeleton, Segmented, Select, cx } from "@/components/ui";
 
@@ -14,7 +15,8 @@ import { Button, Empty, ErrorBox, ListSkeleton, Segmented, Select, cx } from "@/
  * 日程（ADR 0032，DESIGN.md §27）：目标、任务、里程碑与外部日历的一种看法。
  * 三档粒度写死：日 / 周 / 月；周从周一起。四类各有画法：
  *   任务 = 按状态着色的条（只有截止日的画成一枚旗标）；目标 = 淡一级的底条；里程碑 = 菱形；会议 = 带来源的块（别人的只画「忙」）。
- * 「我的 / 团队」切换：团队按成员一人一行，只看周与日。这里不能新建、不能拖动——改日期去任务页、路线图或外部日历。
+ * 「我的 / 团队」切换：团队视图是整个团队的安排合在一张表里（每条前面带谁的名字），团队从组织树上任选一个节点，
+ * 默认是自己所属的最近那个团队。这里不能新建、不能拖动——改日期去任务页、路线图或外部日历。
  */
 
 type Scale = "day" | "week" | "month";
@@ -33,8 +35,22 @@ export function ScheduleView() {
   const [who, setWho] = useState<Who>("me");
   const [teamID, setTeamID] = useState<string>("");
   const [anchor, setAnchor] = useState<Date>(() => today());
-  const teams = session?.teams ?? [];
-  const team = teamID || teams[0]?.id || "";
+  // 组织树上能看到的团队（带层级缩进，来自会话的范围档位）；没有档位信息时退回自己所在的团队
+  const { options } = useScopeState();
+  const tree = useMemo(() => {
+    const teams = options.filter((o) => o.id !== SCOPE_ALL);
+    const base = Math.min(...teams.map((o) => o.depth));
+    const fromScope = teams.map((o) => ({ id: o.id as string, name: o.title, depth: o.depth - base }));
+    if (fromScope.length > 0) return fromScope;
+    return (session?.teams ?? []).map((x) => ({ id: x.id, name: x.name, depth: 0 }));
+  }, [options, session?.teams]);
+  // 默认团队：自己直接所属的、层级最深的那个（组织树上离自己最近的节点）；不属于任何团队就取树上第一个
+  const defaultTeam = useMemo(() => {
+    const mine = (session?.my_team_ids ?? []).filter((id) => tree.some((x) => x.id === id));
+    const depthOf = (id: string) => tree.find((x) => x.id === id)?.depth ?? -1;
+    return [...mine].sort((a, b) => depthOf(b) - depthOf(a))[0] ?? tree[0]?.id ?? "";
+  }, [session?.my_team_ids, tree]);
+  const team = teamID || defaultTeam;
   const effScale: Scale = scale;
 
   const range = useMemo(() => rangeOf(effScale, anchor), [effScale, anchor]);
@@ -57,12 +73,12 @@ export function ScheduleView() {
           <h2 className="sc-title">{title}</h2>
         </div>
         <div className="sc-tools">
-          {who === "team" && teams.length > 1 && (
-            <Select value={team} onChange={(e) => setTeamID(e.target.value)} aria-label={t("schedule.teamPick")} className="w-[160px]">
-              {teams.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          {who === "team" && tree.length > 1 && (
+            <Select value={team} onChange={(e) => setTeamID(e.target.value)} aria-label={t("schedule.teamPick")} className="w-[200px]">
+              {tree.map((x) => <option key={x.id} value={x.id}>{"\u00a0\u00a0".repeat(x.depth)}{x.name}</option>)}
             </Select>
           )}
-          {teams.length > 0 && (
+          {tree.length > 0 && (
             <Segmented size="sm" value={who} options={[["me", t("schedule.scope.mine")], ["team", t("schedule.scope.team")]]} onChange={setWho} aria-label={t("schedule.scope")} />
           )}
           <Segmented size="sm" value={effScale} options={SCALES.map((k) => [k, t(`schedule.view.${k}` as Key)])} onChange={setScale} aria-label={t("schedule.scaleLabel")} />
@@ -72,30 +88,20 @@ export function ScheduleView() {
         <ErrorBox message={data.error} onRetry={data.reload} />
       ) : !data.data ? (
         <div className="sc-skeleton"><ListSkeleton rows={6} /></div>
-      ) : items.length === 0 && who === "me" ? (
+      ) : items.length === 0 ? (
         <>
-          <Legend sources={data.data.sources} />
-          <Empty text={t(effScale === "day" ? "schedule.emptyDay" : effScale === "week" ? "schedule.emptyWeek" : "schedule.emptyMonth")} />
-        </>
-      ) : who === "team" && effScale === "month" ? (
-        <>
-          <Legend sources={data.data.sources} />
-          <TeamMonth anchor={anchor} items={items} members={members} meID={meID} onPickDay={(d) => { setAnchor(d); setScale("day"); }} />
-        </>
-      ) : who === "team" ? (
-        <>
-          <Legend sources={data.data.sources} />
-          <TeamGrid range={range} items={items} members={members} meID={meID} />
+          <Legend sources={data.data.sources} members={who === "team" ? members : undefined} />
+          <Empty text={t(who === "team" && members.length === 0 ? "schedule.emptyTeam" : effScale === "day" ? "schedule.emptyDay" : effScale === "week" ? "schedule.emptyWeek" : "schedule.emptyMonth")} />
         </>
       ) : effScale === "month" ? (
         <>
-          <Legend sources={data.data.sources} />
-          <MonthGrid range={range} anchor={anchor} items={items} meID={meID} />
+          <Legend sources={data.data.sources} members={who === "team" ? members : undefined} />
+          <MonthGrid range={range} anchor={anchor} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} />
         </>
       ) : (
         <>
-          <Legend sources={data.data.sources} />
-          <WeekGrid range={range} items={items} meID={meID} />
+          <Legend sources={data.data.sources} members={who === "team" ? members : undefined} />
+          <WeekGrid range={range} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} />
         </>
       )}
     </div>
@@ -168,19 +174,25 @@ function timeText(it: ScheduleItem): string {
   return e ? `${hm(s)}–${hm(e)}` : hm(s);
 }
 
-/** 一枚日程项：任务条 / 目标底条 / 里程碑菱形 / 会议块。compact 时只留一行 */
-function Chip({ it, day, meID, compact }: { it: ScheduleItem; day: string; meID: string; compact?: boolean }) {
+function nameMap(members: Array<{ id: string; name: string }>): Record<string, string> {
+  return Object.fromEntries(members.map((m) => [m.id, m.name]));
+}
+
+/** 一枚日程项：任务条 / 目标底条 / 里程碑菱形 / 会议块。compact 时只留一行；names 非空（团队视图）时前面带谁的名字 */
+function Chip({ it, day, meID, compact, names }: { it: ScheduleItem; day: string; meID: string; compact?: boolean; names?: Record<string, string> | null }) {
   const href = hrefOf(it);
   const [a, b] = daysOf(it);
   const first = a === day;
   const last = b === day;
+  const who = names ? names[it.member_id] ?? "" : "";
   const label = it.kind === "task" && it.number ? `#${it.number} ${it.title}` : it.title;
-  const tip = it.kind === "task" ? `#${it.number} ${it.title}${it.state ? " · " + it.state.title : ""}` : it.kind === "event" && it.starts_at && !it.all_day ? `${timeText(it)} ${it.title}` : it.title;
+  const tip = (who ? who + " · " : "") + (it.kind === "task" ? `#${it.number} ${it.title}${it.state ? " · " + it.state.title : ""}` : it.kind === "event" && it.starts_at && !it.all_day ? `${timeText(it)} ${it.title}` : it.title);
   const body: ReactNode = (
     <>
       {it.kind === "milestone" && <i className="sc-diamond" aria-hidden="true" />}
       {it.kind === "task" && it.deadline && <i className="sc-flag" aria-hidden="true" />}
       {it.kind === "event" && !it.all_day && !compact && <span className="sc-time">{timeText(it)}</span>}
+      {who && <span className="sc-who">{who}</span>}
       <span className="sc-chip-label">{label}</span>
       {it.kind === "event" && it.provider && !it.title_hidden && !compact && <span className="sc-src">{providerShort(it.provider)}</span>}
     </>
@@ -198,9 +210,10 @@ function providerShort(p: string): string {
 }
 
 /** 图例：四类画法 + 接上的外部日历来源 */
-function Legend({ sources }: { sources: string[] }) {
+function Legend({ sources, members }: { sources: string[]; members?: Array<{ id: string; name: string }> }) {
   return (
     <div className="sc-legend" aria-hidden="true">
+      {members && <span className="sc-legend-members">{t("schedule.teamMembers", { n: members.length })}{members.length > 0 && <span className="text-ink-tertiary">（{members.slice(0, 8).map((m) => m.name).join("、")}{members.length > 8 ? "…" : ""}）</span>}</span>}
       <span><i className="sc-swatch sc-chip-accent" />{t("schedule.legend.task")}</span>
       <span><i className="sc-swatch sc-chip-goal" />{t("schedule.legend.goal")}</span>
       <span><i className="sc-diamond" />{t("schedule.legend.milestone")}</span>
@@ -211,7 +224,7 @@ function Legend({ sources }: { sources: string[] }) {
 
 // ---------- 周 / 日 ----------
 
-function WeekGrid({ range, items, meID }: { range: { from: Date; to: Date }; items: ScheduleItem[]; meID: string }) {
+function WeekGrid({ range, items, meID, names }: { range: { from: Date; to: Date }; items: ScheduleItem[]; meID: string; names: Record<string, string> | null }) {
   const days = useMemo(() => Array.from({ length: diffDays(range.from, range.to) + 1 }, (_, i) => addDays(range.from, i)), [range]);
   const todayISO = toISODate(today());
   const hours = Array.from({ length: HOUR_END - HOUR_START }, (_, i) => HOUR_START + i);
@@ -235,7 +248,7 @@ function WeekGrid({ range, items, meID }: { range: { from: Date; to: Date }; ite
         const list = allDay(iso);
         return (
           <div key={iso} className={cx("sc-band", iso === todayISO && "sc-today")}>
-            {list.map((it) => <Chip key={it.kind + it.id} it={it} day={iso} meID={meID} />)}
+            {list.map((it) => <Chip key={it.kind + it.id} it={it} day={iso} meID={meID} names={names} />)}
           </div>
         );
       })}
@@ -255,7 +268,7 @@ function WeekGrid({ range, items, meID }: { range: { from: Date; to: Date }; ite
               const h = Math.max(18, bottom - top);
               return (
                 <div key={it.id} className="sc-timed" style={{ top, height: h }}>
-                  <Chip it={it} day={iso} meID={meID} />
+                  <Chip it={it} day={iso} meID={meID} names={names} />
                 </div>
               );
             })}
@@ -276,7 +289,7 @@ function NowLine() {
 
 // ---------- 月 ----------
 
-function MonthGrid({ range, anchor, items, meID }: { range: { from: Date; to: Date }; anchor: Date; items: ScheduleItem[]; meID: string }) {
+function MonthGrid({ range, anchor, items, meID, names }: { range: { from: Date; to: Date }; anchor: Date; items: ScheduleItem[]; meID: string; names: Record<string, string> | null }) {
   const days = useMemo(() => Array.from({ length: diffDays(range.from, range.to) + 1 }, (_, i) => addDays(range.from, i)), [range]);
   const todayISO = toISODate(today());
   const MAX = 4;
@@ -290,111 +303,11 @@ function MonthGrid({ range, anchor, items, meID }: { range: { from: Date; to: Da
         return (
           <div key={iso} className={cx("sc-cell", iso === todayISO && "sc-today", d.getMonth() !== anchor.getMonth() && "sc-other", (d.getDay() === 0 || d.getDay() === 6) && "sc-weekend")}>
             <span className="sc-dn">{d.getDate() === 1 ? `${monthName(d.getMonth() + 1)}${d.getDate()}` : d.getDate()}</span>
-            {shown.map((it) => <Chip key={it.kind + it.id} it={it} day={iso} meID={meID} compact />)}
+            {shown.map((it) => <Chip key={it.kind + it.id} it={it} day={iso} meID={meID} compact names={names} />)}
             {list.length > MAX && <span className="sc-more">+{list.length - MAX}</span>}
           </div>
         );
       })}
     </div>
-  );
-}
-
-// ---------- 团队：一人一行 ----------
-
-function TeamGrid({ range, items, members, meID }: { range: { from: Date; to: Date }; items: ScheduleItem[]; members: Array<{ id: string; name: string }>; meID: string }) {
-  const days = useMemo(() => Array.from({ length: diffDays(range.from, range.to) + 1 }, (_, i) => addDays(range.from, i)), [range]);
-  const todayISO = toISODate(today());
-  if (members.length === 0) return <Empty text={t("schedule.emptyTeam")} />;
-  return (
-    <div className="sc-team" style={{ "--cols": days.length } as React.CSSProperties}>
-      <div className="sc-head sc-corner" />
-      {days.map((d) => {
-        const iso = toISODate(d);
-        return (
-          <div key={iso} className={cx("sc-head", iso === todayISO && "sc-today", (d.getDay() === 0 || d.getDay() === 6) && "sc-weekend")}>
-            <span className="sc-wd">{t(`gantt.weekday.${d.getDay()}` as Key)}</span>
-            <span className="sc-dn">{d.getDate()}</span>
-          </div>
-        );
-      })}
-      {members.map((m) => (
-        <MemberRow key={m.id} member={m} days={days} items={items.filter((it) => it.member_id === m.id)} meID={meID} todayISO={todayISO} />
-      ))}
-    </div>
-  );
-}
-
-function MemberRow({ member, days, items, meID, todayISO }: { member: { id: string; name: string }; days: Date[]; items: ScheduleItem[]; meID: string; todayISO: string }) {
-  return (
-    <>
-      <div className="sc-member">
-        <span className="truncate">{member.name}</span>
-        {member.id === meID && <span className="sc-me">{t("schedule.me")}</span>}
-      </div>
-      {days.map((d) => {
-        const iso = toISODate(d);
-        const list = items.filter((it) => coversDay(it, iso));
-        const sorted = [...list].sort((x, y) => (timed(x) ? (x.starts_at ?? "") : "").localeCompare(timed(y) ? (y.starts_at ?? "") : ""));
-        return (
-          <div key={iso} className={cx("sc-band sc-team-cell", iso === todayISO && "sc-today")}>
-            {sorted.map((it) => <Chip key={it.kind + it.id} it={it} day={iso} meID={meID} compact={days.length > 1} />)}
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
-// ---------- 团队 · 月：一人一行，每格只画负载 ----------
-
-/** 团队月视图不放标题：一格里按类别画小点（最多三枚），多了写数字；点一格跳到那一天的团队日视图。 */
-function TeamMonth({ anchor, items, members, meID, onPickDay }: { anchor: Date; items: ScheduleItem[]; members: Array<{ id: string; name: string }>; meID: string; onPickDay: (d: Date) => void }) {
-  const year = anchor.getFullYear();
-  const month = anchor.getMonth();
-  const days = useMemo(() => {
-    const first = new Date(year, month, 1);
-    const count = new Date(year, month + 1, 0).getDate();
-    return Array.from({ length: count }, (_, i) => addDays(first, i));
-  }, [year, month]);
-  const todayISO = toISODate(today());
-  if (members.length === 0) return <Empty text={t("schedule.emptyTeam")} />;
-  return (
-    <div className="sc-team sc-team-month" style={{ "--cols": days.length } as React.CSSProperties}>
-      <div className="sc-head sc-corner" />
-      {days.map((d) => {
-        const iso = toISODate(d);
-        return (
-          <div key={iso} className={cx("sc-head sc-head-tiny", iso === todayISO && "sc-today", (d.getDay() === 0 || d.getDay() === 6) && "sc-weekend")}>
-            <span className="sc-dn">{d.getDate()}</span>
-          </div>
-        );
-      })}
-      {members.map((m) => (
-        <TeamMonthRow key={m.id} member={m} days={days} items={items.filter((it) => it.member_id === m.id)} meID={meID} todayISO={todayISO} onPickDay={onPickDay} />
-      ))}
-    </div>
-  );
-}
-
-function TeamMonthRow({ member, days, items, meID, todayISO, onPickDay }: { member: { id: string; name: string }; days: Date[]; items: ScheduleItem[]; meID: string; todayISO: string; onPickDay: (d: Date) => void }) {
-  return (
-    <>
-      <div className="sc-member">
-        <span className="truncate">{member.name}</span>
-        {member.id === meID && <span className="sc-me">{t("schedule.me")}</span>}
-      </div>
-      {days.map((d) => {
-        const iso = toISODate(d);
-        const list = items.filter((it) => coversDay(it, iso) && it.kind !== "goal");
-        const n = list.length;
-        const kinds = Array.from(new Set(list.map((it) => it.kind)));
-        const tip = n ? `${fmtDate(iso)} · ${t("schedule.loadTip", { n })}` : fmtDate(iso);
-        return (
-          <button key={iso} type="button" className={cx("sc-load", iso === todayISO && "sc-today", n >= 4 && "sc-load-heavy", (d.getDay() === 0 || d.getDay() === 6) && "sc-weekend")} title={tip} aria-label={tip} onClick={() => onPickDay(d)}>
-            {n === 0 ? null : n <= 3 ? kinds.slice(0, 3).map((k) => <i key={k} className={cx("sc-dot", `sc-dot-${k}`)} aria-hidden="true" />) : <span className="sc-load-n">{n}</span>}
-          </button>
-        );
-      })}
-    </>
   );
 }
