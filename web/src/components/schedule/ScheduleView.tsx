@@ -15,6 +15,7 @@ import { Button, ErrorBox, ListSkeleton, Segmented, Select, cx } from "@/compone
  * 日程（ADR 0032，DESIGN.md §27）：目标、任务、里程碑与外部日历的一种看法。
  * 三档粒度写死：日 / 周 / 月；周从周一起。四类各有画法：
  *   任务 = 按状态着色的条（只有截止日的画成一枚旗标）；目标 = 淡一级的底条；里程碑 = 菱形；会议 = 带来源的块（别人的只画「忙」）。
+ *   跨天的一根条横跨它覆盖的所有天、文字压在条上跨天显示（泳道排布见 layoutRow）；周视图在全天带里，月视图按周一行。
  * 「我的 / 团队」切换：团队视图是整个团队的安排合在一张表里（每条前面带谁的名字），团队从组织树上任选一个节点，
  * 默认是自己所属的最近那个团队。这里不能新建、不能拖动——改日期去任务页、路线图或外部日历。
  */
@@ -97,7 +98,7 @@ export function ScheduleView() {
           {/* 没有安排也照样画格子——日历本身就是信息（今天在哪、周末在哪）；空只提示一句 */}
           {items.length === 0 && <p className="sc-empty" role="status">{t(who === "team" && members.length === 0 ? "schedule.emptyTeam" : effScale === "day" ? "schedule.emptyDay" : effScale === "week" ? "schedule.emptyWeek" : "schedule.emptyMonth")}</p>}
           {effScale === "month"
-            ? <MonthGrid range={range} anchor={anchor} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} />
+            ? <MonthGrid range={range} anchor={anchor} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} onPickDay={(d) => { setAnchor(d); setScale("day"); }} />
             : <WeekGrid range={range} items={items} meID={meID} names={who === "team" ? nameMap(members) : null} />}
         </>
       )}
@@ -175,12 +176,12 @@ function nameMap(members: Array<{ id: string; name: string }>): Record<string, s
   return Object.fromEntries(members.map((m) => [m.id, m.name]));
 }
 
-/** 一枚日程项：任务条 / 目标底条 / 里程碑菱形 / 会议块。compact 时只留一行；names 非空（团队视图）时前面带谁的名字 */
-function Chip({ it, day, meID, compact, names }: { it: ScheduleItem; day: string; meID: string; compact?: boolean; names?: Record<string, string> | null }) {
+/**
+ * 一枚日程项：任务条 / 目标底条 / 里程碑菱形 / 会议块。compact 时只留一行；names 非空（团队视图）时前面带谁的名字。
+ * cont / more：这根条在本行的左边 / 右边还没画完（跨到了上一周或下一周），那一侧不收圆角。
+ */
+function Chip({ it, meID, compact, names, cont, more }: { it: ScheduleItem; meID: string; compact?: boolean; names?: Record<string, string> | null; cont?: boolean; more?: boolean }) {
   const href = hrefOf(it);
-  const [a, b] = daysOf(it);
-  const first = a === day;
-  const last = b === day;
   const who = names ? it.member_name ?? names[it.member_id] ?? "" : "";
   const label = it.kind === "task" && it.number ? `#${it.number} ${it.title}` : it.title;
   const tip = (who ? who + " · " : "") + (it.kind === "task" ? `#${it.number} ${it.title}${it.state ? " · " + it.state.title : ""}` : it.kind === "event" && it.starts_at && !it.all_day ? `${timeText(it)} ${it.title}` : it.title);
@@ -194,12 +195,44 @@ function Chip({ it, day, meID, compact, names }: { it: ScheduleItem; day: string
       {it.kind === "event" && it.provider && !it.title_hidden && !compact && <span className="sc-src">{providerShort(it.provider)}</span>}
     </>
   );
-  const cls = cx("sc-chip", `sc-chip-${toneOf(it)}`, `sc-kind-${it.kind}`, !first && "sc-chip-cont", !last && "sc-chip-more", it.member_id !== meID && "sc-chip-theirs");
+  const cls = cx("sc-chip", `sc-chip-${toneOf(it)}`, `sc-kind-${it.kind}`, cont && "sc-chip-cont", more && "sc-chip-more", it.member_id !== meID && "sc-chip-theirs");
   if (!href) return <span className={cls} title={tip}>{body}</span>;
   const external = it.kind === "event";
   return external
     ? <a className={cls} href={href} target="_blank" rel="noreferrer" title={tip}>{body}</a>
     : <Link className={cls} href={href} title={tip}>{body}</Link>;
+}
+
+// ---------- 跨天条的泳道排布 ----------
+
+/** 一行（一周或一段连续的日子）里的一根条：从第几列起、跨几列、在第几条泳道；左右有没有被截断 */
+interface Span { it: ScheduleItem; col: number; span: number; lane: number; cont: boolean; more: boolean }
+
+/**
+ * 把落在这一行日子里的（不带时刻的）日程项排成泳道：一根条横跨它覆盖的所有天，文字压在条上跨天显示。
+ * 长的先排、同长的按类别（目标 → 里程碑 → 任务 → 会议），每根条放进第一条放得下的泳道——Google 日历那套。
+ */
+function layoutRow(items: ScheduleItem[], dayISOs: string[]): Span[] {
+  if (dayISOs.length === 0) return [];
+  const first = dayISOs[0];
+  const last = dayISOs[dayISOs.length - 1];
+  const index = new Map(dayISOs.map((d, i) => [d, i]));
+  const raw = items.flatMap((it) => {
+    const [a, b] = daysOf(it);
+    if (!a || b < first || a > last) return [];
+    const col = a < first ? 0 : index.get(a)!;
+    const end = b > last ? dayISOs.length - 1 : index.get(b)!;
+    return [{ it, col, span: end - col + 1, cont: a < first, more: b > last }];
+  });
+  const rank = (k: string) => (k === "goal" ? 0 : k === "milestone" ? 1 : k === "task" ? 2 : 3);
+  raw.sort((x, y) => x.col - y.col || y.span - x.span || rank(x.it.kind) - rank(y.it.kind) || x.it.title.localeCompare(y.it.title, "zh-Hans-CN"));
+  const laneEnd: number[] = []; // 每条泳道已经占到第几列（不含）
+  return raw.map((r) => {
+    let lane = laneEnd.findIndex((e) => e <= r.col);
+    if (lane < 0) lane = laneEnd.length;
+    laneEnd[lane] = r.col + r.span;
+    return { ...r, lane };
+  });
 }
 
 function providerShort(p: string): string {
@@ -223,9 +256,11 @@ function Legend({ sources, members, whole }: { sources: string[]; members?: Arra
 
 function WeekGrid({ range, items, meID, names }: { range: { from: Date; to: Date }; items: ScheduleItem[]; meID: string; names: Record<string, string> | null }) {
   const days = useMemo(() => Array.from({ length: diffDays(range.from, range.to) + 1 }, (_, i) => addDays(range.from, i)), [range]);
+  const isos = useMemo(() => days.map(toISODate), [days]);
   const todayISO = toISODate(today());
   const hours = Array.from({ length: HOUR_END - HOUR_START }, (_, i) => HOUR_START + i);
-  const allDay = (d: string) => items.filter((it) => !timed(it) && coversDay(it, d));
+  const spans = useMemo(() => layoutRow(items.filter((it) => !timed(it)), isos), [items, isos]);
+  const lanes = spans.reduce((n, sp) => Math.max(n, sp.lane + 1), 0);
   const timedOf = (d: string) => items.filter((it) => timed(it) && coversDay(it, d));
   return (
     <div className="sc-week" style={{ "--cols": days.length } as React.CSSProperties}>
@@ -240,15 +275,19 @@ function WeekGrid({ range, items, meID, names }: { range: { from: Date; to: Date
         );
       })}
       <div className="sc-band-label">{t("schedule.allDay")}</div>
-      {days.map((d) => {
-        const iso = toISODate(d);
-        const list = allDay(iso);
-        return (
-          <div key={iso} className={cx("sc-band", iso === todayISO && "sc-today")}>
-            {list.map((it) => <Chip key={it.kind + it.id} it={it} day={iso} meID={meID} names={names} />)}
-          </div>
-        );
-      })}
+      {/* 全天带：底下是按天分格的背景（竖线、今天的底色），上面是横跨多天的泳道条 */}
+      <div className="sc-band">
+        <div className="sc-band-bg" aria-hidden="true">
+          {isos.map((iso) => <div key={iso} className={cx(iso === todayISO && "sc-today")} />)}
+        </div>
+        <div className="sc-lanes" style={{ minHeight: lanes === 0 ? 24 : undefined }}>
+          {spans.map((sp) => (
+            <div key={sp.it.kind + sp.it.id} className="sc-span" style={{ gridColumn: `${sp.col + 1} / span ${sp.span}`, gridRow: sp.lane + 1 }}>
+              <Chip it={sp.it} meID={meID} names={names} cont={sp.cont} more={sp.more} />
+            </div>
+          ))}
+        </div>
+      </div>
       <div className="sc-hours">
         {hours.map((h) => <div key={h} className="sc-hour" style={{ height: HOUR_H }}><span>{String(h).padStart(2, "0")}:00</span></div>)}
       </div>
@@ -265,7 +304,7 @@ function WeekGrid({ range, items, meID, names }: { range: { from: Date; to: Date
               const h = Math.max(18, bottom - top);
               return (
                 <div key={it.id} className="sc-timed" style={{ top, height: h }}>
-                  <Chip it={it} day={iso} meID={meID} names={names} />
+                  <Chip it={it} meID={meID} names={names} />
                 </div>
               );
             })}
@@ -286,22 +325,52 @@ function NowLine() {
 
 // ---------- 月 ----------
 
-function MonthGrid({ range, anchor, items, meID, names }: { range: { from: Date; to: Date }; anchor: Date; items: ScheduleItem[]; meID: string; names: Record<string, string> | null }) {
+const MONTH_LANES = 4;
+
+/**
+ * 月视图按周一行：每周里跨天的条横跨它覆盖的天，文字压在条上；跨周的条在每一周各画一段（两端不收圆角）。
+ * 一周最多画 MONTH_LANES 条泳道，放不下的在那一天格子底部记「+N」，点了进那一天。
+ */
+function MonthGrid({ range, anchor, items, meID, names, onPickDay }: { range: { from: Date; to: Date }; anchor: Date; items: ScheduleItem[]; meID: string; names: Record<string, string> | null; onPickDay: (d: Date) => void }) {
   const days = useMemo(() => Array.from({ length: diffDays(range.from, range.to) + 1 }, (_, i) => addDays(range.from, i)), [range]);
+  const weeks = useMemo(() => Array.from({ length: Math.ceil(days.length / 7) }, (_, w) => days.slice(w * 7, w * 7 + 7)), [days]);
   const todayISO = toISODate(today());
-  const MAX = 4;
   return (
     <div className="sc-month">
       {[1, 2, 3, 4, 5, 6, 0].map((wd) => <div key={wd} className="sc-head">{t(`gantt.weekday.${wd}` as Key)}</div>)}
-      {days.map((d) => {
-        const iso = toISODate(d);
-        const list = items.filter((it) => coversDay(it, iso));
-        const shown = list.slice(0, MAX);
+      {weeks.map((week) => {
+        const isos = week.map(toISODate);
+        const spans = layoutRow(items, isos);
+        const shown = spans.filter((sp) => sp.lane < MONTH_LANES);
+        const hiddenPerDay = isos.map((_, di) => spans.filter((sp) => sp.lane >= MONTH_LANES && sp.col <= di && di < sp.col + sp.span).length);
+        const lanes = Math.min(MONTH_LANES, spans.reduce((n, sp) => Math.max(n, sp.lane + 1), 0));
+        const moreRow = hiddenPerDay.some((n) => n > 0);
         return (
-          <div key={iso} className={cx("sc-cell", iso === todayISO && "sc-today", d.getMonth() !== anchor.getMonth() && "sc-other", (d.getDay() === 0 || d.getDay() === 6) && "sc-weekend")}>
-            <span className="sc-dn">{d.getDate() === 1 ? `${monthName(d.getMonth() + 1)}${d.getDate()}` : d.getDate()}</span>
-            {shown.map((it) => <Chip key={it.kind + it.id} it={it} day={iso} meID={meID} compact names={names} />)}
-            {list.length > MAX && <span className="sc-more">+{list.length - MAX}</span>}
+          <div key={isos[0]} className="sc-mweek">
+            <div className="sc-mbg" aria-hidden="true">
+              {week.map((d) => {
+                const iso = toISODate(d);
+                return <div key={iso} className={cx(iso === todayISO && "sc-today", d.getMonth() !== anchor.getMonth() && "sc-other", (d.getDay() === 0 || d.getDay() === 6) && "sc-weekend")} />;
+              })}
+            </div>
+            <div className="sc-mgrid">
+              {week.map((d, di) => {
+                const iso = toISODate(d);
+                return (
+                  <div key={iso} className={cx("sc-mdn", iso === todayISO && "sc-today", d.getMonth() !== anchor.getMonth() && "sc-other")} style={{ gridColumn: di + 1, gridRow: 1 }}>
+                    <button type="button" className="sc-dn" onClick={() => onPickDay(d)} aria-label={fmtDate(iso)}>{d.getDate() === 1 ? `${monthName(d.getMonth() + 1)}${d.getDate()}` : d.getDate()}</button>
+                  </div>
+                );
+              })}
+              {shown.map((sp) => (
+                <div key={sp.it.kind + sp.it.id} className="sc-span" style={{ gridColumn: `${sp.col + 1} / span ${sp.span}`, gridRow: sp.lane + 2 }}>
+                  <Chip it={sp.it} meID={meID} names={names} compact cont={sp.cont} more={sp.more} />
+                </div>
+              ))}
+              {moreRow && hiddenPerDay.map((n, di) => n > 0 && (
+                <button key={isos[di]} type="button" className="sc-mmore" style={{ gridColumn: di + 1, gridRow: lanes + 2 }} onClick={() => onPickDay(week[di])}>+{n}</button>
+              ))}
+            </div>
           </div>
         );
       })}
