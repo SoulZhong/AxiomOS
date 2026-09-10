@@ -33,6 +33,18 @@ type Calendar interface {
 	Events(ctx context.Context, externalUserID string, from, to time.Time) ([]CalendarEvent, error)
 }
 
+// CalendarSummary 是一次拉取里某一本日历的情况：叫什么、拉到几场、用的哪种查法（排查用）。
+type CalendarSummary struct {
+	Name   string `json:"name"`
+	Events int    `json:"events"`
+	Via    string `json:"via"`
+}
+
+// CalendarSummarizer 可选：拉过一次之后能逐本日历说明拉到多少（CalDAV 有几本日历，各家服务器认的查法也不一样）。
+type CalendarSummarizer interface {
+	Summary() []CalendarSummary
+}
+
 // CalendarDiagnoser 可选：接入检查逐项给结论。
 type CalendarDiagnoser interface {
 	DiagnoseCalendar(ctx context.Context) ([]Check, error)

@@ -22,6 +22,7 @@ func (s *Server) calendarRoutes(auth, pub func(string, http.HandlerFunc)) {
 	auth("GET /api/v1/me/calendars", s.myCalendars)
 	auth("PUT /api/v1/me/calendars/{provider}", s.myCalendarConnect)
 	auth("DELETE /api/v1/me/calendars/{provider}", s.myCalendarDisconnect)
+	auth("POST /api/v1/me/calendars/{provider}/sync", s.myCalendarSync)
 	// 对外订阅源：自己看 / 生成或换掉 / 停用；拉取是公开的，token 就是密钥
 	auth("GET /api/v1/me/feed", s.myFeed)
 	auth("POST /api/v1/me/feed", s.myFeedReset)
@@ -142,6 +143,11 @@ func (s *Server) feed(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.Header().Set("Content-Disposition", `inline; filename="axiomos.ics"`)
 	_, _ = w.Write(body)
+}
+
+func (s *Server) myCalendarSync(w http.ResponseWriter, r *http.Request) {
+	v, err := s.App.SyncMyCalendar(r.Context(), sessionOf(r), r.PathValue("provider"))
+	respond(w, r, v, err)
 }
 
 func (s *Server) myCalendarDisconnect(w http.ResponseWriter, r *http.Request) {

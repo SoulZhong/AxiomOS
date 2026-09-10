@@ -672,6 +672,15 @@ export interface MyCalendarView {
   last_error?: string;
 }
 
+/** 成员自己点「立即同步」的结果：拉到几场、每本日历各几场、用的哪种查法（排查用） */
+export interface MyCalendarSyncResult {
+  provider: string;
+  events: number;
+  calendars: Array<{ name: string; events: number; via: string }>;
+  status: "ok" | "failed";
+  error?: string;
+}
+
 /** 我对外发布的日历订阅源（GET /me/feed）：链接就是密钥 */
 export interface MyFeedView {
   enabled: boolean;
@@ -2521,6 +2530,8 @@ export const api = {
       /** 自助的提供方：贴链接就连上并立刻同步一次 */
       connect: (provider: string, credentials: Record<string, string>) => request<MyCalendarView>("PUT", `/me/calendars/${encodeURIComponent(provider)}`, { credentials }),
       disconnect: (provider: string) => request<void>("DELETE", `/me/calendars/${encodeURIComponent(provider)}`),
+      /** 立刻同步一次，结果直接回来 */
+      sync: (provider: string) => request<MyCalendarSyncResult>("POST", `/me/calendars/${encodeURIComponent(provider)}/sync`, {}),
     },
     /** 对外订阅源：生成 / 换链接 / 停用 */
     feed: {

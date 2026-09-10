@@ -177,7 +177,7 @@ import type {
   InboxKind,
   InboxQuestion,
   InboxTask,
-  Notification, CalendarProviderView, CalendarsView, CalendarInput, CalendarTestResult, CalendarSyncResult, MyCalendarView, MyFeedView, ScheduleItem, ScheduleView } from "./api";
+  Notification, CalendarProviderView, CalendarsView, CalendarInput, CalendarTestResult, CalendarSyncResult, MyCalendarSyncResult, MyCalendarView, MyFeedView, ScheduleItem, ScheduleView } from "./api";
 import { fieldChangeSentence } from "./fieldChange";
 import { ApiError, BLOCK_KEYS, DEFAULT_PREFERENCES, DEVICE_CLIENTS, GRID_COLS, GRID_MAX_H, INBOX_KINDS, LINK_KINDS, PREF_FIELDS, blocksOverlap, compactLayout, isBlockHeight, isBlockKey, isBlockWidth, normalizeLayout, sameLayout } from "./api";
 import { addDays, diffDays, parseDate, startOfWeek, toISODate, today } from "./format";
@@ -4503,6 +4503,14 @@ on("PUT", "/me/calendars/:provider", (m, body) => {
   return { provider: ICS_PROVIDER.key, provider_title: ICS_PROVIDER.title, org_configured: true, per_member: true, self_service: true, connected: true, label: "我的日历", last_sync_at: at(0), last_status: "ok", last_status_title: "成功", connected_at: at(0) } satisfies MyCalendarView;
 });
 on("DELETE", "/me/calendars/:provider", (m) => { requireLogin(); const key = m.groups!.provider; if (SELF_IDENTITY[key]) delete SELF_IDENTITY[key][ME]; else if (CAL_IDENTITIES[key]) delete CAL_IDENTITIES[key][ME]; return undefined; });
+on("POST", "/me/calendars/:provider/sync", (m): MyCalendarSyncResult => {
+  requireLogin();
+  const key = m.groups!.provider;
+  const mine = SELF_IDENTITY[key]?.[ME];
+  if (!mine) throw new ApiError(404, t("mock.calendar.notConnected"));
+  mine.last_sync_at = at(0);
+  return { provider: key, events: 2, calendars: key === "caldav" ? [{ name: "工作", events: 2, via: "calendar-query" }] : [], status: "ok" };
+});
 on("GET", "/me/feed", (): MyFeedView => { requireLogin(); return MY_FEED; });
 on("POST", "/me/feed", (): MyFeedView => {
   requireLogin();

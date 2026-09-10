@@ -636,7 +636,7 @@ func (a *App) ConnectMyCalendar(ctx context.Context, sess *Session, provider str
 	}
 	label := ""
 	if n, ok := cal.(directory.CalendarNamer); ok {
-		label = n.CalendarName()
+		label = strings.TrimSpace(n.CalendarName())
 	}
 	enc, err := directory.EncryptSecrets(a.SecretKey, clean)
 	if err != nil {
@@ -658,7 +658,7 @@ func (a *App) ConnectMyCalendar(ctx context.Context, sess *Session, provider str
 		return nil, err
 	}
 	if err := a.syncCalendarMember(ctx, sess, p, sess.MemberID); err != nil {
-		_ = a.markIdentitySync(ctx, sess, p, sess.MemberID, "failed", providerMsg(p, err).Render(sess.Loc()))
+		_ = a.markIdentitySync(ctx, sess, p, sess.MemberID, "failed", providerMsg(p, err).Render(sess.Loc()), nil)
 	}
 	views, err := a.MyCalendars(ctx, sess)
 	if err != nil {
@@ -672,10 +672,14 @@ func (a *App) ConnectMyCalendar(ctx context.Context, sess *Session, provider str
 	return nil, NotFound("err.calendar_provider", provider)
 }
 
-// markIdentitySync 记下某个成员这次同步的结果（个人设置里显示）。
-func (a *App) markIdentitySync(ctx context.Context, sess *Session, p directory.Provider, memberID, status, errText string) error {
+// markIdentitySync 记下某个成员这次同步的结果（个人设置里显示）；cal 非空且能说出日历名时把名字也更新。
+func (a *App) markIdentitySync(ctx context.Context, sess *Session, p directory.Provider, memberID, status, errText string, cal directory.Calendar) error {
+	label := ""
+	if n, ok := cal.(directory.CalendarNamer); ok && cal != nil {
+		label = strings.TrimSpace(n.CalendarName())
+	}
 	return a.tx(ctx, sess, func(tx pgx.Tx) error {
-		return a.Store.MarkCalendarIdentitySync(ctx, tx, p.Key, memberID, status, errText, time.Now())
+		return a.Store.MarkCalendarIdentitySync(ctx, tx, p.Key, memberID, status, errText, label, time.Now())
 	})
 }
 
@@ -852,21 +856,21 @@ func (a *App) syncCalendar(ctx context.Context, sess *Session, p directory.Provi
 	sort.Strings(members)
 	loc := sess.Loc()
 	for _, m := range members {
-		n, err := a.syncOne(ctx, sess, p, cfg, m, targets[m])
+		n, cal, err := a.syncOne(ctx, sess, p, cfg, m, targets[m])
 		res.Members++
 		res.Events += n
 		if err != nil {
 			name := m
 			_ = a.tx(ctx, sess, func(tx pgx.Tx) error { name = a.executorName(ctx, tx, m); return nil })
 			msg := providerMsg(p, err).Render(loc)
-			_ = a.markIdentitySync(ctx, sess, p, m, "failed", msg)
+			_ = a.markIdentitySync(ctx, sess, p, m, "failed", msg, cal)
 			if p.SelfServiceCalendar {
 				// 自助的：原因只记在本人的绑定上，组织级的动态只说谁失败了
 				msg = i18n.Tr(loc, "directory.status.failed")
 			}
 			res.Errors = append(res.Errors, name+"："+msg)
 		} else {
-			_ = a.markIdentitySync(ctx, sess, p, m, "ok", "")
+			_ = a.markIdentitySync(ctx, sess, p, m, "ok", "", cal)
 		}
 	}
 	res.Status = "ok"
@@ -903,14 +907,15 @@ func (a *App) syncCalendarMember(ctx context.Context, sess *Session, p directory
 	if !ok {
 		return nil
 	}
-	_, err := a.syncOne(ctx, sess, p, cfg, memberID, t)
+	_, cal, err := a.syncOne(ctx, sess, p, cfg, memberID, t)
 	if err == nil {
-		_ = a.markIdentitySync(ctx, sess, p, memberID, "ok", "")
+		_ = a.markIdentitySync(ctx, sess, p, memberID, "ok", "", cal)
 	}
 	return err
 }
 
-func (a *App) syncOne(ctx context.Context, sess *Session, p directory.Provider, cfg *store.CalendarConfig, memberID string, t calendarTarget) (int, error) {
+// syncOne 同步一个成员：返回存下的场数与用过的客户端（想看每本日历拉到多少时问它）。
+func (a *App) syncOne(ctx context.Context, sess *Session, p directory.Provider, cfg *store.CalendarConfig, memberID string, t calendarTarget) (int, directory.Calendar, error) {
 	now := time.Now()
 	from, to := now.Add(-calendarSyncBack), now.Add(calendarSyncAhead)
 	var cal directory.Calendar
@@ -918,11 +923,11 @@ func (a *App) syncOne(ctx context.Context, sess *Session, p directory.Provider, 
 		cal, err = a.calendarClient(ctx, tx, sess.OrgID, p, cfg, t.Creds)
 		return err
 	}); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	events, err := cal.Events(ctx, t.ExternalID, from, to)
 	if err != nil {
-		return 0, err
+		return 0, cal, err
 	}
 	rows := make([]store.CalendarEventRow, 0, len(events))
 	for _, e := range events {
@@ -934,7 +939,61 @@ func (a *App) syncOne(ctx context.Context, sess *Session, p directory.Provider, 
 	err = a.tx(ctx, sess, func(tx pgx.Tx) error {
 		return a.Store.ReplaceCalendarEvents(ctx, tx, sess.OrgID, p.Key, memberID, from, to, rows)
 	})
-	return len(rows), err
+	return len(rows), cal, err
+}
+
+// MyCalendarSyncResult 是成员自己点「立即同步」的结果：拉到几场、每本日历各几场、用的哪种查法（排查用）。
+type MyCalendarSyncResult struct {
+	Provider  string                      `json:"provider"`
+	Events    int                         `json:"events"`
+	Calendars []directory.CalendarSummary `json:"calendars"`
+	Status    string                      `json:"status"`
+	Error     string                      `json:"error,omitempty"`
+}
+
+// SyncMyCalendar 成员自己立刻同步一次（POST /me/calendars/{provider}/sync）：结果直接回给他，也记在绑定上。
+func (a *App) SyncMyCalendar(ctx context.Context, sess *Session, provider string) (*MyCalendarSyncResult, error) {
+	if sess.IsAgent() {
+		return nil, Forbidden("err.calendar_member_only")
+	}
+	p, ok := calendarProvider(provider)
+	if !ok {
+		return nil, Bad("err.calendar_provider", provider)
+	}
+	if err := refuseDryRun(sess); err != nil {
+		return nil, err
+	}
+	var cfg *store.CalendarConfig
+	var targets map[string]calendarTarget
+	if err := a.tx(ctx, sess, func(tx pgx.Tx) (err error) {
+		if _, err := a.Store.CalendarIdentityOf(ctx, tx, p.Key, sess.MemberID); err == store.ErrNotFound {
+			return NotFound("err.calendar_not_connected", p.Title)
+		} else if err != nil {
+			return err
+		}
+		if cfg, err = a.Store.CalendarConfig(ctx, tx, p.Key); err == store.ErrNotFound {
+			return NotFound("err.calendar_not_configured", p.Title)
+		} else if err != nil {
+			return err
+		}
+		targets, err = a.calendarTargets(ctx, tx, p)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	res := &MyCalendarSyncResult{Provider: p.Key, Calendars: []directory.CalendarSummary{}, Status: "ok"}
+	n, cal, err := a.syncOne(ctx, sess, p, cfg, sess.MemberID, targets[sess.MemberID])
+	if sum, ok := cal.(directory.CalendarSummarizer); ok && cal != nil {
+		res.Calendars = append(res.Calendars, sum.Summary()...)
+	}
+	if err != nil {
+		res.Status, res.Error = "failed", providerMsg(p, err).Render(sess.Loc())
+		_ = a.markIdentitySync(ctx, sess, p, sess.MemberID, "failed", res.Error, cal)
+		return res, nil
+	}
+	res.Events = n
+	_ = a.markIdentitySync(ctx, sess, p, sess.MemberID, "ok", "", cal)
+	return res, nil
 }
 
 // RunScheduledCalendarSyncs 给每家到点的连接跑一次同步（后台巡检每分钟调用，实际每 15 分钟一轮）。
