@@ -144,8 +144,20 @@ func TestScheduleAndCalendarSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ts.Members) != 1 || ts.Members[0].ID != yi.MemberID || len(ts.Items) != len(sched.Items) {
-		t.Fatalf("团队日程应含乙的全部安排，实际 %d 人 %d 条", len(ts.Members), len(ts.Items))
+	// 团队视图只看工作安排：乙的两场会议不带上
+	want := 0
+	for _, it := range sched.Items {
+		if it.Kind != "event" {
+			want++
+		}
+	}
+	if len(ts.Members) != 1 || ts.Members[0].ID != yi.MemberID || len(ts.Items) != want {
+		t.Fatalf("团队日程应含乙除会议外的全部安排（%d 条），实际 %d 人 %d 条", want, len(ts.Members), len(ts.Items))
+	}
+	for _, it := range ts.Items {
+		if it.Kind == "event" {
+			t.Fatal("团队日程不该带个人日历同步来的会议")
+		}
 	}
 	// 超过 62 天、结束早于开始都拒
 	// 整个组织（who = 组织 ID）：能看整个组织的人（甲是负责人）看到全部在职成员

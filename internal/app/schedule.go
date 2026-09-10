@@ -197,10 +197,13 @@ func (a *App) scheduleOf(ctx context.Context, sess *Session, who string, from, t
 			v.Items = append(v.Items, ScheduleItem{Kind: "milestone", ID: m.ID, Title: m.Title, MemberID: owner, GoalID: m.GoalID,
 				Date: isoDay(m.DueOn), MilestoneStatus: string(domain.StatusOfMilestone(m, now))})
 		}
-		// 外部日历：自己的会议看得到标题，别人的只画成「忙」
-		events, err := a.Store.CalendarEventsOf(ctx, tx, members, from, toExcl)
-		if err != nil {
-			return err
+		// 外部日历：只在看一个人时带上——自己的会议看得到标题，别人的只画成「忙」；
+		// 团队 / 整个组织的视图只看工作安排，不带任何人同步来的个人日历（所有者 2026-09-10 定的）
+		var events []*store.CalendarEventRow
+		if len(teams) == 0 {
+			if events, err = a.Store.CalendarEventsOf(ctx, tx, members, from, toExcl); err != nil {
+				return err
+			}
 		}
 		defer func() {
 			for i := range v.Items {

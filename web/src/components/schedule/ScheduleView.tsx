@@ -214,7 +214,7 @@ function Legend({ sources, members, whole }: { sources: string[]; members?: Arra
       <span><i className="sc-swatch sc-chip-accent" />{t("schedule.legend.task")}</span>
       <span><i className="sc-swatch sc-chip-goal" />{t("schedule.legend.goal")}</span>
       <span><i className="sc-diamond" />{t("schedule.legend.milestone")}</span>
-      <span><i className="sc-swatch sc-chip-event" />{t("schedule.legend.event")}{sources.length > 0 && <span className="text-ink-tertiary">（{sources.map(providerShort).join(" · ")}）</span>}</span>
+      {!members && <span><i className="sc-swatch sc-chip-event" />{t("schedule.legend.event")}{sources.length > 0 && <span className="text-ink-tertiary">（{sources.map(providerShort).join(" · ")}）</span>}</span>}
     </div>
   );
 }
