@@ -111,6 +111,20 @@ function ChannelCard({ channel: c, onSaved }: { channel: NotifyChannel; onSaved:
         </span>
       </div>
       {c.hint && <p className="mt-2 text-body text-ink-muted">{c.hint}</p>}
+      {/* 接入时就查「能不能发消息」：缺权限直接给开通链接，不用等投递失败 */}
+      {c.check && c.check.status !== "ok" && (
+        <div className="mt-3 flex flex-wrap items-start gap-x-3 gap-y-1 rounded-md border border-warning-border bg-warning-bg px-3 py-2 text-body" role="alert" data-channel-check={c.check.status}>
+          <span className="mt-[7px] h-2 w-2 shrink-0 rounded-full bg-warning" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-ink">{c.check.title}</div>
+            {c.check.fix && <div className="text-ink-muted">{c.check.fix}</div>}
+            {c.check.detail && <details className="mt-1 text-caption text-ink-subtle"><summary className="cursor-pointer select-none">{t("settings.notify.check.detail")}</summary><p className="mt-1 break-all">{c.check.detail}</p></details>}
+          </div>
+          {c.check.fix_url && <a className="btn btn-primary btn-sm shrink-0" href={c.check.fix_url} target="_blank" rel="noreferrer">{t("settings.notify.check.goFix")}</a>}
+          <Button size="sm" variant="ghost" disabled={busy !== null} onClick={onSaved}>{t("settings.notify.check.recheck")}</Button>
+        </div>
+      )}
+      {c.check && c.check.status === "ok" && <p className="mt-2 text-caption text-success" data-channel-check="ok">{c.check.title}</p>}
       {!c.enabled && !c.hint && <p className="mt-2 text-body text-ink-muted">{t("settings.notify.enableOff")}</p>}
 
       {c.prerequisites.length > 0 && !c.configured && (
@@ -249,7 +263,10 @@ export function DeliveriesPanel({ channels, filter, onFilter, title, load, deps,
                     <Tag tone={DELIVERY_TONE[d.status]}>{d.status_title}</Tag>
                     {d.attempts > 1 && <span className="ml-1.5 text-caption text-ink-subtle">{t("settings.notify.attempts", { n: d.attempts })}</span>}
                   </td>
-                  <td className="text-ink-muted">{d.error || <span className="text-ink-subtle">—</span>}</td>
+                  <td className="text-ink-muted">
+                    {d.error ? <span title={d.error_detail}>{d.error}</span> : <span className="text-ink-subtle">—</span>}
+                    {d.fix_url && <a className="ml-2 whitespace-nowrap text-accent hover:underline" href={d.fix_url} target="_blank" rel="noreferrer">{t("settings.notify.check.goFix")}</a>}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -65,6 +66,8 @@ type NotifyChannelView struct {
 	Prerequisites []string          `json:"prerequisites"`
 	Hint          string            `json:"hint,omitempty"`
 	Health        ChannelHealthView `json:"health"`
+	// Check 是 IM 通道「能以应用身份发消息」的检查（开着页面时现查一次）：缺权限时带一键开通的链接，接入时就能看到，不用等投递失败
+	Check *CheckView `json:"check,omitempty"`
 }
 
 // NotifyPolicyView 是 GET /org/notifications 的返回。
@@ -117,21 +120,24 @@ type DeliveryRecipient struct {
 
 // DeliveryView 是一条投递记录。
 type DeliveryView struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	KindTitle    string             `json:"kind_title"`
-	Channel      string             `json:"channel"`
-	ChannelTitle string             `json:"channel_title"`
-	Status       string             `json:"status"`
-	StatusTitle  string             `json:"status_title"`
-	Title        string             `json:"title"`
-	Text         string             `json:"text"`
-	URL          string             `json:"url"`
-	Error        string             `json:"error"`
-	Attempts     int                `json:"attempts"`
-	CreatedAt    time.Time          `json:"created_at"`
-	SentAt       *time.Time         `json:"sent_at,omitempty"`
-	Recipient    *DeliveryRecipient `json:"recipient,omitempty"`
+	ID           int64  `json:"id"`
+	Kind         string `json:"kind"`
+	KindTitle    string `json:"kind_title"`
+	Channel      string `json:"channel"`
+	ChannelTitle string `json:"channel_title"`
+	Status       string `json:"status"`
+	StatusTitle  string `json:"status_title"`
+	Title        string `json:"title"`
+	Text         string `json:"text"`
+	URL          string `json:"url"`
+	Error        string `json:"error"`
+	// ErrorDetail 是提供方原话（Error 已换成人话时才有）；FixURL 是一键去修的地方（如飞书的开通权限页）
+	ErrorDetail string             `json:"error_detail,omitempty"`
+	FixURL      string             `json:"fix_url,omitempty"`
+	Attempts    int                `json:"attempts"`
+	CreatedAt   time.Time          `json:"created_at"`
+	SentAt      *time.Time         `json:"sent_at,omitempty"`
+	Recipient   *DeliveryRecipient `json:"recipient,omitempty"`
 }
 
 // NotifyTestResult 是 POST /org/notifications/test 的返回：一句投递结果。
@@ -589,6 +595,30 @@ func providerError(err error) string {
 	return err.Error()
 }
 
+var feishuAuthURLRe = regexp.MustCompile(`https://open\.feishu\.cn/app/[^\s"'()]+`)
+
+// friendlyDeliveryError 把提供方的原话翻成一句人话，并挑出一键去修的链接；认不出的原样返回。
+// 飞书缺「以应用的身份发消息」权限（99991672 一类）时，它的原话里就带着开通页的地址。
+func friendlyDeliveryError(channel, raw string, loc i18n.Locale) (msg, fixURL string, ok bool) {
+	if raw == "" {
+		return "", "", false
+	}
+	switch channel {
+	case "feishu":
+		if strings.Contains(raw, "99991672") || strings.Contains(raw, "im:message") {
+			fix := feishuAuthURLRe.FindString(raw)
+			return i18n.Tr(loc, "notify.error.feishu_no_send_scope"), fix, true
+		}
+		if strings.Contains(raw, "230002") {
+			return i18n.Tr(loc, "notify.error.feishu_bot_off"), "", true
+		}
+	}
+	if strings.HasPrefix(raw, "unreachable: ") {
+		return i18n.Trf(loc, "notify.error.unreachable", strings.TrimPrefix(raw, "unreachable: ")), "", true
+	}
+	return "", "", false
+}
+
 // finishSend 按发送结果更新投递：成功 → sent；失败 → 次数 +1，没到上限就退避后重试，到了就 failed。
 func finishSend(d *store.Delivery, err error, now time.Time, st *DeliveryStats) {
 	if err == nil {
@@ -736,6 +766,13 @@ func (a *App) notifyPolicyView(ctx context.Context, tx pgx.Tx, s *notifySetup, l
 		}
 		for _, t := range c.prov.MessagingPrerequisites {
 			cv.Prerequisites = append(cv.Prerequisites, t.In(loc))
+		}
+		// IM 通道凭据齐了就试探一次能不能发消息（往不存在的收件人发，不会真的发出）：缺权限的话这里就给链接
+		if c.im && c.configured {
+			if chk := a.messagingCheck(ctx, tx, s.orgID, c.prov); chk != nil {
+				cvChk := checkView(*chk, loc)
+				cv.Check = &cvChk
+			}
 		}
 		v.Channels[key] = cv
 	}
@@ -929,6 +966,9 @@ func (a *App) TestNotifyChannel(ctx context.Context, sess *Session, channel stri
 func deliveryView(d *store.Delivery, loc i18n.Locale, names map[string]string) DeliveryView {
 	v := DeliveryView{ID: d.ID, Kind: d.Kind, Channel: d.Channel, ChannelTitle: channelTitle(d.Channel, loc), Status: d.Status, StatusTitle: i18n.Tr(loc, "notify.status."+d.Status),
 		Title: d.Title, Text: d.Body, URL: d.URL, Error: d.Error, Attempts: d.Attempts, CreatedAt: d.CreatedAt, SentAt: d.SentAt}
+	if msg, fix, ok := friendlyDeliveryError(d.Channel, d.Error, loc); ok {
+		v.Error, v.ErrorDetail, v.FixURL = msg, d.Error, fix
+	}
 	if t, ok := domain.NotifyKindTitle[d.Kind]; ok {
 		v.KindTitle = t.In(loc)
 	} else {
@@ -1125,10 +1165,20 @@ func (a *App) messagingCheck(ctx context.Context, tx pgx.Tx, orgID string, prov 
 	}
 	if health, err := a.Store.DeliveryHealth(ctx, tx); err == nil {
 		if h := health[prov.Key]; h != nil && h.Streak >= DegradedStreak {
-			check.Status = directory.CheckTodo
-			check.Detail = textOf("directory.check.messaging.degraded", h.Streak, h.LastError)
-			if check.Fix.IsZero() {
-				check.Fix = textOf("directory.check.messaging.fix_degraded")
+			// 试探没过：试探给的原因与链接更准，只把连败次数补在后面；试探过了：说清「现在通了，之前的失败是老账」
+			lastErr := h.LastError
+			if msg, fix, ok := friendlyDeliveryError(prov.Key, h.LastError, i18n.ZhCN); ok {
+				lastErr = msg
+				if check.FixURL == "" {
+					check.FixURL = fix
+				}
+			}
+			if check.Status == directory.CheckOK {
+				check.Status = directory.CheckTodo
+				check.Detail = textOf("directory.check.messaging.degraded_now_ok", h.Streak, lastErr)
+				check.Fix = textOf("directory.check.messaging.fix_now_ok")
+			} else {
+				check.Detail = i18n.Text{i18n.ZhCN: check.Detail.In(i18n.ZhCN) + " " + textOf("directory.check.messaging.degraded_tail", h.Streak).In(i18n.ZhCN), i18n.EnUS: check.Detail.In(i18n.EnUS) + " " + textOf("directory.check.messaging.degraded_tail", h.Streak).In(i18n.EnUS)}
 			}
 		}
 	}

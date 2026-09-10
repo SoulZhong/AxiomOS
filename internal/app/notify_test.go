@@ -11,6 +11,7 @@ import (
 
 	"github.com/teemo/axiomos/internal/directory"
 	"github.com/teemo/axiomos/internal/domain"
+	"github.com/teemo/axiomos/internal/i18n"
 	"github.com/teemo/axiomos/internal/store"
 )
 
@@ -417,5 +418,20 @@ func TestNotifyDueReminders(t *testing.T) {
 	runDeliveries(t, a, ctx, time.Now())
 	if len(fake.SentTo("ou-jia-"+orgID)) != 1 || len(fake.SentTo("ou-yi-"+orgID)) != 1 {
 		t.Fatal("两条提醒都应发出")
+	}
+}
+
+// 投递记录里的提供方原话要翻成人话，飞书缺发消息权限时带上它原话里的开通链接。
+func TestFriendlyDeliveryError(t *testing.T) {
+	raw := `Access denied. One of the following scopes is required: [im:message:send, im:message].应用尚未开通所需的应用身份权限：[im:message:send]，点击链接申请并开通任一权限即可：https://open.feishu.cn/app/cli_x/auth?q=im:message:send&op_from=openapi&token_type=tenant (code 99991672)`
+	msg, fix, ok := friendlyDeliveryError("feishu", raw, i18n.ZhCN)
+	if !ok || !strings.Contains(msg, "以应用的身份发消息") || fix != "https://open.feishu.cn/app/cli_x/auth?q=im:message:send&op_from=openapi&token_type=tenant" {
+		t.Fatalf("应翻成人话并挑出开通链接: %q %q %v", msg, fix, ok)
+	}
+	if _, _, ok := friendlyDeliveryError("feishu", "something else", i18n.ZhCN); ok {
+		t.Fatal("认不出的原话应原样保留")
+	}
+	if msg, _, ok := friendlyDeliveryError("wecom", "unreachable: dial tcp: i/o timeout", i18n.ZhCN); !ok || !strings.Contains(msg, "连不上提供方") {
+		t.Fatalf("连不上应翻成人话: %q", msg)
 	}
 }

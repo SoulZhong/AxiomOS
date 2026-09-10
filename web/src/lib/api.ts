@@ -531,6 +531,8 @@ export interface NotifyChannel {
   /** 为什么不可用（一句完整的话） */
   hint?: string;
   health: NotifyHealth;
+  /** IM 通道「能以应用身份发消息」的检查：缺权限时带一键开通的链接 */
+  check?: DirectoryCheck;
 }
 export interface OrgNotifications {
   channels: Record<string, NotifyChannel>;
@@ -557,6 +559,9 @@ export interface Delivery {
   text: string;
   url: string;
   error: string;
+  /** 提供方原话（error 已换成人话时才有）与一键去修的链接 */
+  error_detail?: string;
+  fix_url?: string;
   attempts: number;
   created_at: ISODateTime;
   sent_at?: ISODateTime;
