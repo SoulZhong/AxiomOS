@@ -130,6 +130,7 @@ const (
 )
 
 // calendars 走标准发现：服务器 → principal → 日历主目录 → 逐本日历；填的本身是一本日历时直接用它。
+// 只填了主机名时按 RFC 6764 先敲 /.well-known/caldav（企业微信的根路径对谁都回 403，入口只有这一个），敲不通再试 /。
 func (c *CalDAV) calendars(ctx context.Context) ([]davCalendar, error) {
 	base, err := url.Parse(c.Server)
 	if err != nil {
@@ -138,31 +139,54 @@ func (c *CalDAV) calendars(ctx context.Context) ([]davCalendar, error) {
 	if base.Path == "" {
 		base.Path = "/"
 	}
-	// 第一步：填的地址本身是不是一本日历
-	ms, err := c.dav(ctx, "PROPFIND", base, "0", propfindPrincipal)
-	if err != nil {
-		return nil, err
+	starts := []*url.URL{base}
+	if base.Path == "/" {
+		wk := *base
+		wk.Path = "/.well-known/caldav"
+		starts = []*url.URL{&wk, base}
 	}
+	// 第一步：找 principal（填的地址本身是一本日历就直接用它）
 	var principal *url.URL
-	for _, r := range ms.Responses {
-		for _, ps := range r.Propstat {
-			if ps.Prop.ResourceType.Calendar != nil {
-				name := ps.Prop.DisplayName
-				if name == "" {
-					name = strings.Trim(base.Path, "/")
+	var firstErr error
+	for _, start := range starts {
+		ms, final, err := c.davFollow(ctx, "PROPFIND", start, "0", propfindPrincipal)
+		if err != nil {
+			// 401 是账号密码的事，立刻说；403 / 404 可能只是这个路径不对，换下一个起点再试
+			var rj *RejectedError
+			if errors.As(err, &rj) && rj.Code == 401 {
+				return nil, err
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, r := range ms.Responses {
+			for _, ps := range r.Propstat {
+				if ps.Prop.ResourceType.Calendar != nil {
+					name := ps.Prop.DisplayName
+					if name == "" {
+						name = strings.Trim(final.Path, "/")
+					}
+					return []davCalendar{{href: final, name: name}}, nil
 				}
-				return []davCalendar{{href: base, name: name}}, nil
+				if h := strings.TrimSpace(ps.Prop.CurrentUserPrincipal.Href); h != "" && principal == nil {
+					principal = resolveHref(final, h)
+				}
 			}
-			if h := strings.TrimSpace(ps.Prop.CurrentUserPrincipal.Href); h != "" && principal == nil {
-				principal = resolveHref(base, h)
-			}
+		}
+		if principal != nil {
+			break
 		}
 	}
 	if principal == nil {
+		if firstErr != nil {
+			return nil, firstErr
+		}
 		return nil, &RejectedError{Code: 404, Msg: "no principal"}
 	}
 	// 第二步：日历主目录
-	ms, err = c.dav(ctx, "PROPFIND", principal, "0", propfindHome)
+	ms, principal, err := c.davFollow(ctx, "PROPFIND", principal, "0", propfindHome)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +204,7 @@ func (c *CalDAV) calendars(ctx context.Context) ([]davCalendar, error) {
 		return nil, &RejectedError{Code: 404, Msg: "no calendar home"}
 	}
 	// 第三步：主目录下每一本装 VEVENT 的日历
-	ms, err = c.dav(ctx, "PROPFIND", home, "1", propfindCalendars)
+	ms, home, err = c.davFollow(ctx, "PROPFIND", home, "1", propfindCalendars)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +241,7 @@ func (c *CalDAV) calendars(ctx context.Context) ([]davCalendar, error) {
 func (c *CalDAV) query(ctx context.Context, cal *url.URL, from, to time.Time) ([]CalendarEvent, error) {
 	body := `<?xml version="1.0" encoding="utf-8"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop>` +
 		`<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="` + from.UTC().Format("20060102T150405Z") + `" end="` + to.UTC().Format("20060102T150405Z") + `"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`
-	ms, err := c.dav(ctx, "REPORT", cal, "1", body)
+	ms, _, err := c.davFollow(ctx, "REPORT", cal, "1", body)
 	if err != nil {
 		return nil, err
 	}
@@ -274,40 +298,71 @@ type davProp struct {
 	CalendarData string `xml:"urn:ietf:params:xml:ns:caldav calendar-data"`
 }
 
-// dav 发一个 WebDAV 请求，2xx（多半是 207）时解析 multistatus；401 / 403 是账号密码不对，其余非 2xx 照状态码报。
+// davFollow 发一个 WebDAV 请求并自己跟跳转（Go 的 http.Client 会把 301 / 302 改成 GET，PROPFIND 就丢了），
+// 每一跳都重新过出网守卫；返回最终落到的地址。最多五跳。
+func (c *CalDAV) davFollow(ctx context.Context, method string, u *url.URL, depth, body string) (*davMultistatus, *url.URL, error) {
+	cur := u
+	for hop := 0; hop < 5; hop++ {
+		ms, next, err := c.dav(ctx, method, cur, depth, body)
+		if err != nil {
+			return nil, cur, err
+		}
+		if next == nil {
+			return ms, cur, nil
+		}
+		if err := CheckEgressURL(next.String(), DefaultEgress()); err != nil {
+			return nil, cur, &UnreachableError{Err: &EgressError{Reason: EgressPrivate, Host: next.Hostname()}}
+		}
+		cur = next
+	}
+	return nil, cur, &RejectedError{Code: 310, Msg: "too many redirects"}
+}
+
+// dav 发一个 WebDAV 请求：2xx（多半是 207）时解析 multistatus；3xx 带 Location 时返回下一跳；
+// 401 是账号密码不对，403 是这个路径不给看（企业微信的根路径对谁都 403），其余非 2xx 照状态码报。
 // 网络错误抹掉地址（里面可能带账号）。
-func (c *CalDAV) dav(ctx context.Context, method string, u *url.URL, depth, body string) (*davMultistatus, error) {
+func (c *CalDAV) dav(ctx context.Context, method string, u *url.URL, depth, body string) (*davMultistatus, *url.URL, error) {
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewBufferString(body))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.SetBasicAuth(c.username, c.password)
 	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 	req.Header.Set("Depth", depth)
 	req.Header.Set("User-Agent", "AxiomOS-calendar/1")
-	resp, err := c.http.Do(req)
+	hc := *c.http
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := hc.Do(req)
 	if err != nil {
-		return nil, sanitizeICSErr(err)
+		return nil, nil, sanitizeICSErr(err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 	if err != nil {
-		return nil, sanitizeICSErr(err)
+		return nil, nil, sanitizeICSErr(err)
 	}
 	switch {
-	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		return nil, &RejectedError{Code: resp.StatusCode, Msg: "unauthorized"}
+	case resp.StatusCode >= 300 && resp.StatusCode <= 399:
+		loc := strings.TrimSpace(resp.Header.Get("Location"))
+		if loc == "" {
+			return nil, nil, &RejectedError{Code: resp.StatusCode, Msg: "redirect without location"}
+		}
+		return nil, resolveHref(u, loc), nil
+	case resp.StatusCode == 401:
+		return nil, nil, &RejectedError{Code: 401, Msg: "unauthorized"}
+	case resp.StatusCode == 403:
+		return nil, nil, &RejectedError{Code: 403, Msg: "forbidden: " + u.Path}
 	case resp.StatusCode/100 != 2:
-		return nil, &RejectedError{Code: resp.StatusCode, Msg: "HTTP " + http.StatusText(resp.StatusCode)}
+		return nil, nil, &RejectedError{Code: resp.StatusCode, Msg: "HTTP " + http.StatusText(resp.StatusCode)}
 	}
 	var ms davMultistatus
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return &ms, nil
+		return &ms, nil, nil
 	}
 	if err := xml.Unmarshal(raw, &ms); err != nil {
-		return nil, ErrNotCalDAV
+		return nil, nil, ErrNotCalDAV
 	}
-	return &ms, nil
+	return &ms, nil, nil
 }
 
 // ErrNotCalDAV 表示服务器回的不是 WebDAV 应答（多半填成了网页地址）。
