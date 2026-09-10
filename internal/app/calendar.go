@@ -580,17 +580,25 @@ func (a *App) ConnectMyCalendar(ctx context.Context, sess *Session, provider str
 	clean := map[string]string{}
 	for _, f := range p.CalendarFields {
 		v := strings.TrimSpace(creds[f.Key])
-		if f.Key == "url" {
+		switch f.Key {
+		case "url":
 			v = directory.NormalizeICSURL(v)
+		case "server":
+			if v != "" && !strings.Contains(v, "://") {
+				v = "https://" + v
+			}
 		}
 		if v == "" && !f.Optional {
 			return nil, Bad("err.calendar_field_required", f.Title)
 		}
 		clean[f.Key] = v
 	}
-	if u := clean["url"]; u != "" {
-		if err := directory.CheckEgressURL(u, directory.DefaultEgress()); err != nil {
-			return nil, egressErr(err, u)
+	// 服务器会去访问的地址（订阅链接、CalDAV 服务器）都要过出网守卫
+	for _, key := range []string{"url", "server"} {
+		if u := clean[key]; u != "" {
+			if err := directory.CheckEgressURL(u, directory.DefaultEgress()); err != nil {
+				return nil, egressErr(err, u)
+			}
 		}
 	}
 	if sess.Write.DryRun {
@@ -605,8 +613,21 @@ func (a *App) ConnectMyCalendar(ctx context.Context, sess *Session, provider str
 		if errors.Is(err, directory.ErrNotICS) {
 			return nil, Bad("err.calendar_link_not_ics")
 		}
+		if errors.Is(err, directory.ErrNotCalDAV) {
+			return nil, Bad("err.calendar_caldav_not_dav")
+		}
+		var un *directory.UnreachableError
+		if errors.As(err, &un) {
+			return nil, Bad("err.calendar_self_unreachable", un.Err.Error())
+		}
 		var rj *directory.RejectedError
 		if errors.As(err, &rj) {
+			switch {
+			case p.Key == directory.CalDAVKey && (rj.Code == 401 || rj.Code == 403):
+				return nil, Bad("err.calendar_caldav_auth")
+			case p.Key == directory.CalDAVKey && rj.Code == 404:
+				return nil, Bad("err.calendar_caldav_none")
+			}
 			return nil, Bad("err.calendar_link_http", rj.Code)
 		}
 		return nil, &UserError{Status: 400, Reasons: []i18n.Msg{providerMsg(p, err)}}

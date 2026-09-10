@@ -4469,7 +4469,9 @@ on("POST", "/org/calendars/:provider/sync", (m): CalendarSyncResult => {
 });
 /** 日历订阅链接（自助，不用组织配置）：成员自己贴 .ics / webcal 链接 */
 const ICS_PROVIDER = { key: "ics", title: "日历订阅链接", fields: [{ key: "url", title: "订阅链接", secret: true, placeholder: "https://…/basic.ics", hint: "日历软件里「订阅 / 导出 / 私密地址」给的 .ics 或 webcal 链接；链接就是密钥，只有你自己能看" }] as DirectoryField[], prerequisites: ["Google 日历：设置 → 该日历 → 「iCal 格式的私密地址」", "Outlook / Exchange：设置 → 日历 → 共享日历 → 发布日历，取 ICS 链接", "飞书：日历设置 → 该日历 → 订阅链接"], tip: { text: "链接谁拿到都能看你的日历，别贴到别处；换链接就是换密钥。" } };
-const ICS_IDENTITY: Record<ID, { label: string; last_sync_at: string; last_status: "ok" | "failed"; last_error: string }> = {};
+const CALDAV_PROVIDER = { key: "caldav", title: "CalDAV 账号", fields: [{ key: "server", title: "服务器", secret: false, placeholder: "https://caldav.wecom.work", hint: "企业微信：日程 → 同步至其他日历 里给的服务器；Apple iCloud：https://caldav.icloud.com" }, { key: "username", title: "账号", secret: false, placeholder: "", hint: "同一页给的「帐号 / 用户名」；iCloud 是 Apple ID 邮箱" }, { key: "password", title: "密码", secret: true, placeholder: "", hint: "企业微信每次现取一个新的；iCloud 要在 appleid.apple.com 生成「App 专用密码」，不是登录密码" }] as DirectoryField[], prerequisites: ["企业微信：日程 → 右上角 … → 同步至其他日历，复制服务器、帐号，点「获取密码」", "Apple iCloud：服务器填 https://caldav.icloud.com，账号是 Apple ID，密码用 App 专用密码", "Google 日历不支持账号密码，用「日历订阅链接」或组织级的 Google 日历"], tip: { text: "密码只用来只读拉取，加密存放、不回显；企业微信的密码若失效，同步会显示失败，重新取一个再填即可。" } };
+const SELF_IDENTITY: Record<string, Record<ID, { label: string; last_sync_at: string; last_status: "ok" | "failed"; last_error: string }>> = { ics: {}, caldav: {} };
+const ICS_IDENTITY = SELF_IDENTITY.ics;
 let MY_FEED: MyFeedView = { enabled: false };
 on("GET", "/me/calendars", (): MyCalendarView[] => {
   requireLogin();
@@ -4477,20 +4479,30 @@ on("GET", "/me/calendars", (): MyCalendarView[] => {
     const id = CAL_IDENTITIES[p.key]?.[ME];
     return { provider: p.key, provider_title: p.title, org_configured: calConfigured(p.key) && !!CALS[p.key]?.enabled, per_member: p.per_member, connected: !!id, self_service: false, email: id?.email, external_user_id: id?.external_user_id, connected_at: id ? at(-3) : undefined, auth_url: p.per_member && calConfigured(p.key) && !id ? "#mock-google-auth" : undefined };
   });
-  const mine = ICS_IDENTITY[ME];
-  rows.push({ provider: ICS_PROVIDER.key, provider_title: ICS_PROVIDER.title, org_configured: true, per_member: true, self_service: true, connected: !!mine, fields: ICS_PROVIDER.fields, prerequisites: ICS_PROVIDER.prerequisites, tip: ICS_PROVIDER.tip, label: mine?.label, last_sync_at: mine?.last_sync_at, last_status: mine?.last_status, last_status_title: mine ? (mine.last_status === "ok" ? "成功" : "失败") : undefined, last_error: mine?.last_error, connected_at: mine ? at(-1) : undefined });
+  for (const p of [CALDAV_PROVIDER, ICS_PROVIDER]) {
+    const mine = SELF_IDENTITY[p.key][ME];
+    rows.push({ provider: p.key, provider_title: p.title, org_configured: true, per_member: true, self_service: true, connected: !!mine, fields: p.fields, prerequisites: p.prerequisites, tip: p.tip, label: mine?.label, last_sync_at: mine?.last_sync_at, last_status: mine?.last_status, last_status_title: mine ? (mine.last_status === "ok" ? "成功" : "失败") : undefined, last_error: mine?.last_error, connected_at: mine ? at(-1) : undefined });
+  }
   return rows;
 });
 on("PUT", "/me/calendars/:provider", (m, body) => {
   requireLogin();
+  const creds = (body as { credentials?: Record<string, string> })?.credentials ?? {};
+  if (m.groups!.provider === CALDAV_PROVIDER.key) {
+    // 示例里只认一组账号，别的当密码不对
+    if (!(creds.server ?? "").trim() || !(creds.username ?? "").trim() || !(creds.password ?? "").trim()) throw new ApiError(400, t("mock.calendar.badLink"));
+    if (creds.password !== "demo") throw new ApiError(400, t("mock.calendar.caldavAuth"));
+    SELF_IDENTITY.caldav[ME] = { label: "工作", last_sync_at: at(0), last_status: "ok", last_error: "" };
+    return { provider: CALDAV_PROVIDER.key, provider_title: CALDAV_PROVIDER.title, org_configured: true, per_member: true, self_service: true, connected: true, label: "工作", last_sync_at: at(0), last_status: "ok", last_status_title: "成功", connected_at: at(0) } satisfies MyCalendarView;
+  }
   if (m.groups!.provider !== ICS_PROVIDER.key) throw new ApiError(400, t("mock.calendar.selfServiceOnly"));
-  const url = ((body as { credentials?: Record<string, string> })?.credentials?.url ?? "").trim();
+  const url = (creds.url ?? "").trim();
   if (!/^(https?|webcals?):\/\//i.test(url)) throw new ApiError(400, t("mock.calendar.badLink"));
   if (/\.html?(\?|$)/i.test(url)) throw new ApiError(400, t("mock.calendar.notIcs")); // 真实后端按内容判，这里只拦明显的网页地址
   ICS_IDENTITY[ME] = { label: "我的日历", last_sync_at: at(0), last_status: "ok", last_error: "" };
   return { provider: ICS_PROVIDER.key, provider_title: ICS_PROVIDER.title, org_configured: true, per_member: true, self_service: true, connected: true, label: "我的日历", last_sync_at: at(0), last_status: "ok", last_status_title: "成功", connected_at: at(0) } satisfies MyCalendarView;
 });
-on("DELETE", "/me/calendars/:provider", (m) => { requireLogin(); const key = m.groups!.provider; if (key === ICS_PROVIDER.key) delete ICS_IDENTITY[ME]; else if (CAL_IDENTITIES[key]) delete CAL_IDENTITIES[key][ME]; return undefined; });
+on("DELETE", "/me/calendars/:provider", (m) => { requireLogin(); const key = m.groups!.provider; if (SELF_IDENTITY[key]) delete SELF_IDENTITY[key][ME]; else if (CAL_IDENTITIES[key]) delete CAL_IDENTITIES[key][ME]; return undefined; });
 on("GET", "/me/feed", (): MyFeedView => { requireLogin(); return MY_FEED; });
 on("POST", "/me/feed", (): MyFeedView => {
   requireLogin();
