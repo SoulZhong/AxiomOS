@@ -55,7 +55,7 @@ export function MeTab() {
     <div className="space-y-4">
       <Panel
         index={1}
-        title={t("settings.tab.me")}
+        title={t("pref.title")}
         telemetry={busy ? t("common.saving") : savedAt ? t("pref.saved") : prefs.overrides.length ? t("pref.overrideCount", { n: prefs.overrides.length }) : undefined}
         actions={<Button size="sm" variant="ghost" disabled={busy || prefs.overrides.length === 0} onClick={() => setResetting(true)}>{t("pref.reset")}</Button>}
       >

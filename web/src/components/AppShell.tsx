@@ -166,8 +166,8 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
     // 迭代详情（/sprints/[id]）仍属于「任务」入口
     { href: "/tasks", label: t("nav.tasks"), icon: <IconTask />, match: (p) => p.startsWith("/tasks") || p.startsWith("/sprints") },
     { href: "/agents", label: t("nav.agents"), icon: <IconAgent /> },
-    // 组织设置只给有入口的人；其他人也有「个人设置」：偏好、通知、日历、代码平台身份（DESIGN.md §20）与只读的流程
-    { href: "/settings", label: canManageOrg ? t("nav.settings") : t("nav.settingsMine"), icon: <IconSettings /> },
+    // 组织设置只给有入口的人；其他人这个位置是只读的「流程」。个人设置（DESIGN.md §20）从页脚自己的名字进，不占入口
+    { href: "/settings", label: canManageOrg ? t("nav.settings") : t("taskTypes.title"), icon: canManageOrg ? <IconSettings /> : <IconFlow /> },
   ];
   // 指令台里除六个入口外，再列出各页签的直达项（「任务 · 看板」……）与待确认操作的历史记录，地址带查询串
   const sub = (base: string, label: string, tabs: Array<[string, string, ReactNode]>) => tabs.map(([q, tl, icon]) => ({ href: `${base}${q}`, label: `${label} · ${tl}`, icon }));
@@ -177,7 +177,8 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
     ...sub("/overview/?tab=", t("nav.overview"), [["cost", t("overview.tab.cost"), <IconChart key="c" />], ["efficiency", t("overview.tab.efficiency"), <IconChart key="e" />], ["agents", t("overview.tab.agents"), <IconAgent key="a" />]]),
     { href: "/proposals/", label: `${t("proposals.title")} · ${t("proposals.history")}`, icon: <IconApprove key="p" /> },
     // 「流程」每个成员都能查看（只读），不受组织设置入口的门槛限制；没有组织设置入口的人看到的就叫「流程」
-    ...(canManageOrg ? sub("/settings/?tab=", t("nav.settings"), [["me", t("settings.tab.me"), <IconSettings key="m" />], ["workflows", t("settings.tab.workflows"), <IconFlow key="w" />]]) : [{ href: "/settings/?tab=me", label: `${t("nav.settingsMine")} · ${t("settings.tab.me")}`, icon: <IconSettings key="m" /> }, { href: "/settings/?tab=workflows", label: t("taskTypes.title"), icon: <IconFlow key="w" /> }]),
+    { href: "/me/", label: t("nav.settingsMine"), icon: <IconSettings key="me" /> },
+    ...(canManageOrg ? sub("/settings/?tab=", t("nav.settings"), [["workflows", t("settings.tab.workflows"), <IconFlow key="w" />]]) : []),
   ];
   // 收起态（显式收起，或 768–1199 没有偏好）只显示图标 + 气泡，文字藏起来（.sb-x）；展开态完整；<768 变抽屉（始终完整）。
   const labelCls = "sb-x min-w-0 truncate";
@@ -251,11 +252,14 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
           )}
           {session ? (
             <div className="sb-row flex items-center gap-2.5">
-              {navTip(session.member.name, <Avatar name={session.member.name} size={32} />)}
-              <span className="sb-x min-w-0 flex-1">
-                <span className="block truncate text-body leading-[1.3] font-medium text-ink">{session.member.name}</span>
-                <span className="block truncate text-caption text-ink-subtle">{roleLine}</span>
-              </span>
+              {/* 自己的名字就是「个人设置」的入口（收起态只剩头像，气泡说明） */}
+              <Link href="/me/" className="sb-row flex min-w-0 flex-1 items-center gap-2.5 rounded-md -mx-1 px-1 py-0.5 hover:bg-surface-2" title={t("nav.settingsMine")} aria-label={t("nav.settingsMine")} aria-current={pathname.startsWith("/me") ? "page" : undefined} data-me-link>
+                {navTip(t("nav.settingsMine"), <Avatar name={session.member.name} size={32} />)}
+                <span className="sb-x min-w-0 flex-1">
+                  <span className="block truncate text-body leading-[1.3] font-medium text-ink">{session.member.name}</span>
+                  <span className="block truncate text-caption text-ink-subtle">{roleLine}</span>
+                </span>
+              </Link>
               <button type="button" onClick={() => void logout()} className="sb-x pressable rounded-md p-1 text-ink-subtle hover:bg-surface-2 hover:text-ink" title={t("common.logout")} aria-label={t("common.logout")}>
                 <IconLogout />
               </button>

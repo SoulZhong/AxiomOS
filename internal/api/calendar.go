@@ -155,9 +155,9 @@ func (s *Server) myCalendarDisconnect(w http.ResponseWriter, r *http.Request) {
 // googleCallback Google 授权回来：换令牌、存绑定，然后把浏览器送回个人设置页；失败也送回去并带上原因。
 func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	base := strings.TrimRight(s.App.PublicURL, "/") + "/settings/?tab=me"
+	base := strings.TrimRight(s.App.PublicURL, "/") + "/me/"
 	if e := q.Get("error"); e != "" {
-		http.Redirect(w, r, base+"&calendar=denied", http.StatusSeeOther)
+		http.Redirect(w, r, base+"?calendar=denied", http.StatusSeeOther)
 		return
 	}
 	target, err := s.App.FinishGoogleAuth(r.Context(), q.Get("state"), q.Get("code"))
@@ -166,7 +166,7 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		if ue, ok := err.(*app.UserError); ok {
 			msg = ue.Render(localeOf(r))
 		}
-		http.Redirect(w, r, base+"&calendar=failed&reason="+url.QueryEscape(msg), http.StatusSeeOther)
+		http.Redirect(w, r, base+"?calendar=failed&reason="+url.QueryEscape(msg), http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
