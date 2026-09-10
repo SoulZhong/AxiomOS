@@ -156,15 +156,28 @@
   border-bottom: 4px solid transparent;
   opacity: 0.8;
 }
-/* 跨天的条：中间与末尾的格子去掉圆角，读成连续的一根 */
-.sc-chip-cont { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -6px; padding-left: 8px; }
-.sc-chip-more { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: -6px; }
-.sc-chip-cont .sc-chip-label { visibility: hidden; }
+/* 跨天的条：一根条横跨它覆盖的天；跨到了上一行 / 下一行的那一侧不收圆角、边线也断开，读成还没画完 */
+.sc-chip-cont { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-color: transparent; }
+.sc-chip-more { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right-color: transparent; }
 .sc-chip-theirs { opacity: 0.9; }
-.sc-more {
-  font-size: 11px;
-  color: var(--c-ink-tertiary);
-  padding-left: 4px;
+
+/* 泳道：一行日子上的条按行排，grid-column 决定横跨哪几天，grid-row 决定第几条泳道 */
+.sc-lanes {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  grid-auto-rows: 20px;
+  row-gap: 3px;
+  padding: 5px 0;
+}
+.sc-span {
+  display: flex;
+  min-width: 0;
+  padding: 0 3px;
+}
+.sc-span > .sc-chip {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* ---------- 周 / 日 ---------- */
@@ -221,16 +234,23 @@
   justify-content: flex-end;
   padding: 6px 6px 0 0;
 }
+/* 全天带：横跨全部日列的一块，底下按天分格（竖线、今天的底色），上面是泳道 */
 .sc-band {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  position: relative;
+  grid-column: 2 / -1;
   min-height: 34px;
-  padding: 5px 4px;
-  border-left: 1px solid var(--c-hairline);
   border-bottom: 1px solid var(--c-hairline);
 }
-.sc-band.sc-today,
+.sc-band-bg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+}
+.sc-band-bg > div {
+  border-left: 1px solid var(--c-hairline);
+}
+.sc-band-bg > .sc-today,
 .sc-col.sc-today {
   background: color-mix(in srgb, var(--c-accent) 3%, transparent);
 }
@@ -304,38 +324,79 @@
   border-left: 0;
   padding: 6px 4px;
 }
-.sc-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+/* 一周一行：底下按天分格的背景，上面是日期数字一行 + 泳道若干行 + 「+N」一行 */
+.sc-mweek {
+  position: relative;
+  grid-column: 1 / -1;
   min-height: 104px;
-  padding: 4px;
   border-top: 1px solid var(--c-hairline);
+}
+.sc-mbg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.sc-mbg > div {
   border-left: 1px solid var(--c-hairline);
 }
-.sc-cell:nth-child(7n + 1) {
+.sc-mbg > div:first-child {
   border-left: 0;
 }
-.sc-cell .sc-dn {
-  align-self: flex-end;
+.sc-mbg > .sc-other {
+  background: var(--c-surface-2);
+}
+.sc-mbg > .sc-today {
+  background: color-mix(in srgb, var(--c-accent) 3%, transparent);
+}
+.sc-mgrid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-auto-rows: 20px;
+  row-gap: 2px;
+  padding: 4px 0;
+}
+.sc-mgrid .sc-span {
+  padding: 0 4px;
+}
+.sc-mdn {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px;
+}
+.sc-mdn .sc-dn {
   font-size: 12px;
   color: var(--c-ink-muted);
   line-height: 20px;
   min-width: 20px;
-  text-align: center;
-}
-.sc-cell.sc-today .sc-dn {
+  padding: 0 3px;
   border-radius: 999px;
+  text-align: center;
+  cursor: pointer;
+}
+.sc-mdn .sc-dn:hover {
+  background: var(--c-surface-3);
+}
+.sc-mdn.sc-today .sc-dn {
   background: var(--c-accent);
   color: var(--c-on-accent);
 }
-.sc-cell.sc-other {
-  background: var(--c-surface-2);
-}
-.sc-cell.sc-other .sc-dn {
+.sc-mdn.sc-other .sc-dn {
   color: var(--c-ink-tertiary);
 }
-.sc-cell .sc-chip {
+.sc-mmore {
+  justify-self: start;
+  margin-left: 6px;
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--c-ink-tertiary);
+  cursor: pointer;
+}
+.sc-mmore:hover {
+  color: var(--c-ink);
+}
+.sc-month .sc-chip {
   height: 18px;
   line-height: 16px;
   font-size: 11px;
