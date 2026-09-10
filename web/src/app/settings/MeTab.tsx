@@ -13,7 +13,7 @@ import { MeNotifications } from "./MeNotifications";
 import { PreferenceForm } from "./PreferenceForm";
 
 /*
- * 组织设置 → 我的偏好（DESIGN.md §20）：每个成员都能进。改一项立即 PUT /me/preferences（只发这一项），
+ * 组织设置 → 个人设置（DESIGN.md §20）：每个成员都能进；第一块「我的偏好」，后面是通知、外部日历、代码平台身份。改一项立即 PUT /me/preferences（只发这一项），
  * 返回的整份解析结果直接作用到页面（列、卡片、紧凑、侧栏）；「恢复默认」DELETE 后回到角色 / 系统默认。
  * 下面接着两块也是"只影响我自己"的设置：通知（ADR 0019 的第三层）与我在代码平台上的登录名（ADR 0020）。
  */

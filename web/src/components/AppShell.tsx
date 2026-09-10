@@ -166,7 +166,7 @@ function Shell({ pathname, session, checked, canManageOrg, logout, landing, chil
     // 迭代详情（/sprints/[id]）仍属于「任务」入口
     { href: "/tasks", label: t("nav.tasks"), icon: <IconTask />, match: (p) => p.startsWith("/tasks") || p.startsWith("/sprints") },
     { href: "/agents", label: t("nav.agents"), icon: <IconAgent /> },
-    // 组织设置只给有入口的人；其他人也有「设置」：我的偏好（DESIGN.md §20）与只读的流程
+    // 组织设置只给有入口的人；其他人也有「个人设置」：偏好、通知、日历、代码平台身份（DESIGN.md §20）与只读的流程
     { href: "/settings", label: canManageOrg ? t("nav.settings") : t("nav.settingsMine"), icon: <IconSettings /> },
   ];
   // 指令台里除六个入口外，再列出各页签的直达项（「任务 · 看板」……）与待确认操作的历史记录，地址带查询串
