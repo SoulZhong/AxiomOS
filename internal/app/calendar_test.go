@@ -352,3 +352,73 @@ func TestICSSubscriptionAndFeed(t *testing.T) {
 		t.Fatal("不存在的 token 应 404")
 	}
 }
+
+// CalDAV 账号（企业微信 / iCloud 那种「服务器 + 账号 + 密码」）：成员自己填就能连，密码不对整句拒绝，网页地址整句拒绝。
+func TestCalDAVAccountConnect(t *testing.T) {
+	t.Setenv("AXIOMOS_ALLOW_PRIVATE_EGRESS", "1")
+	a, ctx := testApp(t)
+	_, _, yi := newTestOrg(t, a, ctx)
+	ms := func(b string) string {
+		return `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">` + b + `</d:multistatus>`
+	}
+	start := time.Now().AddDate(0, 0, 1).UTC().Truncate(time.Hour)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, ok := r.BasicAuth(); !ok || u != "yi" || p != "pw" {
+			w.WriteHeader(401)
+			return
+		}
+		if r.URL.Path == "/web" {
+			_, _ = w.Write([]byte("<html>login</html>"))
+			return
+		}
+		w.WriteHeader(207)
+		switch {
+		case r.Method == "PROPFIND" && r.URL.Path == "/":
+			_, _ = w.Write([]byte(ms(`<d:response><d:href>/</d:href><d:propstat><d:prop><d:current-user-principal><d:href>/p/yi/</d:href></d:current-user-principal></d:prop></d:propstat></d:response>`)))
+		case r.Method == "PROPFIND" && r.URL.Path == "/p/yi/":
+			_, _ = w.Write([]byte(ms(`<d:response><d:href>/p/yi/</d:href><d:propstat><d:prop><c:calendar-home-set><d:href>/c/yi/</d:href></c:calendar-home-set></d:prop></d:propstat></d:response>`)))
+		case r.Method == "PROPFIND" && r.URL.Path == "/c/yi/":
+			_, _ = w.Write([]byte(ms(`<d:response><d:href>/c/yi/main/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>乙的企微日程</d:displayname></d:prop></d:propstat></d:response>`)))
+		case r.Method == "REPORT":
+			_, _ = w.Write([]byte(ms(`<d:response><d:href>/c/yi/main/1.ics</d:href><d:propstat><d:prop><c:calendar-data>BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:m1
+SUMMARY:企微例会
+DTSTART:` + start.Format("20060102T150405Z") + `
+DTEND:` + start.Add(time.Hour).Format("20060102T150405Z") + `
+END:VEVENT
+END:VCALENDAR</c:calendar-data></d:prop></d:propstat></d:response>`)))
+		}
+	}))
+	defer srv.Close()
+	if _, err := a.ConnectMyCalendar(ctx, yi, directory.CalDAVKey, map[string]string{"server": srv.URL, "username": "yi", "password": "wrong"}); err == nil || !strings.Contains(err.Error(), "账号或密码不对") {
+		t.Fatalf("密码不对应整句拒绝，实际 %v", err)
+	}
+	if _, err := a.ConnectMyCalendar(ctx, yi, directory.CalDAVKey, map[string]string{"server": srv.URL + "/web", "username": "yi", "password": "pw"}); err == nil || !strings.Contains(err.Error(), "不是 CalDAV 服务器") {
+		t.Fatalf("网页地址应整句拒绝，实际 %v", err)
+	}
+	if _, err := a.ConnectMyCalendar(ctx, yi, directory.CalDAVKey, map[string]string{"server": srv.URL, "username": "yi"}); err == nil || !strings.Contains(err.Error(), "「密码」不能为空") {
+		t.Fatalf("缺密码应说清楚，实际 %v", err)
+	}
+	v, err := a.ConnectMyCalendar(ctx, yi, directory.CalDAVKey, map[string]string{"server": srv.URL, "username": "yi", "password": "pw"})
+	if err != nil || !v.Connected || v.Label != "乙的企微日程" || v.LastStatus != "ok" {
+		t.Fatalf("应连上并同步: %+v %v", v, err)
+	}
+	day := func(n int) *time.Time { d := time.Now().AddDate(0, 0, n).Truncate(24 * time.Hour); return &d }
+	sched, err := a.ScheduleOf(ctx, yi, "me", *day(0), *day(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, it := range sched.Items {
+		if it.Kind == "event" && it.Title == "企微例会" && it.Provider == directory.CalDAVKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CalDAV 拉来的例会应在日程里: %+v", sched.Items)
+	}
+	if err := a.DisconnectMyCalendar(ctx, yi, directory.CalDAVKey); err != nil {
+		t.Fatal(err)
+	}
+}

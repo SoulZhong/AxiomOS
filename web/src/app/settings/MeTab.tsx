@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 import { api, type MyCalendarView, type MyFeedView, type PreferencesPatch } from "@/lib/api";
 import { fmtRelative } from "@/lib/format";
 import { errorMessage, useLoad } from "@/lib/hooks";
-import { t } from "@/lib/i18n";
+import { t, type Key } from "@/lib/i18n";
 import { applyPreferences, usePreferences } from "@/lib/preferences";
 import { useSession } from "@/components/AppShell";
 import { useQueryParam } from "@/lib/hooks";
@@ -128,7 +128,7 @@ function CodeIdentityPanel({ index }: { index: number }) {
 
 /**
  * 我的外部日历（ADR 0032）：飞书 / 企业微信沿用外部目录的身份，不用连；Google 自己授权一次；
- * 日历订阅链接自己贴一条就连上（不用管理员）。最后一段是反方向：把 AxiomOS 发布成一条订阅链接给日历软件。
+ * 日历订阅链接、CalDAV 账号（企业微信、iCloud）自己填就连上（不用管理员）。最后一段是反方向：把 AxiomOS 发布成一条订阅链接给日历软件。
  */
 function CalendarPanel({ index }: { index: number }) {
   const toast = useToast();
@@ -143,7 +143,8 @@ function CalendarPanel({ index }: { index: number }) {
   };
   const all = list.data ?? [];
   const rows = all.filter((c) => !c.self_service && (c.org_configured || c.connected));
-  const link = all.find((c) => c.self_service);
+  // 自助的两家：订阅链接在前（最常用），CalDAV 账号在后
+  const selfService = all.filter((c) => c.self_service).sort((a, b) => Number(b.provider === "ics") - Number(a.provider === "ics"));
   return (
     <Panel index={index} title={t("me.calendar.title")}>
       {list.loading && !list.data ? <ListSkeleton rows={2} /> : list.error && !list.data ? <ErrorBox message={list.error} onRetry={list.reload} /> : (
@@ -152,7 +153,7 @@ function CalendarPanel({ index }: { index: number }) {
           {flag === "connected" && <p className="mb-3 text-caption text-success" role="status">{t("me.calendar.justConnected")}</p>}
           {flag === "denied" && <p className="mb-3 text-caption text-warning" role="alert">{t("me.calendar.denied")}</p>}
           {flag === "failed" && <p className="mb-3 text-caption text-danger" role="alert">{t("me.calendar.failed", { reason: reason ?? "" })}</p>}
-          {rows.length === 0 && !link ? (
+          {rows.length === 0 && selfService.length === 0 ? (
             <p className="text-caption text-ink-subtle">{t("me.calendar.none")}</p>
           ) : rows.length > 0 && (
             <ul className="max-w-[640px] divide-y divide-hairline" data-my-calendars>
@@ -169,7 +170,7 @@ function CalendarPanel({ index }: { index: number }) {
               ))}
             </ul>
           )}
-          {link && <SubscriptionLink cal={link} busy={busy === link.provider} onChanged={list.reload} onDisconnect={() => void disconnect(link)} />}
+          {selfService.map((c) => <SelfServiceCalendar key={c.provider} cal={c} busy={busy === c.provider} onChanged={list.reload} onDisconnect={() => void disconnect(c)} />)}
           <FeedSection />
         </>
       )}
@@ -177,38 +178,45 @@ function CalendarPanel({ index }: { index: number }) {
   );
 }
 
-/** 日历订阅链接：一行输入 + 连接；连上后显示日历名、最近同步、失败原因，可换链接或断开。链接本身永远不回显。 */
-function SubscriptionLink({ cal, busy, onChanged, onDisconnect }: { cal: MyCalendarView; busy: boolean; onChanged: () => void; onDisconnect: () => void }) {
+/**
+ * 自助的提供方（日历订阅链接、CalDAV 账号）：按后端给的字段渲染一个小表单 + 「连接」；连上后显示日历名、最近同步、失败原因，
+ * 可重新填或断开。密码 / 链接这类保密字段永远不回显。
+ */
+function SelfServiceCalendar({ cal, busy, onChanged, onDisconnect }: { cal: MyCalendarView; busy: boolean; onChanged: () => void; onDisconnect: () => void }) {
   const toast = useToast();
-  const [url, setUrl] = useState("");
+  const [values, setValues] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fields = cal.fields ?? [];
   const showForm = !cal.connected || editing;
+  const hintKey = `me.calendar.self.hint.${cal.provider}` as Key;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!url.trim()) { setError(t("me.calendar.badLinkEmpty")); return; }
+    const missing = fields.find((f) => !f.optional && !(values[f.key] ?? "").trim());
+    if (missing) { setError(t("me.calendar.self.required", { field: missing.title })); return; }
     setSaving(true); setError(null);
     try {
-      const r = await api.me.calendars.connect(cal.provider, { url: url.trim() });
-      toast.ok(t("me.calendar.linkConnected", { label: r.label || cal.provider_title }));
-      setUrl(""); setEditing(false); onChanged();
+      const creds = Object.fromEntries(fields.map((f) => [f.key, (values[f.key] ?? "").trim()]));
+      const r = await api.me.calendars.connect(cal.provider, creds);
+      toast.ok(t("me.calendar.self.connected", { label: r.label || cal.provider_title }));
+      setValues({}); setEditing(false); onChanged();
     } catch (err) { setError(errorMessage(err)); } finally { setSaving(false); }
   };
   return (
-    <section className="mt-4 max-w-[640px] border-t border-hairline pt-4" data-calendar-link>
+    <section className="mt-4 max-w-[640px] border-t border-hairline pt-4" data-calendar-self={cal.provider}>
       <div className="flex flex-wrap items-center gap-2">
-        <h4 className="text-body font-medium text-ink">{t("me.calendar.linkTitle")}</h4>
+        <h4 className="text-body font-medium text-ink">{cal.provider_title}</h4>
         {cal.connected ? <Tag tone="success">{t("me.calendar.connected")}</Tag> : <Tag>{t("me.calendar.notConnected")}</Tag>}
         {cal.connected && cal.label && <span className="text-caption text-ink-subtle">{cal.label}</span>}
         {cal.connected && (
           <span className="ml-auto flex items-center gap-2">
-            <Button size="sm" variant="ghost" disabled={busy || saving} onClick={() => { setEditing((v) => !v); setError(null); }}>{t("me.calendar.linkReplace")}</Button>
+            <Button size="sm" variant="ghost" disabled={busy || saving} onClick={() => { setEditing((v) => !v); setError(null); }}>{t("me.calendar.self.replace")}</Button>
             <Button size="sm" variant="ghost" disabled={busy || saving} onClick={onDisconnect}>{t("me.calendar.disconnect")}</Button>
           </span>
         )}
       </div>
-      <p className="mt-1 text-caption text-ink-muted">{t("me.calendar.linkHint")}</p>
+      <p className="mt-1 text-caption text-ink-muted">{t(hintKey)}</p>
       {cal.connected && (
         <p className={"mt-1 text-caption " + (cal.last_status === "failed" ? "text-danger" : "text-ink-subtle")} role={cal.last_status === "failed" ? "alert" : undefined}>
           {cal.last_sync_at ? t("me.calendar.lastSync", { when: fmtRelative(cal.last_sync_at), status: cal.last_status_title ?? "" }) : t("me.calendar.neverSynced")}
@@ -216,16 +224,25 @@ function SubscriptionLink({ cal, busy, onChanged, onDisconnect }: { cal: MyCalen
         </p>
       )}
       {showForm && (
-        <form onSubmit={submit} className="mt-2 flex flex-wrap items-center gap-2">
-          <Input value={url} onChange={(e) => { setUrl(e.target.value); setError(null); }} placeholder={t("me.calendar.linkPlaceholder")} spellCheck={false} autoComplete="off" aria-label={t("me.calendar.linkTitle")} className="min-w-0 flex-1" />
-          <Button type="submit" variant="primary" size="sm" disabled={saving || busy}>{t("me.calendar.linkConnect")}</Button>
-          {editing && <Button size="sm" variant="ghost" disabled={saving} onClick={() => { setEditing(false); setUrl(""); setError(null); }}>{t("common.cancel")}</Button>}
-          {error && <p className="w-full text-caption text-danger" role="alert">{error}</p>}
+        <form onSubmit={submit} className="mt-2 flex flex-col gap-2">
+          {fields.map((f) => (
+            <label key={f.key} className="block">
+              {fields.length > 1 && <span className="mb-1 block text-caption text-ink-subtle">{f.title}</span>}
+              {/* 密码打码；链接虽然也是密钥，但贴进来的时候要看得见贴对了没有 */}
+              <Input type={f.secret && f.key !== "url" ? "password" : "text"} value={values[f.key] ?? ""} onChange={(e) => { setValues((v) => ({ ...v, [f.key]: e.target.value })); setError(null); }} placeholder={f.placeholder || (fields.length === 1 ? f.hint : "")} spellCheck={false} autoComplete={f.secret ? "new-password" : "off"} aria-label={f.title} className="w-full" />
+              {fields.length > 1 && f.hint && <span className="mt-0.5 block text-caption text-ink-tertiary">{f.hint}</span>}
+            </label>
+          ))}
+          <div className="flex items-center gap-2">
+            <Button type="submit" variant="primary" size="sm" disabled={saving || busy}>{t("me.calendar.self.connect")}</Button>
+            {editing && <Button size="sm" variant="ghost" disabled={saving} onClick={() => { setEditing(false); setValues({}); setError(null); }}>{t("common.cancel")}</Button>}
+          </div>
+          {error && <p className="text-caption text-danger" role="alert">{error}</p>}
         </form>
       )}
       {(cal.prerequisites?.length ?? 0) > 0 && (
         <details className="mt-2 text-caption text-ink-subtle">
-          <summary className="cursor-pointer select-none">{t("me.calendar.linkWhere")}</summary>
+          <summary className="cursor-pointer select-none">{t("me.calendar.self.where")}</summary>
           <ul className="mt-1 list-disc space-y-0.5 pl-5">
             {cal.prerequisites!.map((x) => <li key={x}>{x}</li>)}
           </ul>
