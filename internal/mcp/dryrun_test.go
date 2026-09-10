@@ -408,6 +408,7 @@ var notDryRunnable = map[string]string{
 	"POST /api/v1/org/calendars/{provider}/sync":                  "同步外部日历，本身就是拉一次；结果记在连接上",
 	"DELETE /api/v1/me/calendars/{provider}":                      "解除自己与外部日历的绑定，网页有确认框",
 	"POST /api/v1/me/calendars/{provider}/sync":                   "成员自己立刻同步一次外部日历，本身就是拉一次；结果记在绑定上",
+	"POST /api/v1/me/usage":                                       "客户端钩子上报累计用量（ADR 0030），幂等；只看不做没有意义",
 	"PUT /api/v1/org/directory":                                   "外部目录配置（ADR 0017），网页向导",
 	"DELETE /api/v1/org/directory":                                "断开外部目录，网页有确认框",
 	"POST /api/v1/org/directory/test":                             "外部目录连通性自检，只读外部系统",

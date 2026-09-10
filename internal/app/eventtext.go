@@ -299,6 +299,9 @@ func EventSummary(e *store.EventRow, names map[string]string, taskTitle map[stri
 		return i18n.Trf(loc, "ev.CalendarIdentityBound", who, SourceTitle(s("provider"), loc))
 	case "CalendarIdentityRemoved":
 		return i18n.Trf(loc, "ev.CalendarIdentityRemoved", who, SourceTitle(s("provider"), loc))
+	case "AgentUsageRecorded":
+		tokens, _ := NumOf(e.Data["tokens"])
+		return i18n.Trf(loc, "ev.AgentUsageRecorded", who, tokens)
 	case "CalendarFeedReset":
 		return i18n.Trf(loc, "ev.CalendarFeedReset", who)
 	case "CalendarFeedRemoved":

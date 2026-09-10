@@ -79,6 +79,37 @@ case "$CLIENT" in
       say "{{.T.no_claude}}"
       say "$JSON_SNIPPET"
     fi
+    # 用量钩子（ADR 0030）：每轮结束把这次会话的累计 token 报给 AxiomOS；令牌仍只在 ~/.claude.json 里
+    if command -v python3 >/dev/null 2>&1; then
+      mkdir -p "$HOME/.axiomos"
+      HOOK="$HOME/.axiomos/usage-hook.py"
+      curl -fsS "$BASE/api/v1/agent-auth/usage-hook.py" -o "$HOOK" && chmod 700 "$HOOK" || HOOK=""
+      if [ -n "$HOOK" ]; then
+        mkdir -p "$HOME/.claude"
+        python3 - "$HOME/.claude/settings.json" "$HOOK" <<'PY'
+import json, os, sys
+path, hook = sys.argv[1:3]
+data = {}
+if os.path.isfile(path):
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}
+cmd = "python3 " + hook
+hooks = data.setdefault("hooks", {})
+stop = hooks.setdefault("Stop", [])
+if not any(h.get("command") == cmd for g in stop for h in (g.get("hooks") or [])):
+    stop.append({"hooks": [{"type": "command", "command": cmd, "timeout": 15}]})
+with open(path, "w") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+        say "{{.T.hook_written}}$HOOK)"
+      fi
+    else
+      say "{{.T.hook_manual}}"
+    fi
     say "{{.T.try_claude}}"
     ;;
   cursor)

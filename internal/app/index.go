@@ -280,6 +280,9 @@ type AgentQuality struct {
 	Rejected int
 	Tokens   int64
 	Cost     float64
+	// 未归口用量（ADR 0030）
+	UnattributedTokens int64
+	UnattributedCost   float64
 }
 
 func (a *App) AgentQualities(ctx context.Context, sess *Session) ([]AgentQuality, error) {
@@ -345,6 +348,12 @@ func (a *App) AgentQualities(ctx context.Context, sess *Session) ([]AgentQuality
 				for _, u := range r.Usage {
 					q.Tokens += u.TotalTokens()
 				}
+			}
+			if us, cost, err := a.unattributedUsage(ctx, tx, sess.OrgID, ag.ID, time.Time{}); err == nil {
+				for _, u := range us {
+					q.UnattributedTokens += u.TotalTokens()
+				}
+				q.UnattributedCost = cost
 			}
 			out = append(out, q)
 		}

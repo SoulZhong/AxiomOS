@@ -110,6 +110,8 @@
 | POST | `/tasks/{id}/revert` | `{reason}` 必填：撤回委托内最近一步推进（24 小时内、之后没有别的改动），任务回到上一状态，只追加 `TaskReverted` 动态 → 任务详情。Agent 不能撤；不是发委托的人 → 403 |
 | POST | `/tasks/{id}/relations` | `{type, from_task_id, to_task_id}`（一端必须是本任务）→ 关联 |
 | POST | `/tasks/{id}/heartbeat` | `{usage[]}` 累计用量（Agent 用） |
+| POST | `/me/usage` | 用量自动采集（ADR 0030，Agent 令牌）：`{session, client?, cumulative[{model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens}]}`，客户端钩子每轮结束报**整个会话的累计数**，服务端与上一次比较得出增量（只增不减、重报不重复计）→ `{delta_tokens, task_id?, task_number?, unattributed}`：那一刻有开着的执行记录就归到它（走心跳），没有就记为未归口用量 |
+| GET | `/agent-auth/usage-hook.py` | 公开：Claude Code 的 Stop 钩子脚本，接入脚本把它装到 `~/.axiomos/usage-hook.py` 并写进 `~/.claude/settings.json` |
 
 ## 待领取与甘特图
 

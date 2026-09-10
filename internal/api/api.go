@@ -79,6 +79,8 @@ func (s *Server) Handler() http.Handler {
 	auth("DELETE /api/v1/mandates/{id}", s.revokeMandate)
 	auth("POST /api/v1/tasks/{id}/revert", s.revertTask)
 	auth("POST /api/v1/tasks/{id}/heartbeat", s.heartbeat)
+	// 用量自动采集（ADR 0030）：客户端钩子每轮结束报整个会话的累计用量，服务端算增量并归口
+	auth("POST /api/v1/me/usage", s.myUsage)
 
 	auth("GET /api/v1/backlog", s.backlog)
 	auth("GET /api/v1/gantt", s.gantt)
@@ -842,6 +844,16 @@ func (s *Server) relation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, RelationV{ID: from + ":" + string(typ) + ":" + to, Type: relationTypeOut(typ), From: taskRef(fromTask, ft, loc), To: taskRef(toTask, tt, loc), CreatedAt: time.Now()})
 }
 
+func (s *Server) myUsage(w http.ResponseWriter, r *http.Request) {
+	var in app.UsageReportInput
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	v, err := s.App.ReportAgentUsage(r.Context(), sessionOf(r), in)
+	respond(w, r, v, err)
+}
+
 func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Usage []domain.Usage `json:"usage"`
@@ -1120,7 +1132,8 @@ func (s *Server) statsAgents(w http.ResponseWriter, r *http.Request) {
 	rf, _ := s.refsFor(r)
 	views := []AgentStatV{}
 	for _, q := range out {
-		v := AgentStatV{Agent: rf.must(q.AgentID), Owner: rf.must(q.OwnerID), Runs: q.Runs, Accepted: q.Accepted, Rejected: q.Rejected, TotalTokens: q.Tokens, Cost: q.Cost}
+		v := AgentStatV{Agent: rf.must(q.AgentID), Owner: rf.must(q.OwnerID), Runs: q.Runs, Accepted: q.Accepted, Rejected: q.Rejected, TotalTokens: q.Tokens, Cost: q.Cost,
+			UnattributedTokens: q.UnattributedTokens, UnattributedCost: q.UnattributedCost}
 		if n := q.Accepted + q.Rejected; n > 0 {
 			v.SuccessRate = float64(q.Accepted) / float64(n)
 			v.RejectRate = float64(q.Rejected) / float64(n)

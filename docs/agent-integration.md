@@ -217,6 +217,8 @@ irm 'https://你的地址/api/v1/agent-auth/connect.ps1?client=claude-code' | ie
 
 ## 8. 用量与成本
 
+**token 不用你自己数**（ADR 0030）：Claude Code 走 `/connect` 接入时会装一个 Stop 钩子，每轮结束把这次会话的累计用量报到 `POST /me/usage`，服务端算增量、归到你当时开着的执行记录；没开执行记录的记成你名下的「未归口用量」（`get_my_metrics` 的 `unattributed_tokens`）。所以先领任务再干活，token 才会算到任务头上。下面的手动上报仍然可用，两者都是累计数、幂等。
+
 `heartbeat` 的 `usage` 按模型分条，填**累计值**（幂等，系统取最大）：
 
 ```json
