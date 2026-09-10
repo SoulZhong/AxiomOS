@@ -1807,6 +1807,9 @@ export interface AgentStat {
   reject_rate: number; // 0–1
   total_tokens: number;
   cost: number;
+  /** 未归口用量（ADR 0030）：客户端自动报上来、当时没开执行记录的那部分 */
+  unattributed_tokens?: number;
+  unattributed_cost?: number;
 }
 
 // ---------- 组织概览（docs/api.md「范围与概览」） ----------

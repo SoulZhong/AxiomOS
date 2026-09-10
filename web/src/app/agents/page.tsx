@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type Agent, type AgentCheck, type AgentStat, type AgentState, type Event, type Grant, type GrantMode, type GrantName, type Task } from "@/lib/api";
-import { fmtMoney, fmtRelative, parseDate, today } from "@/lib/format";
+import { fmtMoney, fmtRelative, fmtTokens, parseDate, today } from "@/lib/format";
 import { errorMessage, useAction, useCapabilityTitles, useHighlight, useLoad } from "@/lib/hooks";
 import { t } from "@/lib/i18n";
 import { isAcceptanceWait, useTaskTypeIndex } from "@/lib/states";
@@ -39,6 +39,10 @@ function AgentTelemetry({ stat, todayRuns, currency }: { stat: AgentStat | undef
     <span className="eyebrow mt-1 flex flex-wrap items-center gap-x-1 normal-case text-ink-subtle">
       <span className="whitespace-nowrap">{t("agents.todaySegments", { n: todayRuns })}</span>
       <span className="whitespace-nowrap"><span className="mr-1 text-hairline-tertiary" aria-hidden="true">·</span>{t("agents.costTotal")} <span className="text-telemetry">{stat ? fmtMoney(stat.cost, currency) : "—"}</span></span>
+      {/* 未归口用量（ADR 0030）：客户端报上来、当时没开执行记录的那部分——它出现就说明有活没挂在任务上 */}
+      {stat && (stat.unattributed_tokens ?? 0) > 0 && (
+        <span className="whitespace-nowrap" title={t("agents.unattributedTip")} data-unattributed><span className="mr-1 text-hairline-tertiary" aria-hidden="true">·</span>{t("agents.unattributed")} <span className="text-telemetry">{fmtMoney(stat.unattributed_cost ?? 0, currency)}</span> <span className="text-ink-tertiary">{fmtTokens(stat.unattributed_tokens ?? 0)}</span></span>
+      )}
     </span>
   );
 }

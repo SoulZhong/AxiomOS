@@ -455,6 +455,9 @@ type MyMetrics struct {
 	Tokens30d     int64        `json:"tokens_30d"`
 	Currency      string       `json:"currency"`
 	TokensByModel []StatBucket `json:"tokens_by_model"`
+	// 未归口用量（ADR 0030）：客户端自动报上来、但那一刻没有开着的执行记录的用量，只记在我名下
+	UnattributedTokens int64   `json:"unattributed_tokens"`
+	UnattributedCost   float64 `json:"unattributed_cost"`
 	// 预算对照：我有任务在其中、且设了预算的目标各自花了多少
 	GoalBudgets []GoalBudgetLine `json:"goal_budgets"`
 	Financial   bool             `json:"financial"`
@@ -595,6 +598,17 @@ func (a *App) MyMetricsOf(ctx context.Context, sess *Session) (*MyMetrics, error
 					m.ReviewRounds++
 				}
 			}
+		}
+		// 未归口用量（ADR 0030）：自己名下的数字，和自己的用量一样永远给
+		if sess.IsAgent() {
+			us, cost, err := a.unattributedUsage(ctx, tx, sess.OrgID, sess.AgentID, time.Time{})
+			if err != nil {
+				return err
+			}
+			for _, u := range us {
+				m.UnattributedTokens += u.TotalTokens()
+			}
+			m.UnattributedCost = cost
 		}
 		if !scope.Finance {
 			return nil

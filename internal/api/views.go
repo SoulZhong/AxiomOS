@@ -1343,6 +1343,9 @@ type AgentStatV struct {
 	RejectRate  float64     `json:"reject_rate"`
 	TotalTokens int64       `json:"total_tokens"`
 	Cost        float64     `json:"cost"`
+	// 未归口用量（ADR 0030）
+	UnattributedTokens int64   `json:"unattributed_tokens"`
+	UnattributedCost   float64 `json:"unattributed_cost"`
 }
 
 // ---------- 错误 ----------

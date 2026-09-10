@@ -788,6 +788,9 @@ type AgentStat struct {
 	Cost        float64 `json:"cost"`
 	Tokens      int64   `json:"tokens"`
 	SuccessRate float64 `json:"success_rate"`
+	// 未归口用量（ADR 0030）：客户端自动报上来、当时没开执行记录的那部分
+	UnattributedTokens int64   `json:"unattributed_tokens"`
+	UnattributedCost   float64 `json:"unattributed_cost"`
 }
 
 func (a *App) AgentStats(ctx context.Context, sess *Session) ([]AgentStat, error) {
@@ -858,6 +861,12 @@ func (a *App) AgentStats(ctx context.Context, sess *Session) ([]AgentStat, error
 			}
 			if s.Runs > 0 {
 				s.SuccessRate = float64(s.Completed) / float64(s.Runs)
+			}
+			if us, cost, err := a.unattributedUsage(ctx, tx, sess.OrgID, ag.ID, time.Time{}); err == nil {
+				for _, u := range us {
+					s.UnattributedTokens += u.TotalTokens()
+				}
+				s.UnattributedCost = cost
 			}
 			out = append(out, s)
 		}

@@ -927,6 +927,8 @@ const zh = {
   "shortcuts.sidebar": "收起或展开菜单",
   "agents.todaySegments": "今日 {n} 段",
   "agents.costTotal": "成本",
+  "agents.unattributed": "未归口",
+  "agents.unattributedTip": "客户端自动报上来的用量里，当时没有开着的执行记录、算不到任何任务头上的那部分。先领任务再干活，token 才会算到任务上。",
   "time.secondsAgo": "{n} 秒前",
   // ---------- 甘特图 v2：宏观到微观（DESIGN.md §8） ----------
   "gantt.zoom.hour": "时",
@@ -3782,6 +3784,8 @@ const en: Record<Key, string> = {
   "shortcuts.sidebar": "Collapse or expand the menu",
   "agents.todaySegments": "{n} runs today",
   "agents.costTotal": "COST",
+  "agents.unattributed": "UNATTRIBUTED",
+  "agents.unattributedTip": "Usage reported by the client while no execution record was open, so it cannot be charged to any task. Claim a task first and the tokens land on it.",
   "time.secondsAgo": "{n}s ago",
   // ---------- Gantt v2: macro to micro (DESIGN.md §8) ----------
   "gantt.zoom.hour": "Hour",
