@@ -101,6 +101,12 @@ func (s *Store) DeleteCalendarConfig(ctx context.Context, q Querier, provider st
 	return nil
 }
 
+// DeleteCalendarConfigIfUnused 收掉自助提供方自动建的连接行：一条语句判「没有任何成员还绑着」，并发时不会误删别人刚存的绑定。
+func (s *Store) DeleteCalendarConfigIfUnused(ctx context.Context, q Querier, provider string) error {
+	_, err := q.Exec(ctx, `delete from org_calendars where provider=$1 and not exists (select 1 from calendar_identities where provider=$1)`, provider)
+	return err
+}
+
 // ScheduledCalendars 列出全部启用了外部日历的组织（跨组织，绕过行级安全，后台巡检用）。
 func (s *Store) ScheduledCalendars(ctx context.Context, q Querier) (map[string][]string, error) {
 	rows, err := q.Query(ctx, `select c.org_id, c.provider from org_calendars c join organizations o on o.id=c.org_id where o.deactivated_at is null and c.enabled`)
@@ -131,13 +137,18 @@ type CalendarIdentity struct {
 	Email          string
 	SecretsEnc     []byte
 	ConnectedAt    time.Time
+	// Label 是外部日历的名字（订阅链接文件里写的）；Last* 是这个成员最近一次同步的结果
+	Label      string
+	LastSyncAt *time.Time
+	LastStatus string
+	LastError  string
 }
 
-const calendarIdentityCols = `id,org_id,provider,member_id,external_user_id,email,secrets_enc,connected_at`
+const calendarIdentityCols = `id,org_id,provider,member_id,external_user_id,email,secrets_enc,connected_at,label,last_sync_at,last_status,last_error`
 
 func scanCalendarIdentity(r interface{ Scan(...any) error }) (*CalendarIdentity, error) {
 	x := &CalendarIdentity{}
-	err := r.Scan(&x.ID, &x.OrgID, &x.Provider, &x.MemberID, &x.ExternalUserID, &x.Email, &x.SecretsEnc, &x.ConnectedAt)
+	err := r.Scan(&x.ID, &x.OrgID, &x.Provider, &x.MemberID, &x.ExternalUserID, &x.Email, &x.SecretsEnc, &x.ConnectedAt, &x.Label, &x.LastSyncAt, &x.LastStatus, &x.LastError)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -153,11 +164,63 @@ func (s *Store) UpsertCalendarIdentity(ctx context.Context, q Querier, x *Calend
 		x.ID = NewID("cid")
 	}
 	x.ConnectedAt = time.Now()
-	_, err := q.Exec(ctx, `insert into calendar_identities(id,org_id,provider,member_id,external_user_id,email,secrets_enc,connected_at)
-		values($1,$2,$3,$4,$5,$6,$7,$8)
+	_, err := q.Exec(ctx, `insert into calendar_identities(id,org_id,provider,member_id,external_user_id,email,secrets_enc,connected_at,label)
+		values($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		on conflict (org_id, provider, member_id) do update set external_user_id=excluded.external_user_id, email=excluded.email,
-		  secrets_enc=excluded.secrets_enc, connected_at=excluded.connected_at`,
-		x.ID, x.OrgID, x.Provider, x.MemberID, x.ExternalUserID, x.Email, x.SecretsEnc, x.ConnectedAt)
+		  secrets_enc=excluded.secrets_enc, connected_at=excluded.connected_at, label=excluded.label, last_sync_at=null, last_status='', last_error=''`,
+		x.ID, x.OrgID, x.Provider, x.MemberID, x.ExternalUserID, x.Email, x.SecretsEnc, x.ConnectedAt, x.Label)
+	return err
+}
+
+// MarkCalendarIdentitySync 记下某个成员这次同步的结果（没有绑定行的成员——飞书 / 企业微信按目录身份对上的——不记）。
+func (s *Store) MarkCalendarIdentitySync(ctx context.Context, q Querier, provider, memberID, status, errText string, at time.Time) error {
+	_, err := q.Exec(ctx, `update calendar_identities set last_sync_at=$3, last_status=$4, last_error=$5 where provider=$1 and member_id=$2`, provider, memberID, at, status, errText)
+	return err
+}
+
+// ---------- 对外订阅源 ----------
+
+// CalendarFeed 是成员对外发布的订阅源：token 是链接里的密钥。
+type CalendarFeed struct {
+	Token     string
+	OrgID     string
+	MemberID  string
+	CreatedAt time.Time
+}
+
+func scanCalendarFeed(r interface{ Scan(...any) error }) (*CalendarFeed, error) {
+	x := &CalendarFeed{}
+	err := r.Scan(&x.Token, &x.OrgID, &x.MemberID, &x.CreatedAt)
+	if isNoRows(err) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// CalendarFeedOf 读某个成员的订阅源。
+func (s *Store) CalendarFeedOf(ctx context.Context, q Querier, memberID string) (*CalendarFeed, error) {
+	return scanCalendarFeed(q.QueryRow(ctx, `select token,org_id,member_id,created_at from calendar_feeds where member_id=$1`, memberID))
+}
+
+// CalendarFeedByToken 按密钥找订阅源（公开接口用，跨组织查，调用方拿 Pool）。
+func (s *Store) CalendarFeedByToken(ctx context.Context, q Querier, token string) (*CalendarFeed, error) {
+	return scanCalendarFeed(q.QueryRow(ctx, `select f.token,f.org_id,f.member_id,f.created_at from calendar_feeds f join organizations o on o.id=f.org_id
+		where f.token=$1 and o.deactivated_at is null`, token))
+}
+
+// SetCalendarFeed 给成员建或换订阅源（换就是换密钥）。
+func (s *Store) SetCalendarFeed(ctx context.Context, q Querier, orgID, memberID, token string) error {
+	_, err := q.Exec(ctx, `insert into calendar_feeds(token,org_id,member_id,created_at) values($1,$2,$3,now())
+		on conflict (org_id, member_id) do update set token=excluded.token, created_at=excluded.created_at`, token, orgID, memberID)
+	return err
+}
+
+// DeleteCalendarFeed 停用成员的订阅源。
+func (s *Store) DeleteCalendarFeed(ctx context.Context, q Querier, memberID string) error {
+	_, err := q.Exec(ctx, `delete from calendar_feeds where member_id=$1`, memberID)
 	return err
 }
 

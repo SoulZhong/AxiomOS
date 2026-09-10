@@ -124,6 +124,7 @@ func main() {
 				}
 			}
 			a.SweepGoogleStates(time.Now())
+			a.SweepFeedCache(time.Now())
 			// 外部目录定时同步（ADR 0017）：每小时 / 每天到点的组织跑一次
 			for _, res := range a.RunScheduledDirectorySyncs(ctx, time.Now()) {
 				if res.Err != nil {

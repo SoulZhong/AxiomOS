@@ -177,7 +177,7 @@ import type {
   InboxKind,
   InboxQuestion,
   InboxTask,
-  Notification, CalendarProviderView, CalendarsView, CalendarInput, CalendarTestResult, CalendarSyncResult, MyCalendarView, ScheduleItem, ScheduleView } from "./api";
+  Notification, CalendarProviderView, CalendarsView, CalendarInput, CalendarTestResult, CalendarSyncResult, MyCalendarView, MyFeedView, ScheduleItem, ScheduleView } from "./api";
 import { fieldChangeSentence } from "./fieldChange";
 import { ApiError, BLOCK_KEYS, DEFAULT_PREFERENCES, DEVICE_CLIENTS, GRID_COLS, GRID_MAX_H, INBOX_KINDS, LINK_KINDS, PREF_FIELDS, blocksOverlap, compactLayout, isBlockHeight, isBlockKey, isBlockWidth, normalizeLayout, sameLayout } from "./api";
 import { addDays, diffDays, parseDate, startOfWeek, toISODate, today } from "./format";
@@ -4467,14 +4467,38 @@ on("POST", "/org/calendars/:provider/sync", (m): CalendarSyncResult => {
   const members = Object.keys(CAL_IDENTITIES[key] ?? {}).length;
   return { provider: key, members, events: members * 2, errors: [], status: "ok" };
 });
+/** 日历订阅链接（自助，不用组织配置）：成员自己贴 .ics / webcal 链接 */
+const ICS_PROVIDER = { key: "ics", title: "日历订阅链接", fields: [{ key: "url", title: "订阅链接", secret: true, placeholder: "https://…/basic.ics", hint: "日历软件里「订阅 / 导出 / 私密地址」给的 .ics 或 webcal 链接；链接就是密钥，只有你自己能看" }] as DirectoryField[], prerequisites: ["Google 日历：设置 → 该日历 → 「iCal 格式的私密地址」", "Outlook / Exchange：设置 → 日历 → 共享日历 → 发布日历，取 ICS 链接", "飞书：日历设置 → 该日历 → 订阅链接"], tip: { text: "链接谁拿到都能看你的日历，别贴到别处；换链接就是换密钥。" } };
+const ICS_IDENTITY: Record<ID, { label: string; last_sync_at: string; last_status: "ok" | "failed"; last_error: string }> = {};
+let MY_FEED: MyFeedView = { enabled: false };
 on("GET", "/me/calendars", (): MyCalendarView[] => {
   requireLogin();
-  return CAL_PROVIDERS.map((p) => {
+  const rows: MyCalendarView[] = CAL_PROVIDERS.map((p) => {
     const id = CAL_IDENTITIES[p.key]?.[ME];
-    return { provider: p.key, provider_title: p.title, org_configured: calConfigured(p.key) && !!CALS[p.key]?.enabled, per_member: p.per_member, connected: !!id, email: id?.email, external_user_id: id?.external_user_id, connected_at: id ? at(-3) : undefined, auth_url: p.per_member && calConfigured(p.key) && !id ? "#mock-google-auth" : undefined };
+    return { provider: p.key, provider_title: p.title, org_configured: calConfigured(p.key) && !!CALS[p.key]?.enabled, per_member: p.per_member, connected: !!id, self_service: false, email: id?.email, external_user_id: id?.external_user_id, connected_at: id ? at(-3) : undefined, auth_url: p.per_member && calConfigured(p.key) && !id ? "#mock-google-auth" : undefined };
   });
+  const mine = ICS_IDENTITY[ME];
+  rows.push({ provider: ICS_PROVIDER.key, provider_title: ICS_PROVIDER.title, org_configured: true, per_member: true, self_service: true, connected: !!mine, fields: ICS_PROVIDER.fields, prerequisites: ICS_PROVIDER.prerequisites, tip: ICS_PROVIDER.tip, label: mine?.label, last_sync_at: mine?.last_sync_at, last_status: mine?.last_status, last_status_title: mine ? (mine.last_status === "ok" ? "成功" : "失败") : undefined, last_error: mine?.last_error, connected_at: mine ? at(-1) : undefined });
+  return rows;
 });
-on("DELETE", "/me/calendars/:provider", (m) => { requireLogin(); const key = m.groups!.provider; if (CAL_IDENTITIES[key]) delete CAL_IDENTITIES[key][ME]; return undefined; });
+on("PUT", "/me/calendars/:provider", (m, body) => {
+  requireLogin();
+  if (m.groups!.provider !== ICS_PROVIDER.key) throw new ApiError(400, t("mock.calendar.selfServiceOnly"));
+  const url = ((body as { credentials?: Record<string, string> })?.credentials?.url ?? "").trim();
+  if (!/^(https?|webcals?):\/\//i.test(url)) throw new ApiError(400, t("mock.calendar.badLink"));
+  if (/\.html?(\?|$)/i.test(url)) throw new ApiError(400, t("mock.calendar.notIcs")); // 真实后端按内容判，这里只拦明显的网页地址
+  ICS_IDENTITY[ME] = { label: "我的日历", last_sync_at: at(0), last_status: "ok", last_error: "" };
+  return { provider: ICS_PROVIDER.key, provider_title: ICS_PROVIDER.title, org_configured: true, per_member: true, self_service: true, connected: true, label: "我的日历", last_sync_at: at(0), last_status: "ok", last_status_title: "成功", connected_at: at(0) } satisfies MyCalendarView;
+});
+on("DELETE", "/me/calendars/:provider", (m) => { requireLogin(); const key = m.groups!.provider; if (key === ICS_PROVIDER.key) delete ICS_IDENTITY[ME]; else if (CAL_IDENTITIES[key]) delete CAL_IDENTITIES[key][ME]; return undefined; });
+on("GET", "/me/feed", (): MyFeedView => { requireLogin(); return MY_FEED; });
+on("POST", "/me/feed", (): MyFeedView => {
+  requireLogin();
+  const token = "fd" + Math.random().toString(36).slice(2, 14);
+  MY_FEED = { enabled: true, url: `https://axiomos.example/api/v1/feeds/${token}.ics`, webcal_url: `webcal://axiomos.example/api/v1/feeds/${token}.ics`, created_at: at(0) };
+  return MY_FEED;
+});
+on("DELETE", "/me/feed", () => { requireLogin(); MY_FEED = { enabled: false }; return undefined; });
 
 /** GET /schedule：把示例里的任务、目标、里程碑与几场示例会议按区间拼出来 */
 on("GET", "/schedule", (_m, _b, q): ScheduleView => {

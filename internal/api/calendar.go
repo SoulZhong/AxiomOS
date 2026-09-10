@@ -20,7 +20,13 @@ func (s *Server) calendarRoutes(auth, pub func(string, http.HandlerFunc)) {
 	auth("POST /api/v1/org/calendars/{provider}/test", s.calendarTest)
 	auth("POST /api/v1/org/calendars/{provider}/sync", s.calendarSync)
 	auth("GET /api/v1/me/calendars", s.myCalendars)
+	auth("PUT /api/v1/me/calendars/{provider}", s.myCalendarConnect)
 	auth("DELETE /api/v1/me/calendars/{provider}", s.myCalendarDisconnect)
+	// 对外订阅源：自己看 / 生成或换掉 / 停用；拉取是公开的，token 就是密钥
+	auth("GET /api/v1/me/feed", s.myFeed)
+	auth("POST /api/v1/me/feed", s.myFeedReset)
+	auth("DELETE /api/v1/me/feed", s.myFeedDelete)
+	pub("GET /api/v1/feeds/{token}", s.feed)
 	// Google 授权回调：浏览器带着 state 与 code 回来，state 认出是谁，不需要会话
 	pub("GET /api/v1/me/calendars/google/callback", s.googleCallback)
 }
@@ -93,6 +99,49 @@ func (s *Server) calendarSync(w http.ResponseWriter, r *http.Request) {
 func (s *Server) myCalendars(w http.ResponseWriter, r *http.Request) {
 	v, err := s.App.MyCalendars(r.Context(), sessionOf(r))
 	respond(w, r, v, err)
+}
+
+func (s *Server) myCalendarConnect(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Credentials map[string]string `json:"credentials"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	v, err := s.App.ConnectMyCalendar(r.Context(), sessionOf(r), r.PathValue("provider"), in.Credentials)
+	respond(w, r, v, err)
+}
+
+func (s *Server) myFeed(w http.ResponseWriter, r *http.Request) {
+	v, err := s.App.MyFeed(r.Context(), sessionOf(r))
+	respond(w, r, v, err)
+}
+
+func (s *Server) myFeedReset(w http.ResponseWriter, r *http.Request) {
+	v, err := s.App.ResetMyFeed(r.Context(), sessionOf(r))
+	respond(w, r, v, err)
+}
+
+func (s *Server) myFeedDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.App.DeleteMyFeed(r.Context(), sessionOf(r)); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// feed 公开的 iCalendar 拉取：链接里的 token 认人；内容按拉取时现算，日历软件按 X-PUBLISHED-TTL 每 15 分钟来一次。
+func (s *Server) feed(w http.ResponseWriter, r *http.Request) {
+	body, err := s.App.FeedICS(r.Context(), r.PathValue("token"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("Content-Disposition", `inline; filename="axiomos.ics"`)
+	_, _ = w.Write(body)
 }
 
 func (s *Server) myCalendarDisconnect(w http.ResponseWriter, r *http.Request) {

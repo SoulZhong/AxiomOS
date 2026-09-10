@@ -530,6 +530,9 @@ func TestEveryHTTPWriteEndpointDryRunWritesNothing(t *testing.T) {
 		"DELETE /api/v1/sprints/{id}/tasks/{task_id}":           {"/sprints/" + sp.ID + "/tasks/" + other.ID, nil},
 		// 外部日历（ADR 0032）：保存与断开都能先看后做
 		"PUT /api/v1/org/calendars/{provider}":    {"/org/calendars/googlecal", map[string]any{"credentials": map[string]string{"client_id": "x", "client_secret": "y"}}},
+		"PUT /api/v1/me/calendars/{provider}":     {"/me/calendars/ics", map[string]any{"credentials": map[string]string{"url": "https://203.0.113.10/cal.ics"}}},
+		"POST /api/v1/me/feed":                    {"/me/feed", map[string]any{}},
+		"DELETE /api/v1/me/feed":                  {"/me/feed", nil},
 		"DELETE /api/v1/org/calendars/{provider}": {"/org/calendars/" + calProvider, nil},
 		// 委托与撤回（ADR 0028）
 		"POST /api/v1/tasks/{id}/mandates": {"/tasks/" + delegated.ID + "/mandates", map[string]any{"agent_id": delegateAgent.Actor.ID}},

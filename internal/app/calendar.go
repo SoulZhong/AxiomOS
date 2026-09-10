@@ -76,6 +76,17 @@ type MyCalendarView struct {
 	ExternalID    string     `json:"external_user_id,omitempty"`
 	ConnectedAt   *time.Time `json:"connected_at,omitempty"`
 	AuthURL       string     `json:"auth_url,omitempty"` // Google：去授权的地址（每次请求现算，带一次性 state）
+	// 自助的提供方（日历订阅链接）：成员自己填 Fields 就能连，不用组织配置
+	SelfService   bool        `json:"self_service"`
+	Fields        []FieldView `json:"fields,omitempty"`
+	Prerequisites []string    `json:"prerequisites,omitempty"`
+	Tip           *GuideView  `json:"tip,omitempty"`
+	// 这个成员自己的同步情况（有绑定行的才有）
+	Label           string     `json:"label,omitempty"`
+	LastSyncAt      *time.Time `json:"last_sync_at,omitempty"`
+	LastStatus      string     `json:"last_status,omitempty"`
+	LastStatusTitle string     `json:"last_status_title,omitempty"`
+	LastError       string     `json:"last_error,omitempty"`
 }
 
 // CalendarTestResult 是接入检查的结果。
@@ -238,6 +249,9 @@ func (a *App) ListCalendars(ctx context.Context, sess *Session) (*CalendarsView,
 			return err
 		}
 		for _, p := range provs {
+			if p.SelfServiceCalendar {
+				continue // 成员自己连的，组织设置页不管
+			}
 			v, err := a.calendarView(ctx, tx, sess, p, byKey[p.Key])
 			if err != nil {
 				return err
@@ -462,18 +476,34 @@ func (a *App) MyCalendars(ctx context.Context, sess *Session) ([]MyCalendarView,
 			return err
 		}
 		for _, p := range provs {
-			v := MyCalendarView{Provider: p.Key, ProviderTitle: p.Title.In(loc), PerMember: p.PerMemberCalendar}
+			v := MyCalendarView{Provider: p.Key, ProviderTitle: p.Title.In(loc), PerMember: p.PerMemberCalendar, SelfService: p.SelfServiceCalendar}
 			cfg := byKey[p.Key]
-			if cfg != nil {
+			if p.SelfServiceCalendar {
+				// 不用组织配置：字段、前置说明、提醒都给成员自己看
+				v.OrgConfigured = true
+				for _, f := range p.CalendarFields {
+					v.Fields = append(v.Fields, FieldView{Key: f.Key, Title: f.Title.In(loc), Secret: f.Secret, Optional: f.Optional, Placeholder: f.Placeholder, Hint: f.Hint.In(loc)})
+				}
+				for _, x := range p.CalendarPrerequisites {
+					v.Prerequisites = append(v.Prerequisites, x.In(loc))
+				}
+				if txt := p.Tip.Text.In(loc); txt != "" {
+					v.Tip = &GuideView{Text: txt, URL: p.Tip.URL}
+				}
+			} else if cfg != nil {
 				creds, _, _, err := a.calendarCreds(ctx, tx, sess.OrgID, p, cfg)
 				if err == nil {
 					v.OrgConfigured = cfg.Enabled && calendarConfigured(p, creds)
 				}
 			}
 			if id, err := a.Store.CalendarIdentityOf(ctx, tx, p.Key, sess.MemberID); err == nil {
-				v.Connected, v.Email, v.ExternalID = true, id.Email, id.ExternalUserID
+				v.Connected, v.Email, v.ExternalID, v.Label = true, id.Email, id.ExternalUserID, id.Label
 				at := id.ConnectedAt
 				v.ConnectedAt = &at
+				v.LastSyncAt, v.LastStatus, v.LastError = id.LastSyncAt, id.LastStatus, id.LastError
+				if id.LastStatus != "" {
+					v.LastStatusTitle = i18n.Tr(loc, "directory.status."+id.LastStatus)
+				}
 			} else if !p.PerMemberCalendar {
 				// 飞书 / 企业微信：沿用外部目录的身份
 				if ext := a.externalUserOf(ctx, tx, p.Key, sess.MemberID); ext != "" {
@@ -527,7 +557,102 @@ func (a *App) DisconnectMyCalendar(ctx context.Context, sess *Session, provider 
 		if err := a.Store.DeleteCalendarIdentity(ctx, tx, p.Key, sess.MemberID); err != nil {
 			return err
 		}
+		// 自助提供方的连接行是第一个人连上时自动建的：最后一个人断开就收掉，后台巡检不再空跑（一条语句判空，不会误删别人的绑定）
+		if p.SelfServiceCalendar {
+			if err := a.Store.DeleteCalendarConfigIfUnused(ctx, tx, p.Key); err != nil {
+				return err
+			}
+		}
 		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "CalendarIdentityRemoved", ActorID: sess.Actor.ID, At: time.Now(), Data: map[string]any{"provider": p.Key}}})
+	})
+}
+
+// ConnectMyCalendar 成员自己连一家自助的提供方（日历订阅链接）：链接过出网守卫、先拉一次证明能读，
+// 然后加密存进绑定、立刻同步。没有组织级连接行时建一行（空凭据、启用），后台巡检靠它到点。
+func (a *App) ConnectMyCalendar(ctx context.Context, sess *Session, provider string, creds map[string]string) (*MyCalendarView, error) {
+	if sess.IsAgent() {
+		return nil, Forbidden("err.calendar_member_only")
+	}
+	p, ok := calendarProvider(provider)
+	if !ok || !p.SelfServiceCalendar {
+		return nil, Bad("err.calendar_provider", provider)
+	}
+	clean := map[string]string{}
+	for _, f := range p.CalendarFields {
+		v := strings.TrimSpace(creds[f.Key])
+		if f.Key == "url" {
+			v = directory.NormalizeICSURL(v)
+		}
+		if v == "" && !f.Optional {
+			return nil, Bad("err.calendar_field_required", f.Title)
+		}
+		clean[f.Key] = v
+	}
+	if u := clean["url"]; u != "" {
+		if err := directory.CheckEgressURL(u, directory.DefaultEgress()); err != nil {
+			return nil, egressErr(err, u)
+		}
+	}
+	if sess.Write.DryRun {
+		return nil, dryRun(sess, i18n.M("will.calendar.me_connect", p.Title))
+	}
+	cal, err := p.NewCalendar(clean, directory.Options{})
+	if err != nil {
+		return nil, Bad("err.calendar_link_bad", p.Title)
+	}
+	now := time.Now()
+	if _, err := cal.Events(ctx, "", now.Add(-24*time.Hour), now.Add(7*24*time.Hour)); err != nil {
+		if errors.Is(err, directory.ErrNotICS) {
+			return nil, Bad("err.calendar_link_not_ics")
+		}
+		var rj *directory.RejectedError
+		if errors.As(err, &rj) {
+			return nil, Bad("err.calendar_link_http", rj.Code)
+		}
+		return nil, &UserError{Status: 400, Reasons: []i18n.Msg{providerMsg(p, err)}}
+	}
+	label := ""
+	if n, ok := cal.(directory.CalendarNamer); ok {
+		label = n.CalendarName()
+	}
+	enc, err := directory.EncryptSecrets(a.SecretKey, clean)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.tx(ctx, sess, func(tx pgx.Tx) error {
+		if _, err := a.Store.CalendarConfig(ctx, tx, p.Key); err == store.ErrNotFound {
+			if err := a.Store.UpsertCalendarConfig(ctx, tx, &store.CalendarConfig{OrgID: sess.OrgID, Provider: p.Key, Credentials: map[string]string{}, Enabled: true}); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+		if err := a.Store.UpsertCalendarIdentity(ctx, tx, &store.CalendarIdentity{OrgID: sess.OrgID, Provider: p.Key, MemberID: sess.MemberID, SecretsEnc: enc, Label: label}); err != nil {
+			return err
+		}
+		return a.insertEvents(ctx, tx, sess, []domain.Event{{Type: "CalendarIdentityBound", ActorID: sess.Actor.ID, At: now, Data: map[string]any{"provider": p.Key}}})
+	}); err != nil {
+		return nil, err
+	}
+	if err := a.syncCalendarMember(ctx, sess, p, sess.MemberID); err != nil {
+		_ = a.markIdentitySync(ctx, sess, p, sess.MemberID, "failed", providerMsg(p, err).Render(sess.Loc()))
+	}
+	views, err := a.MyCalendars(ctx, sess)
+	if err != nil {
+		return nil, err
+	}
+	for i := range views {
+		if views[i].Provider == p.Key {
+			return &views[i], nil
+		}
+	}
+	return nil, NotFound("err.calendar_provider", provider)
+}
+
+// markIdentitySync 记下某个成员这次同步的结果（个人设置里显示）。
+func (a *App) markIdentitySync(ctx context.Context, sess *Session, p directory.Provider, memberID, status, errText string) error {
+	return a.tx(ctx, sess, func(tx pgx.Tx) error {
+		return a.Store.MarkCalendarIdentitySync(ctx, tx, p.Key, memberID, status, errText, time.Now())
 	})
 }
 
@@ -710,7 +835,15 @@ func (a *App) syncCalendar(ctx context.Context, sess *Session, p directory.Provi
 		if err != nil {
 			name := m
 			_ = a.tx(ctx, sess, func(tx pgx.Tx) error { name = a.executorName(ctx, tx, m); return nil })
-			res.Errors = append(res.Errors, name+"："+providerMsg(p, err).Render(loc))
+			msg := providerMsg(p, err).Render(loc)
+			_ = a.markIdentitySync(ctx, sess, p, m, "failed", msg)
+			if p.SelfServiceCalendar {
+				// 自助的：原因只记在本人的绑定上，组织级的动态只说谁失败了
+				msg = i18n.Tr(loc, "directory.status.failed")
+			}
+			res.Errors = append(res.Errors, name+"："+msg)
+		} else {
+			_ = a.markIdentitySync(ctx, sess, p, m, "ok", "")
 		}
 	}
 	res.Status = "ok"
@@ -748,6 +881,9 @@ func (a *App) syncCalendarMember(ctx context.Context, sess *Session, p directory
 		return nil
 	}
 	_, err := a.syncOne(ctx, sess, p, cfg, memberID, t)
+	if err == nil {
+		_ = a.markIdentitySync(ctx, sess, p, memberID, "ok", "")
+	}
 	return err
 }
 

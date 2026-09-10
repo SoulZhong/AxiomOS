@@ -82,6 +82,11 @@ func (a *App) ScheduleOf(ctx context.Context, sess *Session, who string, from, t
 	if int(to.Sub(from).Hours()/24)+1 > ScheduleMaxDays {
 		return nil, Bad("err.schedule_too_long", ScheduleMaxDays)
 	}
+	return a.scheduleOf(ctx, sess, who, from, to)
+}
+
+// scheduleOf 是不限天数的那一半：对外订阅源（feed.go）一次要拉半年，从这里进。from、to 已对齐到当天零点。
+func (a *App) scheduleOf(ctx context.Context, sess *Session, who string, from, to time.Time) (*ScheduleView, error) {
 	toExcl := to.Add(24 * time.Hour)
 	if who == "" || who == "me" {
 		who = sess.MemberID

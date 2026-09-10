@@ -299,6 +299,10 @@ func EventSummary(e *store.EventRow, names map[string]string, taskTitle map[stri
 		return i18n.Trf(loc, "ev.CalendarIdentityBound", who, SourceTitle(s("provider"), loc))
 	case "CalendarIdentityRemoved":
 		return i18n.Trf(loc, "ev.CalendarIdentityRemoved", who, SourceTitle(s("provider"), loc))
+	case "CalendarFeedReset":
+		return i18n.Trf(loc, "ev.CalendarFeedReset", who)
+	case "CalendarFeedRemoved":
+		return i18n.Trf(loc, "ev.CalendarFeedRemoved", who)
 	case "CodePlatformConfigured":
 		fresh, _ := e.Data["fresh"].(bool)
 		switched, _ := e.Data["provider_switched"].(bool)
