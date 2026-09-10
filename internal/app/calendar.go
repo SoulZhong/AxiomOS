@@ -623,8 +623,10 @@ func (a *App) ConnectMyCalendar(ctx context.Context, sess *Session, provider str
 		var rj *directory.RejectedError
 		if errors.As(err, &rj) {
 			switch {
-			case p.Key == directory.CalDAVKey && (rj.Code == 401 || rj.Code == 403):
+			case p.Key == directory.CalDAVKey && rj.Code == 401:
 				return nil, Bad("err.calendar_caldav_auth")
+			case p.Key == directory.CalDAVKey && rj.Code == 403:
+				return nil, Bad("err.calendar_caldav_forbidden")
 			case p.Key == directory.CalDAVKey && rj.Code == 404:
 				return nil, Bad("err.calendar_caldav_none")
 			}

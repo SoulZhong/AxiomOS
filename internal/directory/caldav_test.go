@@ -108,3 +108,56 @@ func TestCalDAVNotDAV(t *testing.T) {
 		t.Fatalf("应报 ErrNotCalDAV，实际 %v", err)
 	}
 }
+
+// 企业微信那种形状：根路径对谁都 403，/.well-known/caldav 跳转到真正的入口；PROPFIND 跟跳转时不能变成 GET。
+func TestCalDAVWellKnownRedirect(t *testing.T) {
+	t.Setenv("AXIOMOS_ALLOW_PRIVATE_EGRESS", "1")
+	ms := func(b string) string {
+		return `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">` + b + `</d:multistatus>`
+	}
+	var methods []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method+" "+r.URL.Path)
+		if u, p, ok := r.BasicAuth(); !ok || u != "a" || p != "b" {
+			w.WriteHeader(401)
+			return
+		}
+		switch r.URL.Path {
+		case "/":
+			w.WriteHeader(403)
+		case "/.well-known/caldav":
+			w.Header().Set("Location", "/dav/")
+			w.WriteHeader(301)
+		case "/dav/":
+			w.WriteHeader(207)
+			_, _ = w.Write([]byte(ms(`<d:response><d:href>/dav/</d:href><d:propstat><d:prop><d:current-user-principal><d:href>/dav/p/</d:href></d:current-user-principal></d:prop></d:propstat></d:response>`)))
+		case "/dav/p/":
+			w.WriteHeader(207)
+			_, _ = w.Write([]byte(ms(`<d:response><d:href>/dav/p/</d:href><d:propstat><d:prop><c:calendar-home-set><d:href>/dav/h/</d:href></c:calendar-home-set></d:prop></d:propstat></d:response>`)))
+		case "/dav/h/":
+			w.WriteHeader(207)
+			_, _ = w.Write([]byte(ms(`<d:response><d:href>/dav/h/c1/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>企微</d:displayname></d:prop></d:propstat></d:response>`)))
+		case "/dav/h/c1/":
+			w.WriteHeader(207)
+			_, _ = w.Write([]byte(ms(``)))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c, _ := NewCalDAV(map[string]string{"server": srv.URL, "username": "a", "password": "b"}, Options{HTTPClient: srv.Client()})
+	evs, err := c.Events(context.Background(), "", time.Now(), time.Now().Add(24*time.Hour))
+	if err != nil || len(evs) != 0 || c.CalendarName() != "企微" {
+		t.Fatalf("应经 well-known 跳转找到日历「企微」: %v %d %q\n%v", err, len(evs), c.CalendarName(), methods)
+	}
+	for _, m := range methods {
+		if strings.HasPrefix(m, "GET ") {
+			t.Fatalf("跟跳转时 PROPFIND 变成了 GET: %v", methods)
+		}
+	}
+	// 根路径 403 不算密码错：密码真错时 well-known 就回 401
+	bad, _ := NewCalDAV(map[string]string{"server": srv.URL, "username": "a", "password": "x"}, Options{HTTPClient: srv.Client()})
+	if _, err := bad.Events(context.Background(), "", time.Now(), time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("密码错应报 401，实际 %v", err)
+	}
+}

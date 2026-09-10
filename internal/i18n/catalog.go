@@ -281,6 +281,7 @@ var catalog = map[string]Text{
 	"err.calendar_self_unreachable":  T("连不上这个地址（%s）。请检查地址有没有填错、网络通不通。", "Could not reach this address (%s). Check that it is typed correctly and that the network is up."),
 	"err.calendar_caldav_not_dav":    T("这个地址不是 CalDAV 服务器（回的是网页）。企业微信填「同步至其他日历」里给的服务器，iCloud 填 https://caldav.icloud.com。", "This address is not a CalDAV server (it returned a web page). For WeCom use the server shown under “Sync to other calendars”; for iCloud use https://caldav.icloud.com."),
 	"err.calendar_caldav_auth":       T("账号或密码不对。企业微信的密码要现取，iCloud 要用 App 专用密码。", "The account or password is wrong. WeCom passwords must be freshly issued; iCloud needs an app-specific password."),
+	"err.calendar_caldav_forbidden":  T("服务器不让读这个路径（403）。企业微信只填 https://caldav.wecom.work，不要带后面的路径；别的服务器填「同步至其他日历」里给的地址。", "The server refuses this path (403). For WeCom enter just https://caldav.wecom.work with no path; for other servers use the address shown under “sync to other calendars”."),
 	"err.calendar_caldav_none":       T("这个账号下没有找到日历。", "No calendar was found under this account."),
 	"err.calendar_link_not_ics":      T("这个链接返回的不是日历文件（.ics）。请到日历软件里取「订阅 / 私密地址」那条链接，不是网页地址。", "This link does not return a calendar file (.ics). Copy the “subscribe / secret address” link from your calendar app, not a web page address."),
 	"feed.deadline":                  T("截止", "Due"),
