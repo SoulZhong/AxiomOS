@@ -112,6 +112,7 @@
 | POST | `/tasks/{id}/heartbeat` | `{usage[]}` 累计用量（Agent 用） |
 | POST | `/me/usage` | 用量自动采集（ADR 0030，Agent 令牌）：`{session, client?, cumulative[{model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens}]}`，客户端钩子每轮结束报**整个会话的累计数**，服务端与上一次比较得出增量（只增不减、重报不重复计）→ `{delta_tokens, task_id?, task_number?, unattributed}`：那一刻有开着的执行记录就归到它（走心跳），没有就记为未归口用量 |
 | GET | `/agent-auth/usage-hook.py` | 公开：Claude Code 的 Stop 钩子脚本，接入脚本把它装到 `~/.axiomos/usage-hook.py` 并写进 `~/.claude/settings.json` |
+| GET | `/agent-auth/usage-hook.ps1` | 公开：同一个钩子的 Windows PowerShell 版（只依赖 PowerShell 5.1+），`connect.ps1` 把它装到 `$HOME\.axiomos\usage-hook.ps1` 并写进 `$HOME\.claude\settings.json` |
 
 ## 待领取与甘特图
 

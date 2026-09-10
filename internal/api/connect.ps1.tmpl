@@ -66,6 +66,29 @@ switch ($CLIENT) {
       Say "{{.T.no_claude}}"
       Say $JSON_SNIPPET
     }
+    # 用量钩子（ADR 0030）：每轮结束把这次会话的累计 token 报给 AxiomOS；令牌仍只在 .claude.json 里
+    try {
+      $hookDir = Join-Path $HOME ".axiomos"
+      New-Item -ItemType Directory -Force -Path $hookDir | Out-Null
+      $hook = Join-Path $hookDir "usage-hook.ps1"
+      Invoke-RestMethod -Uri "$BASE/api/v1/agent-auth/usage-hook.ps1" -OutFile $hook
+      $setDir = Join-Path $HOME ".claude"
+      New-Item -ItemType Directory -Force -Path $setDir | Out-Null
+      $setFile = Join-Path $setDir "settings.json"
+      $settings = if ((Test-Path $setFile) -and (Get-Item $setFile).Length -gt 0) { Get-Content $setFile -Raw -Encoding UTF8 | ConvertFrom-Json } else { [pscustomobject]@{} }
+      $cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $hook + '"'
+      if (-not $settings.PSObject.Properties["hooks"]) { $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([pscustomobject]@{}) }
+      if (-not $settings.hooks.PSObject.Properties["Stop"]) { $settings.hooks | Add-Member -NotePropertyName Stop -NotePropertyValue @() }
+      $have = $false
+      foreach ($g in @($settings.hooks.Stop)) { foreach ($h in @($g.hooks)) { if ($h.command -eq $cmd) { $have = $true } } }
+      if (-not $have) {
+        $settings.hooks.Stop = @($settings.hooks.Stop) + @([pscustomobject]@{ hooks = @([pscustomobject]@{ type = "command"; command = $cmd; timeout = 15 }) })
+      }
+      [IO.File]::WriteAllText($setFile, ($settings | ConvertTo-Json -Depth 20), $utf8)
+      Say "{{.T.hook_written}}$hook)"
+    } catch {
+      Say "{{.T.hook_failed}}"
+    }
     Say "{{.T.try_claude}}"
   }
   "cursor" {
