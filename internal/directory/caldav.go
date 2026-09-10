@@ -63,6 +63,7 @@ type CalDAV struct {
 	password string
 	http     *http.Client
 	names    []string
+	summary  []CalendarSummary
 }
 
 // NewCalDAV 建客户端：服务器地址先过出网守卫（只许 https；私有化部署放开内网时也许 http）。
@@ -84,6 +85,9 @@ func NewCalDAV(creds map[string]string, opts Options) (*CalDAV, error) {
 // CalendarName 最近一次拉取时找到的日历名（几本用「、」连起来）。
 func (c *CalDAV) CalendarName() string { return strings.Join(c.names, "、") }
 
+// Summary 最近一次拉取里每本日历拉到几场、用的哪种查法。
+func (c *CalDAV) Summary() []CalendarSummary { return c.summary }
+
 // Events 找到账号下全部日历，按时间段拉 VEVENT。externalUserID 不用：账号本身就是身份。
 func (c *CalDAV) Events(ctx context.Context, _ string, from, to time.Time) ([]CalendarEvent, error) {
 	cals, err := c.calendars(ctx)
@@ -94,13 +98,15 @@ func (c *CalDAV) Events(ctx context.Context, _ string, from, to time.Time) ([]Ca
 		return nil, &RejectedError{Code: 404, Msg: "no calendars"}
 	}
 	c.names = c.names[:0]
+	c.summary = c.summary[:0]
 	var out []CalendarEvent
 	for _, cal := range cals {
 		c.names = append(c.names, cal.name)
-		evs, err := c.query(ctx, cal.href, from, to)
+		evs, via, err := c.query(ctx, cal.href, from, to)
 		if err != nil {
 			return nil, err
 		}
+		c.summary = append(c.summary, CalendarSummary{Name: cal.name, Events: len(evs), Via: via})
 		prefix := strings.Trim(cal.href.Path, "/")
 		for _, e := range evs {
 			e.ExternalID = prefix + "#" + e.ExternalID
@@ -127,6 +133,7 @@ const (
 	propfindPrincipal = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/><d:resourcetype/><d:displayname/></d:prop></d:propfind>`
 	propfindHome      = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><c:calendar-home-set/></d:prop></d:propfind>`
 	propfindCalendars = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:resourcetype/><d:displayname/><c:supported-calendar-component-set/></d:prop></d:propfind>`
+	propfindItems     = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getetag/><d:getcontenttype/></d:prop></d:propfind>`
 )
 
 // calendars 走标准发现：服务器 → principal → 日历主目录 → 逐本日历；填的本身是一本日历时直接用它。
@@ -164,7 +171,7 @@ func (c *CalDAV) calendars(ctx context.Context) ([]davCalendar, error) {
 		for _, r := range ms.Responses {
 			for _, ps := range r.Propstat {
 				if ps.Prop.ResourceType.Calendar != nil {
-					name := ps.Prop.DisplayName
+					name := strings.TrimSpace(ps.Prop.DisplayName)
 					if name == "" {
 						name = strings.Trim(final.Path, "/")
 					}
@@ -226,7 +233,7 @@ func (c *CalDAV) calendars(ctx context.Context) ([]davCalendar, error) {
 				}
 			}
 			href := resolveHref(home, strings.TrimSpace(r.Href))
-			name := ps.Prop.DisplayName
+			name := strings.TrimSpace(ps.Prop.DisplayName)
 			if name == "" {
 				name = strings.Trim(href.Path, "/")
 			}
@@ -237,21 +244,118 @@ func (c *CalDAV) calendars(ctx context.Context) ([]davCalendar, error) {
 	return out, nil
 }
 
-// query 一本日历里落在区间的 VEVENT（服务器按 time-range 筛，重复的给主记录，这边展开）。
-func (c *CalDAV) query(ctx context.Context, cal *url.URL, from, to time.Time) ([]CalendarEvent, error) {
+// query 一本日历里落在区间的 VEVENT，三级查法：
+//  1. calendar-query 带 time-range（标准做法，服务器筛好、连内容一起给）；
+//  2. 服务器只回条目地址不给内容（企业微信就这样），或不认 calendar-query 时：拿地址（或 PROPFIND Depth 1 列出的全部记录）
+//     去 calendar-multiget 分批取（Apple、Thunderbird 的做法）；
+//  3. multiget 也回空时逐条 GET（最多 300 条）。
+//
+// 返回用的是哪一级，排查时看得见。
+func (c *CalDAV) query(ctx context.Context, cal *url.URL, from, to time.Time) ([]CalendarEvent, string, error) {
 	body := `<?xml version="1.0" encoding="utf-8"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop>` +
 		`<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="` + from.UTC().Format("20060102T150405Z") + `" end="` + to.UTC().Format("20060102T150405Z") + `"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`
+	var hrefs []string
+	via := "calendar-query"
 	ms, _, err := c.davFollow(ctx, "REPORT", cal, "1", body)
 	if err != nil {
-		return nil, err
+		var rj *RejectedError
+		if !errors.As(err, &rj) || rj.Code == 401 {
+			return nil, "", err
+		}
+		// 400 / 403 / 501 之类：这家不认 calendar-query，往下走列表
+	} else if len(ms.Responses) > 0 {
+		if evs, withData := collectCalendarData(ms, from, to); withData > 0 {
+			return evs, via, nil
+		}
+		// 只回了条目地址：就用这些地址去取内容
+		hrefs = itemHrefs(ms)
+		via = "calendar-query+"
 	}
+	if len(hrefs) == 0 {
+		// 2. 列出日历里的全部记录
+		ms, _, err = c.davFollow(ctx, "PROPFIND", cal, "1", propfindItems)
+		if err != nil {
+			return nil, "", err
+		}
+		hrefs = itemHrefs(ms)
+		via = "list+"
+		if len(hrefs) == 0 {
+			return nil, "list-empty", nil
+		}
+	}
+	// 3. multiget 分批
 	var out []CalendarEvent
+	got := 0
+	for i := 0; i < len(hrefs); i += 50 {
+		batch := hrefs[i:min(i+50, len(hrefs))]
+		var b strings.Builder
+		b.WriteString(`<?xml version="1.0" encoding="utf-8"?><c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop>`)
+		for _, h := range batch {
+			b.WriteString("<d:href>")
+			_ = xml.EscapeText(&b, []byte(h))
+			b.WriteString("</d:href>")
+		}
+		b.WriteString(`</c:calendar-multiget>`)
+		ms, _, err := c.davFollow(ctx, "REPORT", cal, "1", b.String())
+		if err != nil {
+			got = 0
+			break
+		}
+		evs, withData := collectCalendarData(ms, from, to)
+		got += withData
+		out = append(out, evs...)
+	}
+	if got > 0 {
+		return out, via + "multiget", nil
+	}
+	// 4. 逐条 GET
+	out = out[:0]
+	for _, h := range hrefs[:min(300, len(hrefs))] {
+		text, err := c.get(ctx, resolveHref(cal, h))
+		if err != nil {
+			return nil, "", err
+		}
+		f, err := ParseICS(text)
+		if err != nil {
+			continue
+		}
+		out = append(out, f.Instances(from, to)...)
+	}
+	return out, via + "get", nil
+}
+
+// itemHrefs 从应答里挑出记录（不是子目录）的地址。有的服务器不给 contenttype、记录也不带 .ics 后缀，只要不是目录就算。
+func itemHrefs(ms *davMultistatus) []string {
+	var hrefs []string
+	for _, r := range ms.Responses {
+		href := strings.TrimSpace(r.Href)
+		if href == "" || strings.HasSuffix(href, "/") {
+			continue
+		}
+		isCollection := false
+		for _, ps := range r.Propstat {
+			if ps.Prop.ResourceType.Collection != nil || ps.Prop.ResourceType.Calendar != nil {
+				isCollection = true
+			}
+		}
+		if !isCollection {
+			hrefs = append(hrefs, href)
+		}
+	}
+	return hrefs
+}
+
+// collectCalendarData 把 multistatus 里每条 calendar-data 解析成落在区间的实例；还返回带了内容的条目数。
+func collectCalendarData(ms *davMultistatus, from, to time.Time) ([]CalendarEvent, int) {
+	var out []CalendarEvent
+	withData := 0
 	for _, r := range ms.Responses {
 		for _, ps := range r.Propstat {
 			data := strings.TrimSpace(ps.Prop.CalendarData)
 			if data == "" {
 				continue
 			}
+			withData++
 			f, err := ParseICS(data)
 			if err != nil {
 				continue
@@ -259,7 +363,31 @@ func (c *CalDAV) query(ctx context.Context, cal *url.URL, from, to time.Time) ([
 			out = append(out, f.Instances(from, to)...)
 		}
 	}
-	return out, nil
+	return out, withData
+}
+
+// get 取一条记录的原文（逐条兜底用）。
+func (c *CalDAV) get(ctx context.Context, u *url.URL) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth(c.username, c.password)
+	req.Header.Set("Accept", "text/calendar, */*")
+	req.Header.Set("User-Agent", "AxiomOS-calendar/1")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", sanitizeICSErr(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", sanitizeICSErr(err)
+	}
+	if resp.StatusCode/100 != 2 {
+		return "", &RejectedError{Code: resp.StatusCode, Msg: "HTTP " + http.StatusText(resp.StatusCode)}
+	}
+	return string(raw), nil
 }
 
 // ---------- 传输 ----------
@@ -287,10 +415,12 @@ type davProp struct {
 		Href []string `xml:"DAV: href"`
 	} `xml:"urn:ietf:params:xml:ns:caldav calendar-home-set"`
 	ResourceType struct {
-		Calendar *struct{} `xml:"urn:ietf:params:xml:ns:caldav calendar"`
+		Calendar   *struct{} `xml:"urn:ietf:params:xml:ns:caldav calendar"`
+		Collection *struct{} `xml:"DAV: collection"`
 	} `xml:"DAV: resourcetype"`
-	DisplayName string `xml:"DAV: displayname"`
-	Comps       struct {
+	DisplayName    string `xml:"DAV: displayname"`
+	GetContentType string `xml:"DAV: getcontenttype"`
+	Comps          struct {
 		Comp []struct {
 			Name string `xml:"name,attr"`
 		} `xml:"urn:ietf:params:xml:ns:caldav comp"`

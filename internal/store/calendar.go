@@ -173,8 +173,9 @@ func (s *Store) UpsertCalendarIdentity(ctx context.Context, q Querier, x *Calend
 }
 
 // MarkCalendarIdentitySync 记下某个成员这次同步的结果（没有绑定行的成员——飞书 / 企业微信按目录身份对上的——不记）。
-func (s *Store) MarkCalendarIdentitySync(ctx context.Context, q Querier, provider, memberID, status, errText string, at time.Time) error {
-	_, err := q.Exec(ctx, `update calendar_identities set last_sync_at=$3, last_status=$4, last_error=$5 where provider=$1 and member_id=$2`, provider, memberID, at, status, errText)
+// label 非空时顺手更新日历名（这次拉取看到的）。
+func (s *Store) MarkCalendarIdentitySync(ctx context.Context, q Querier, provider, memberID, status, errText, label string, at time.Time) error {
+	_, err := q.Exec(ctx, `update calendar_identities set last_sync_at=$3, last_status=$4, last_error=$5, label=case when $6<>'' then $6 else label end where provider=$1 and member_id=$2`, provider, memberID, at, status, errText, label)
 	return err
 }
 

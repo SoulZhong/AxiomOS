@@ -1,6 +1,6 @@
 "use client";
 import { useState, type FormEvent } from "react";
-import { api, type MyCalendarView, type MyFeedView, type PreferencesPatch } from "@/lib/api";
+import { api, type MyCalendarSyncResult, type MyCalendarView, type MyFeedView, type PreferencesPatch } from "@/lib/api";
 import { fmtRelative } from "@/lib/format";
 import { errorMessage, useLoad } from "@/lib/hooks";
 import { t, type Key } from "@/lib/i18n";
@@ -188,8 +188,15 @@ function SelfServiceCalendar({ cal, busy, onChanged, onDisconnect }: { cal: MyCa
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [synced, setSynced] = useState<MyCalendarSyncResult | null>(null);
   const fields = cal.fields ?? [];
   const showForm = !cal.connected || editing;
+  const syncNow = async () => {
+    setSyncing(true); setSynced(null);
+    try { const r = await api.me.calendars.sync(cal.provider); setSynced(r); if (r.status === "ok") toast.ok(t("me.calendar.syncDone", { n: r.events })); else toast.fail(r.error ?? ""); onChanged(); }
+    catch (err) { toast.fail(errorMessage(err)); } finally { setSyncing(false); }
+  };
   const hintKey = `me.calendar.self.hint.${cal.provider}` as Key;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -211,6 +218,7 @@ function SelfServiceCalendar({ cal, busy, onChanged, onDisconnect }: { cal: MyCa
         {cal.connected && cal.label && <span className="text-caption text-ink-subtle">{cal.label}</span>}
         {cal.connected && (
           <span className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="ghost" disabled={busy || saving || syncing} onClick={() => void syncNow()}>{syncing ? t("me.calendar.syncing") : t("me.calendar.syncNow")}</Button>
             <Button size="sm" variant="ghost" disabled={busy || saving} onClick={() => { setEditing((v) => !v); setError(null); }}>{t("me.calendar.self.replace")}</Button>
             <Button size="sm" variant="ghost" disabled={busy || saving} onClick={onDisconnect}>{t("me.calendar.disconnect")}</Button>
           </span>
@@ -221,6 +229,13 @@ function SelfServiceCalendar({ cal, busy, onChanged, onDisconnect }: { cal: MyCa
         <p className={"mt-1 text-caption " + (cal.last_status === "failed" ? "text-danger" : "text-ink-subtle")} role={cal.last_status === "failed" ? "alert" : undefined}>
           {cal.last_sync_at ? t("me.calendar.lastSync", { when: fmtRelative(cal.last_sync_at), status: cal.last_status_title ?? "" }) : t("me.calendar.neverSynced")}
           {cal.last_status === "failed" && cal.last_error ? ` · ${cal.last_error}` : ""}
+        </p>
+      )}
+      {synced && (
+        <p className={"mt-1 text-caption " + (synced.status === "failed" ? "text-danger" : "text-ink-muted")} role="status" data-sync-result>
+          {synced.status === "failed"
+            ? synced.error
+            : t("me.calendar.syncDone", { n: synced.events }) + (synced.calendars.length ? "（" + synced.calendars.map((c) => `${c.name} ${c.events}${c.events === 0 ? " · " + c.via : ""}`).join("、") + "）" : "")}
         </p>
       )}
       {showForm && (

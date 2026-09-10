@@ -2,6 +2,7 @@ package directory
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -159,5 +160,64 @@ func TestCalDAVWellKnownRedirect(t *testing.T) {
 	bad, _ := NewCalDAV(map[string]string{"server": srv.URL, "username": "a", "password": "x"}, Options{HTTPClient: srv.Client()})
 	if _, err := bad.Events(context.Background(), "", time.Now(), time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("密码错应报 401，实际 %v", err)
+	}
+}
+
+// 企业微信那种不认 calendar-query（回空）的服务器：列出记录 → multiget；multiget 也空时逐条 GET。
+func TestCalDAVListFallbacks(t *testing.T) {
+	t.Setenv("AXIOMOS_ALLOW_PRIVATE_EGRESS", "1")
+	ms := func(b string) string {
+		return `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">` + b + `</d:multistatus>`
+	}
+	ics := "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:%s\nSUMMARY:%s\nDTSTART:20260915T020000Z\nDTEND:20260915T030000Z\nEND:VEVENT\nEND:VCALENDAR"
+	for _, mode := range []string{"multiget", "get", "query-hrefs"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			switch {
+			case r.Method == "PROPFIND" && r.URL.Path == "/cal/" && r.Header.Get("Depth") == "0":
+				w.WriteHeader(207)
+				_, _ = w.Write([]byte(ms(`<d:response><d:href>/cal/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>企微</d:displayname></d:prop></d:propstat></d:response>`)))
+			case r.Method == "REPORT" && strings.Contains(string(body), "calendar-query"):
+				w.WriteHeader(207)
+				if mode == "query-hrefs" {
+					// 企业微信那样：只回条目地址，不附内容
+					_, _ = w.Write([]byte(ms(`<d:response><d:href>/cal/e1</d:href><d:propstat><d:prop><d:getetag>"1"</d:getetag></d:prop></d:propstat></d:response><d:response><d:href>/cal/e2.ics</d:href><d:propstat><d:prop><d:getetag>"2"</d:getetag></d:prop></d:propstat></d:response>`)))
+					return
+				}
+				_, _ = w.Write([]byte(ms(``))) // 不认：回空
+			case r.Method == "PROPFIND" && r.URL.Path == "/cal/" && r.Header.Get("Depth") == "1":
+				w.WriteHeader(207)
+				_, _ = w.Write([]byte(ms(`<d:response><d:href>/cal/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>` +
+					`<d:response><d:href>/cal/e1</d:href><d:propstat><d:prop><d:resourcetype/><d:getetag>"1"</d:getetag></d:prop></d:propstat></d:response>` +
+					`<d:response><d:href>/cal/e2.ics</d:href><d:propstat><d:prop><d:resourcetype/><d:getetag>"2"</d:getetag><d:getcontenttype>text/calendar</d:getcontenttype></d:prop></d:propstat></d:response>`)))
+			case r.Method == "REPORT" && strings.Contains(string(body), "calendar-multiget"):
+				w.WriteHeader(207)
+				if mode == "get" {
+					_, _ = w.Write([]byte(ms(``)))
+					return
+				}
+				if !strings.Contains(string(body), "<d:href>/cal/e1</d:href>") {
+					t.Errorf("multiget 应带上列出的 href: %s", body)
+				}
+				_, _ = w.Write([]byte(ms(`<d:response><d:href>/cal/e1</d:href><d:propstat><d:prop><c:calendar-data>` + fmt.Sprintf(ics, "e1", "一") + `</c:calendar-data></d:prop></d:propstat></d:response>` +
+					`<d:response><d:href>/cal/e2.ics</d:href><d:propstat><d:prop><c:calendar-data>` + fmt.Sprintf(ics, "e2", "二") + `</c:calendar-data></d:prop></d:propstat></d:response>`)))
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/cal/e"):
+				_, _ = w.Write([]byte(fmt.Sprintf(ics, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/cal/"), ".ics"), "逐条")))
+			default:
+				w.WriteHeader(404)
+			}
+		}))
+		c, _ := NewCalDAV(map[string]string{"server": srv.URL + "/cal/", "username": "u", "password": "p"}, Options{HTTPClient: srv.Client()})
+		from := time.Date(2026, 9, 14, 0, 0, 0, 0, sh())
+		evs, err := c.Events(context.Background(), "", from, from.AddDate(0, 0, 7))
+		srv.Close()
+		if err != nil || len(evs) != 2 {
+			t.Fatalf("[%s] 应兜底拉到 2 场，实际 %d %v", mode, len(evs), err)
+		}
+		sum := c.Summary()
+		wantVia := map[string]string{"multiget": "list+multiget", "get": "list+get", "query-hrefs": "calendar-query+multiget"}[mode]
+		if len(sum) != 1 || sum[0].Events != 2 || sum[0].Via != wantVia || sum[0].Name != "企微" {
+			t.Fatalf("[%s] 摘要应记下查法 %s: %+v", mode, wantVia, sum)
+		}
 	}
 }
