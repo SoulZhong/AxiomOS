@@ -21,3 +21,12 @@
 ## 没能验的
 
 Windows PowerShell 版脚本（`connect.ps1`）这台机器上没有 `pwsh`，只验证了渲染出来的脚本内容与 sh 版取自同一批配置常量（`internal/api/onboard_test.go`），没有真正执行过。第一位 Windows 同事接入时请留意它的输出。
+
+## #20 管理员推广路径：页面核对记录（2026-09-11）
+
+无头 Chrome（CDP）以所有者会话核对：
+- `/agents/`：头部有「复制给团队的接入说明」按钮，点后按钮文字变为「已复制」，剪贴板内容为 `agents.rolloutText`（链接指向本部署的 `/connect`，三步 + 授权预设建议，不含 MCP 字样）。
+- `/connect/`：三段依次为「接下来会发生什么」「确认时选哪个授权」「常见问题」（验证码过期、点了拒绝、打不开确认页、公司内网、刚接完显示「执行中」）。
+- `/settings/?tab=people`：筛选条「只看未接入 Agent 的 n」勾上后只剩没有 Agent 的在职成员；已接入的成员行带「n 个 Agent」标签。
+- 前端 `tsc` / `lint` / `NEXT_PUBLIC_MOCK=0 build` 通过；后端 `go test ./...` 通过。
+- 未发现问题，未创建 Bug 任务。
