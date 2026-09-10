@@ -4120,7 +4120,7 @@ function notifyChannelDefs(): Array<{ key: string; title: string; im: boolean; f
   ];
 }
 const NOTIFY: { enabled: Record<string, boolean>; config: Record<string, Record<string, string>>; secrets: Record<string, Record<string, string>>; allowed: string[] } = {
-  // 示例数据里 Webhook 已经配好（这样"我的偏好 → 通知"里有一个真的能选的通道），飞书靠 IM 集成
+  // 示例数据里 Webhook 已经配好（这样"个人设置 → 通知"里有一个真的能选的通道），飞书靠 IM 集成
   enabled: {}, config: { webhook: { url: "https://example.com/axiomos/notify" } }, secrets: { webhook: { secret: "shh" } }, allowed: ["proposal", "review", "assigned", "question", "blocked", "overdue", "milestone_due"],
 };
 /** 通道配好了没有：IM 通道看 IM 集成接没接上，其余看自己的必填字段 */

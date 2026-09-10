@@ -8,7 +8,7 @@ import { Button, Checkbox, ConsequenceDialog, Empty, ErrorBox, Input, ListSkelet
 import { DeliveriesPanel } from "./NotificationsTab";
 
 /*
- * 我的偏好 → 通知（ADR 0019 第三层，DESIGN.md §22）：一张小矩阵——行是事项，列是组织开着的通道，格子是勾选框。
+ * 个人设置 → 通知（ADR 0019 第三层，DESIGN.md §22）：一张小矩阵——行是事项，列是组织开着的通道，格子是勾选框。
  * 只能在组织允许的范围内选：组织没允许的事项这里根本不出现（后端已经裁掉）。
  * 某个通道要绑 IM 身份而我没绑时，那一列的格子不可选，鼠标停上去说清去哪儿绑（句子来自接口）。
  * 改一格立刻 PUT（只发这一行），安静时段与「恢复默认」同理。下面是我最近收到的外发记录。
