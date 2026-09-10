@@ -514,7 +514,7 @@ Agent 侧：任何写操作若命中「需要人确认」的授权，HTTP 返回
 | POST | `/me/feed` | 生成（没有时）或换掉（已有时）订阅源 → 同上；旧链接立刻失效（动态 `CalendarFeedReset`） |
 | DELETE | `/me/feed` | 停用订阅源 → 204（动态 `CalendarFeedRemoved`） |
 | GET | `/feeds/{token}.ics` | **公开**：按 token 出一份 iCalendar（`text/calendar`），内容是这个人负责的任务（计划起止与截止）、目标、里程碑，全天 VEVENT、`TRANSP:TRANSPARENT`，过去 30 天到未来 180 天，按拉取时现算；不含外部日历同步来的会议。token 不存在或已停用 → 404 |
-| GET | `/me/calendars/google/callback?state=&code=` | Google 授权回调（公开）：换刷新令牌、按成员加密存下、立刻同步一次，然后 303 回 `/settings/?tab=me&calendar=connected`；失败带 `calendar=failed&reason=` |
+| GET | `/me/calendars/google/callback?state=&code=` | Google 授权回调（公开）：换刷新令牌、按成员加密存下、立刻同步一次，然后 303 回 `/me/?calendar=connected`；失败带 `calendar=failed&reason=` |
 
 MCP：`get_my_schedule(from?, to?)` 给 Agent 看它所有者的日程，只读。网页入口是侧栏的「我的日程」（`/schedule/`）。
 

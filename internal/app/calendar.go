@@ -734,7 +734,7 @@ func (a *App) FinishGoogleAuth(ctx context.Context, state, code string) (string,
 	}
 	// 连上后立刻同步一次这个成员的
 	_ = a.syncCalendarMember(ctx, sess, p, sess.MemberID)
-	return strings.TrimRight(a.PublicURL, "/") + "/settings/?tab=me&calendar=connected", nil
+	return strings.TrimRight(a.PublicURL, "/") + "/me/?calendar=connected", nil
 }
 
 // SweepGoogleStates 清掉过期的授权 state（后台巡检）。
