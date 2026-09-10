@@ -257,6 +257,9 @@ type Provider struct {
 	CalendarPrerequisites []i18n.Text
 	NewCalendar           func(creds map[string]string, opts Options) (Calendar, error)
 	PerMemberCalendar     bool
+	// SelfServiceCalendar 为真表示不需要组织配置：成员自己填 CalendarFields 里的字段就能连（日历订阅链接）。
+	// 这种提供方不出现在组织设置页，连接记录仍按提供方一行记同步状态。
+	SelfServiceCalendar bool
 
 	hidden bool // 测试注册的提供方：Lookup 能找到，Providers 不列出
 }

@@ -659,6 +659,25 @@ export interface MyCalendarView {
   external_user_id?: string;
   connected_at?: ISODateTime;
   auth_url?: string;
+  /** 自助的提供方（日历订阅链接）：自己填 fields 就能连，不用组织配置 */
+  self_service: boolean;
+  fields?: DirectoryField[];
+  prerequisites?: string[];
+  tip?: { text: string; url?: string };
+  /** 我自己这条绑定的同步情况 */
+  label?: string;
+  last_sync_at?: ISODateTime;
+  last_status?: "ok" | "failed" | "";
+  last_status_title?: string;
+  last_error?: string;
+}
+
+/** 我对外发布的日历订阅源（GET /me/feed）：链接就是密钥 */
+export interface MyFeedView {
+  enabled: boolean;
+  url?: string;
+  webcal_url?: string;
+  created_at?: ISODateTime;
 }
 
 // ---------- 代码平台与外部事件（ADR 0020） ----------
@@ -1714,6 +1733,8 @@ export type EventKind =
   | "CalendarSyncRan"
   | "CalendarIdentityBound"
   | "CalendarIdentityRemoved"
+  | "CalendarFeedReset"
+  | "CalendarFeedRemoved"
   | "CodeIdentityBound"
   | "ExternalLinkAdded"
   | "ExternalLinkUpdated"
@@ -2497,7 +2518,15 @@ export const api = {
     /** 我的外部日历（ADR 0032）：飞书 / 企业微信沿用外部目录的身份，Google 自己授权一次 */
     calendars: {
       list: () => request<MyCalendarView[]>("GET", "/me/calendars"),
+      /** 自助的提供方：贴链接就连上并立刻同步一次 */
+      connect: (provider: string, credentials: Record<string, string>) => request<MyCalendarView>("PUT", `/me/calendars/${encodeURIComponent(provider)}`, { credentials }),
       disconnect: (provider: string) => request<void>("DELETE", `/me/calendars/${encodeURIComponent(provider)}`),
+    },
+    /** 对外订阅源：生成 / 换链接 / 停用 */
+    feed: {
+      get: () => request<MyFeedView>("GET", "/me/feed"),
+      reset: () => request<MyFeedView>("POST", "/me/feed", {}),
+      remove: () => request<void>("DELETE", "/me/feed"),
     },
   },
   /** 日程（ADR 0032）：who 为空是我自己，成员 ID 看那个人，团队 ID 看团队全部成员 */

@@ -30,6 +30,8 @@ type App struct {
 	failCodeEvent bool
 
 	syncing sync.Map // org id → 正在同步
+	// feedCache 是对外订阅源的短缓存：token → feedCached（feed.go）
+	feedCache sync.Map
 	// confirmGrants 是「在 Agent 里确认」的一次性凭证（ADR 0027）：nonce → *confirmGrant，十分钟过期。
 	// 放在进程内存里：凭证只活十分钟、只对发它的那条连接有意义；多实例部署要把它挪进表里。
 	confirmGrants sync.Map

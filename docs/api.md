@@ -507,8 +507,13 @@ Agent 侧：任何写操作若命中「需要人确认」的授权，HTTP 返回
 | DELETE | `/org/calendars/{provider}` | 断开：连接、成员绑定、同步来的会议一起清掉 → 204。收 `dry_run`。动态 `CalendarDisconnected` |
 | POST | `/org/calendars/{provider}/test` | 接入检查 → `{ok, checks[], error?}`（`checks` 与 IM 集成同一形状）。只读外部系统 |
 | POST | `/org/calendars/{provider}/sync` | 立即同步：过去 7 天到未来 60 天，每个成员各自一笔，一个人失败不影响别人 → `{provider, members, events, errors[], status: ok\|failed}`；结果记在连接上，动态 `CalendarSyncRan`。后台每 15 分钟自动跑一轮 |
-| GET | `/me/calendars` | 我在各家提供方连没连：`[{provider, provider_title, org_configured, per_member, connected, email?, external_user_id?, connected_at?, auth_url?}]`。飞书 / 企业微信按外部目录的身份自动算已连接；Google 未连接时给 `auth_url`（带一次性 state，15 分钟有效） |
+| GET | `/me/calendars` | 我在各家提供方连没连：`[{provider, provider_title, org_configured, per_member, self_service, connected, email?, external_user_id?, connected_at?, auth_url?, fields?, prerequisites?, tip?, label?, last_sync_at?, last_status?, last_status_title?, last_error?}]`。飞书 / 企业微信按外部目录的身份自动算已连接；Google 未连接时给 `auth_url`（带一次性 state，15 分钟有效） |
+| PUT | `/me/calendars/{provider}` | 自助的提供方（目前只有 `ics` 日历订阅链接）：`{credentials: {url}}` → 我的连接情况。链接先过出网守卫（只许 https，`webcal://` 自动转成 https），再拉一次证明能读（网页链接 →「这个链接返回的不是日历文件（.ics）。请到日历软件里取「订阅 / 私密地址」那条链接，不是网页地址。」），加密存下、立刻同步一次。链接不回显；`self_service: true` 的提供方带 `fields / prerequisites / tip` 给个人设置页渲染，绑定行上带我自己的 `label / last_sync_at / last_status / last_status_title / last_error` |
 | DELETE | `/me/calendars/{provider}` | 解除我的绑定（Google 的令牌一并删，同步来的会议删掉）→ 204 |
+| GET | `/me/feed` | 我对外的日历订阅源：`{enabled, url?, webcal_url?, created_at?}` |
+| POST | `/me/feed` | 生成（没有时）或换掉（已有时）订阅源 → 同上；旧链接立刻失效（动态 `CalendarFeedReset`） |
+| DELETE | `/me/feed` | 停用订阅源 → 204（动态 `CalendarFeedRemoved`） |
+| GET | `/feeds/{token}.ics` | **公开**：按 token 出一份 iCalendar（`text/calendar`），内容是这个人负责的任务（计划起止与截止）、目标、里程碑，全天 VEVENT、`TRANSP:TRANSPARENT`，过去 30 天到未来 180 天，按拉取时现算；不含外部日历同步来的会议。token 不存在或已停用 → 404 |
 | GET | `/me/calendars/google/callback?state=&code=` | Google 授权回调（公开）：换刷新令牌、按成员加密存下、立刻同步一次，然后 303 回 `/settings/?tab=me&calendar=connected`；失败带 `calendar=failed&reason=` |
 
 MCP：`get_my_schedule(from?, to?)` 给 Agent 看它所有者的日程，只读。网页入口是侧栏的「我的日程」（`/schedule/`）。
