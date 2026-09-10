@@ -22,6 +22,9 @@ import (
 //go:embed usage-hook.py
 var usageHookScript string
 
+//go:embed usage-hook.ps1
+var usageHookScriptPS string
+
 //go:embed connect.sh.tmpl
 var connectScript string
 
@@ -41,6 +44,12 @@ func (s *Server) deviceRoutes(auth, pub func(string, http.HandlerFunc)) {
 		w.Header().Set("Content-Type", "text/x-python; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write([]byte(usageHookScript))
+	})
+	// Windows 版：PowerShell 5.1+ 自带，不依赖 python
+	pub("GET /api/v1/agent-auth/usage-hook.ps1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(usageHookScriptPS))
 	})
 	pub("GET /api/v1/agent-auth/connect.ps1", s.connectScriptPS)
 	// 接入链接（ADR 0024）：短地址 /connect 另挂在根 mux 上（见 cmd/axiomd 与 ConnectAlias）
@@ -170,6 +179,7 @@ var connectText = map[string]i18n.Text{
 	"approved":     i18n.T("已批准，Agent 名称：", "Approved. Agent name:"),
 	"written":      i18n.T("已写入", "Written to"),
 	"hook_written": i18n.T("已装上用量钩子：每轮结束自动把 token 用量报到 AxiomOS（", "Usage hook installed: token usage is reported to AxiomOS after every turn ("),
+	"hook_failed":  i18n.T("用量钩子没装上（下载或写 settings.json 失败）。想让 AxiomOS 自动记 token，重跑本脚本。", "The usage hook was not installed (download or writing settings.json failed). To let AxiomOS record tokens automatically, rerun this script."),
 	"hook_manual":  i18n.T("没有 python3，用量钩子没装。想让 AxiomOS 自动记 token，装好 python3 后重跑本脚本。", "python3 is missing, so the usage hook was not installed. To let AxiomOS record tokens automatically, install python3 and rerun this script."),
 	"merged":       i18n.T("已合并进", "Merged into"),
 	"no_claude":    i18n.T("没找到 claude 命令。把下面这段加进 Claude Code 的 MCP 配置（~/.claude.json 的 mcpServers，或项目里的 .mcp.json）：", "The claude command was not found. Add the following to Claude Code's MCP config (mcpServers in ~/.claude.json, or .mcp.json in the project):"),
