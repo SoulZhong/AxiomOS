@@ -182,7 +182,7 @@ var catalog = map[string]Text{
 	"err.revert_late":                 T("超过 24 小时，不能再撤回。", "More than 24 hours have passed; this step can no longer be reverted."),
 	"err.revert_changed":              T("那一步之后任务又有改动，不能撤回。", "The task changed after that step, so it cannot be reverted."),
 	"err.revert_forbidden":            T("只有发委托的人或组织负责人能撤回。", "Only the person who issued the mandate or the organization owner can revert."),
-	"err.proposal_stale":              T("对象在等待期间被别人改过，这条待确认操作已失效；请让 Agent 重新提交。", "The object changed while this action was waiting, so it is no longer valid; ask the agent to submit it again."),
+	"err.proposal_stale":              T("对象在等待期间已经变了（状态、负责人或内容改过），这条待确认操作已失效；请让 Agent 重新提交。", "The object changed while this action was waiting (state, assignee or content), so it is no longer valid; ask the agent to submit it again."),
 	"err.plan_not_plan":               T("待确认操作 %s 不是一份目标方案。", "Pending action %s is not a goal plan."),
 	"err.approve_options_unsupported": T("只有目标方案可以跳过几条或改派负责人，这个操作只能整体确认或拒绝。", "Only a goal plan can skip items or reassign; this action can only be confirmed or rejected as a whole."),
 	"err.confirm_agent_only":          T("确认凭证只发给 Agent 会话；人直接在网页上确认。", "Confirmation tickets are only issued to agent sessions; people confirm on the web."),

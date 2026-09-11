@@ -429,6 +429,18 @@ func (a *App) proposalStale(ctx context.Context, tx pgx.Tx, p *domain.Proposal) 
 		if t.Version == p.TargetVersion {
 			return false, nil
 		}
+		// 动作自己的前提已经不成立（不管是谁改的，哪怕是这个 Agent 经确认后重放的那一步）：
+		// 「开始执行」要这个 Agent 仍是负责人；「领取」要任务仍没有负责人
+		switch p.Action {
+		case ActionTaskBegin:
+			if t.AssigneeID != p.AgentID {
+				return true, nil
+			}
+		case ActionTaskClaim:
+			if t.AssigneeID != "" {
+				return true, nil
+			}
+		}
 		rows, err = a.Store.ListEvents(ctx, tx, p.TargetID, 200)
 		if err != nil {
 			return false, err
