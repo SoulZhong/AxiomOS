@@ -10,14 +10,14 @@ import (
 	"github.com/teemo/axiomos/internal/domain"
 )
 
-const proposalCols = `id,org_id,agent_id,owner_id,action,grant_name,target_kind,target_id,target_title,payload,summary,status,coalesce(decided_by,''),decided_at,reason,created_at,expires_at,bundle_id,target_version,grants_snapshot`
+const proposalCols = `id,org_id,agent_id,owner_id,action,grant_name,target_kind,target_id,target_title,payload,summary,status,coalesce(decided_by,''),decided_at,reason,created_at,expires_at,bundle_id,target_version,grants_snapshot,agent_name`
 
 func scanProposal(r interface{ Scan(...any) error }) (*domain.Proposal, error) {
 	p := &domain.Proposal{}
 	var payload, summary, grants []byte
 	var status, grant string
 	err := r.Scan(&p.ID, &p.OrgID, &p.AgentID, &p.OwnerID, &p.Action, &grant, &p.TargetKind, &p.TargetID, &p.TargetTitle,
-		&payload, &summary, &status, &p.DecidedBy, &p.DecidedAt, &p.Reason, &p.CreatedAt, &p.ExpiresAt, &p.BundleID, &p.TargetVersion, &grants)
+		&payload, &summary, &status, &p.DecidedBy, &p.DecidedAt, &p.Reason, &p.CreatedAt, &p.ExpiresAt, &p.BundleID, &p.TargetVersion, &grants, &p.AgentName)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -66,10 +66,10 @@ func (s *Store) InsertProposal(ctx context.Context, q Querier, p *domain.Proposa
 	if err != nil {
 		return err
 	}
-	_, err = q.Exec(ctx, `insert into proposals(id,org_id,agent_id,owner_id,action,grant_name,target_kind,target_id,target_title,payload,summary,status,created_at,expires_at,bundle_id,target_version,grants_snapshot)
-		values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+	_, err = q.Exec(ctx, `insert into proposals(id,org_id,agent_id,owner_id,action,grant_name,target_kind,target_id,target_title,payload,summary,status,created_at,expires_at,bundle_id,target_version,grants_snapshot,agent_name)
+		values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		p.ID, p.OrgID, p.AgentID, p.OwnerID, p.Action, string(p.Grant), p.TargetKind, p.TargetID, p.TargetTitle,
-		payload, summary, string(p.Status), p.CreatedAt, p.ExpiresAt, p.BundleID, p.TargetVersion, grants)
+		payload, summary, string(p.Status), p.CreatedAt, p.ExpiresAt, p.BundleID, p.TargetVersion, grants, p.AgentName)
 	return err
 }
 

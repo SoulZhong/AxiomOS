@@ -36,12 +36,14 @@ type Proposal struct {
 	TargetTitle string         `json:"target_title,omitempty"`
 	Payload     map[string]any `json:"payload"` // 再执行这个动作所需的全部输入
 	Summary     i18n.Text      `json:"summary"` // 完整句子：确认后会发生什么
-	Status      ProposalStatus `json:"status"`
-	DecidedBy   string         `json:"decided_by,omitempty"`
-	DecidedAt   *time.Time     `json:"decided_at,omitempty"`
-	Reason      string         `json:"reason,omitempty"` // 拒绝理由（完整句子）
-	CreatedAt   time.Time      `json:"created_at"`
-	ExpiresAt   time.Time      `json:"expires_at"`
+	// AgentName 是提交时 Agent 的名字（快照）：摘要里的名字冻在那一刻，读的时候用它把摘要换成现在的名字
+	AgentName string         `json:"agent_name,omitempty"`
+	Status    ProposalStatus `json:"status"`
+	DecidedBy string         `json:"decided_by,omitempty"`
+	DecidedAt *time.Time     `json:"decided_at,omitempty"`
+	Reason    string         `json:"reason,omitempty"` // 拒绝理由（完整句子）
+	CreatedAt time.Time      `json:"created_at"`
+	ExpiresAt time.Time      `json:"expires_at"`
 	// ADR 0028：捆、版本、快照。
 	BundleID       string              `json:"bundle_id,omitempty"`      // 同一任务上同一 Agent 连续提出的多条合成一捆
 	TargetVersion  int                 `json:"target_version,omitempty"` // 提出时对象的版本，0 表示不校验
