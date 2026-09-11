@@ -160,7 +160,7 @@ func (a *App) createProposal(ctx context.Context, tx pgx.Tx, sess *Session, d pr
 	p := &domain.Proposal{
 		OrgID: sess.OrgID, AgentID: sess.AgentID, OwnerID: sess.MemberID,
 		Action: d.Action, Grant: d.Grant, TargetKind: d.TargetKind, TargetID: d.TargetID, TargetTitle: d.TargetTitle,
-		Payload: toPayload(d.Payload), Summary: renderBoth(d.Summary),
+		Payload: toPayload(d.Payload), Summary: renderBoth(d.Summary), AgentName: sess.Actor.Name,
 		Status: domain.ProposalPending, CreatedAt: now, ExpiresAt: now.Add(domain.ProposalTTL),
 	}
 	if p.Payload == nil {
@@ -253,10 +253,19 @@ func (a *App) proposalView(ctx context.Context, tx pgx.Tx, sess *Session, p *dom
 	return a.proposalViewWith(sess, p, names), nil
 }
 
+// liveSummary 摘要里的 Agent 名字换成现在的：摘要是提交时存下的句子，Agent 改名后靠提交时的名字快照做替换。
+func liveSummary(p *domain.Proposal, current string, loc i18n.Locale) string {
+	s := p.Summary.In(loc)
+	if p.AgentName != "" && current != "" && current != p.AgentName {
+		s = strings.ReplaceAll(s, p.AgentName, current)
+	}
+	return s
+}
+
 func (a *App) proposalViewWith(sess *Session, p *domain.Proposal, names map[string]string) *ProposalView {
 	loc := sess.Loc()
 	v := &ProposalView{Proposal: p, AgentName: names[p.AgentID], OwnerName: names[p.OwnerID],
-		ActionTitle: i18n.Tr(loc, "proposal.action."+p.Action), SummaryText: p.Summary.In(loc),
+		ActionTitle: i18n.Tr(loc, "proposal.action."+p.Action), SummaryText: liveSummary(p, names[p.AgentID], loc),
 		StatusTitle: i18n.Tr(loc, "proposal.status."+string(p.Status)), CanDecide: canDecideProposal(sess, p)}
 	if v.AgentName == "" {
 		v.AgentName = p.AgentID

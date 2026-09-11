@@ -97,6 +97,16 @@ func TestProposalLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Agent 改名后，摘要里的名字要跟着变（摘要是提交时存下的句子，靠名字快照替换）
+	if len(mine) == 1 && strings.Contains(mine[0].SummaryText, "乙的 Agent") {
+		if _, err := a.UpdateAgent(ctx, yi, mine[0].AgentID, RegisterAgentInput{Name: "改名后的 Agent"}); err == nil {
+			again, _ := a.ListProposals(ctx, yi, ProposalFilter{Mine: true})
+			if len(again) != 1 || !strings.Contains(again[0].SummaryText, "改名后的 Agent") || strings.Contains(again[0].SummaryText, "乙的 Agent") {
+				t.Fatalf("改名后摘要应用新名字，实际 %q", again[0].SummaryText)
+			}
+			mine = again
+		}
+	}
 	if len(mine) != 1 || !mine[0].CanDecide {
 		t.Fatalf("所有者应看到 1 条等他确认的，实际 %d", len(mine))
 	}
