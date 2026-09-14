@@ -27,7 +27,9 @@ PLATFORM_ADMIN_EMAIL=admin@example.com PLATFORM_ADMIN_PASSWORD=改成你的密�
 
 界面语言：简体中文与英文，每个账号可在页脚或登录页切换；组织有默认语言；Agent 收到的工具描述和拒绝理由用所有者的语言。
 
-把 Agent 接进来：见 [docs/agent-integration.md](docs/agent-integration.md)。MCP 端点是 `/mcp`，用 `Authorization: Bearer <Agent 令牌>`。
+把 Agent 接进来：见 [docs/agent-integration.md](docs/agent-integration.md)。
+
+线上部署（axiom.tutorkin.com：Nginx + Let's Encrypt 证书自动续期 + GitHub Actions 推送即部署）：见 [docs/deploy.md](docs/deploy.md)，脚本在 `deploy/`。MCP 端点是 `/mcp`，用 `Authorization: Bearer <Agent 令牌>`。
 
 ## 文档
 
@@ -37,6 +39,7 @@ PLATFORM_ADMIN_EMAIL=admin@example.com PLATFORM_ADMIN_PASSWORD=改成你的密�
 - `docs/api.md` HTTP 接口与 MCP 工具契约
 - `web/DESIGN.md` 界面设计规范 v2（以 Linear 为蓝本，叠加 Axiom 母舰科幻层；来源见 `docs/design/sources/`）
 - `docs/agent-integration.md` Agent 接入指南
+- `docs/deploy.md` 线上部署：证书申请与续期、发布包、自动化部署与回滚
 - `prototypes/` 一次性验证原型
 
 ## 目录

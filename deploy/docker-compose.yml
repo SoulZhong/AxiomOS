@@ -1,0 +1,24 @@
+# 生产机上的 PostgreSQL：只绑本机 127.0.0.1:5439，密码来自 /etc/axiomos/db.env（setup-server.sh 生成）。
+# 用法（setup-server.sh 已封装）：
+#   docker compose --env-file /etc/axiomos/db.env -f /opt/axiomos/deploy/docker-compose.yml up -d
+# 与仓库根目录的 docker-compose.yml（本地开发用，密码固定、端口对外）不是同一份。
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: axiomos-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: axiomos
+      POSTGRES_PASSWORD: ${AXIOMOS_DB_PASSWORD:?在 /etc/axiomos/db.env 里设置 AXIOMOS_DB_PASSWORD}
+      POSTGRES_DB: axiomos
+    ports:
+      - "127.0.0.1:5439:5432"
+    volumes:
+      - axiomos-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axiomos -d axiomos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+volumes:
+  axiomos-db:

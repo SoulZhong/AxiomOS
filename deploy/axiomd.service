@@ -1,0 +1,34 @@
+# AxiomOS 后端进程的 systemd 服务。deploy/setup-server.sh 会把它装到 /etc/systemd/system/axiomd.service。
+#
+# 目录约定：
+#   /opt/axiomos/releases/<时间-提交>/   每次部署解开的一份发布包（axiomd 二进制 + web/ 静态前端）
+#   /opt/axiomos/current                 指向正在跑的那一份的符号链接，回滚就是把它指回上一份
+#   /etc/axiomos/axiomd.env              环境变量（数据库地址、公网地址、密钥……），见 deploy/axiomd.env.example
+#
+# 进程只监听 127.0.0.1:8080，对外由 Nginx 终止 TLS 后转发。
+
+[Unit]
+Description=AxiomOS backend (HTTP API + MCP + static web)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=axiomos
+Group=axiomos
+WorkingDirectory=/opt/axiomos/current
+EnvironmentFile=/etc/axiomos/axiomd.env
+ExecStart=/opt/axiomos/current/axiomd
+Restart=always
+RestartSec=3
+# 数据库刚启动时迁移可能要等几秒；连不上会 log.Fatal 退出，由 Restart 拉起
+StartLimitIntervalSec=0
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/axiomos
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

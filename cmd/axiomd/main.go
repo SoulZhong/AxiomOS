@@ -17,6 +17,9 @@ import (
 	"github.com/teemo/axiomos/internal/store"
 )
 
+// version 由构建时注入（deploy/build-release.sh 的 -ldflags "-X main.version=<提交>"）；本地运行为 dev。
+var version = "dev"
+
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -156,6 +159,19 @@ func main() {
 	mux.Handle("/mcp", mcp.Handler(a, apiSrv.Authenticate))
 	// 接入链接的短地址（ADR 0024）：贴给 Agent 的就是它；浏览器打开会跳到前端的 /connect/ 页
 	mux.Handle("GET /connect", apiSrv.ConnectAlias())
+	// 健康检查：部署脚本与反向代理用它判断进程活着且连得上数据库（不需要登录、不带任何数据）
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := st.Pool.Ping(ctx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"ok":false,"version":"` + version + `","error":"database unreachable"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"version":"` + version + `"}`))
+	})
 	mux.Handle("/", staticHandler(webDir))
 
 	log.Printf("axiomd 监听 %s；API /api/v1，MCP /mcp，接入链接 /connect，前端目录 %s", addr, webDir)

@@ -5,7 +5,7 @@ PLATFORM_ADMIN_PASSWORD ?= admin1234
 # 本地开发的通知接收端、代码平台都在 localhost 上；出网默认只许公网（见 README）
 AXIOMOS_ALLOW_PRIVATE_EGRESS ?= 1
 
-.PHONY: db test run web build
+.PHONY: db test run web build release
 
 db:            ## 启动本地 PostgreSQL
 	docker compose up -d db
@@ -22,3 +22,6 @@ web:           ## 运行前端开发服务器
 build:         ## 构建前端并把后端打成单个二进制
 	cd web && pnpm build
 	go build -o bin/axiomd ./cmd/axiomd
+
+release:       ## 打线上发布包（linux/amd64 二进制 + 静态前端）到 dist/，见 docs/deploy.md
+	PUBLIC_URL=$${PUBLIC_URL:-https://axiom.tutorkin.com} bash deploy/build-release.sh

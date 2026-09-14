@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: axiomos
+          POSTGRES_PASSWORD: axiomos
+          POSTGRES_DB: axiomos
+        ports:
+          - 5439:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: 前端依赖
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+
+      - name: 前端类型检查
+        run: pnpm exec tsc --noEmit -p .
+        working-directory: web
+
+      - name: 后端测试（含数据库集成测试）
+        run: go test ./...
+        env:
+          DATABASE_URL: postgres://axiomos:axiomos@localhost:5439/axiomos?sslmode=disable
+          AXIOMOS_ALLOW_PRIVATE_EGRESS: "1"
+
+      - name: 打发布包
+        run: bash deploy/build-release.sh
+        env:
+          PUBLIC_URL: https://axiom.tutorkin.com
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: dist/*.tar.gz
+          retention-days: 7
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    environment: prod-tencent-cloud
+    # 部署串行：两次推送挨得近时排队，不取消（取消只会断开 SSH，服务器上的安装脚本照跑）
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: dist
+
+      - name: 上传发布包
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: dist/*.tar.gz
+          target: /tmp/axiomos-release
+          strip_components: 1
+          overwrite: true
+
+      - name: 安装并切换
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 10m
+          script: |
+            set -e
+            pkg="$(ls -t /tmp/axiomos-release/*.tar.gz | head -n1)"
+            bash /opt/axiomos/deploy/install-release.sh "$pkg"
+            rm -f /tmp/axiomos-release/*.tar.gz
