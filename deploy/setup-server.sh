@@ -2,12 +2,14 @@
 # AxiomOS 生产机一次性初始化（Ubuntu 24.04）：装 Nginx、certbot、Docker，起数据库，装 systemd 服务，
 # 申请 Let's Encrypt 证书并确认自动续期。可以反复运行，已做过的步骤会跳过。
 #
-# 用法（在服务器上，以有 sudo 权限的用户执行）：
-#   git clone https://github.com/SoulZhong/AxiomOS.git ~/AxiomOS   # 只为拿到 deploy/ 目录，不在服务器上编译
-#   sudo DOMAIN=axiom.tutorkin.com CERT_EMAIL=admin@tutorkin.com bash ~/AxiomOS/deploy/setup-server.sh
+# 服务器上只放部署文件与发布包，不放源码、不装 Go 与 Node。用法（在服务器上，以有 sudo 权限的用户执行）：
+#   mkdir -p ~/axiomos-deploy && cd ~/axiomos-deploy
+#   for f in setup-server.sh install-release.sh docker-compose.yml axiomd.service axiomd.env.example nginx-axiomos.conf; do
+#     curl -fsSLO "https://raw.githubusercontent.com/SoulZhong/AxiomOS/master/deploy/$f"; done
+#   sudo DOMAIN=axiom.tutorkin.com CERT_EMAIL=admin@tutorkin.com bash setup-server.sh
 #
-# 之后的每次部署由 GitHub Actions 完成（.github/workflows/ci.yml → deploy/install-release.sh），
-# 这个脚本不需要再跑。步骤说明见 docs/deploy.md。
+# 结尾会从 GitHub Release「latest」下载最新发布包装上（第一版部署）；之后的每次部署由 GitHub Actions 完成
+# （.github/workflows/ci.yml → deploy/install-release.sh），这个脚本不需要再跑。步骤说明见 docs/deploy.md。
 set -euo pipefail
 
 DOMAIN="${DOMAIN:-axiom.tutorkin.com}"
@@ -159,15 +161,25 @@ if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
   certbot renew --dry-run -q && ok "续期流程通过"
 fi
 
-# ---------- 8. 收尾 ----------
+# ---------- 8. 第一版部署：还没有发布包时从 GitHub Release 下载最新的装上 ----------
+if [ ! -x "$APP_ROOT/current/axiomd" ]; then
+  say "安装最新发布包"
+  if bash "$APP_ROOT/deploy/install-release.sh"; then
+    chown -R "$DEPLOY_USER":axiomos "$APP_ROOT/releases"
+  else
+    echo "! 第一版部署没成功（多半是 GitHub Release 还没生成）；之后推送 master 由 CI 部署，或手动运行 install-release.sh" >&2
+  fi
+fi
+
+# ---------- 9. 收尾 ----------
 echo
 echo "========================================"
 echo "初始化完成。"
-echo "  站点：https://${DOMAIN}（发布包到位后可访问）"
+echo "  站点：https://${DOMAIN}"
 echo "  环境：$ETC/axiomd.env    数据库密码：$ETC/db.env"
 if [ -n "$ADMIN_PASSWORD_NEW" ]; then
   echo "  平台管理员：$CERT_EMAIL / ${ADMIN_PASSWORD_NEW}（后台 /admin/，请立刻改密码）"
 fi
 echo "  下一步：在 GitHub 仓库的 prod-tencent-cloud 环境里配好 DEPLOY_HOST / DEPLOY_USER / SSH_PRIVATE_KEY，"
-echo "         推送 master 即自动部署；也可手动：bash deploy/build-release.sh 后把包传上来运行 install-release.sh"
+echo "         推送 master 即自动部署；也可随时在服务器上运行 bash /opt/axiomos/deploy/install-release.sh 装最新发布包"
 echo "========================================"

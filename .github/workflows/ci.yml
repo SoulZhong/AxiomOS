@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -48,8 +51,9 @@ jobs:
         run: pnpm exec tsc --noEmit -p .
         working-directory: web
 
+      # -p 1：几个包共用同一个刚建好的空库，各自的迁移并行会撞车（CREATE TYPE 重复），串行跑
       - name: 后端测试（含数据库集成测试）
-        run: go test ./...
+        run: go test -p 1 ./...
         env:
           DATABASE_URL: postgres://axiomos:axiomos@localhost:5439/axiomos?sslmode=disable
           AXIOMOS_ALLOW_PRIVATE_EGRESS: "1"
@@ -64,6 +68,17 @@ jobs:
           name: release
           path: dist/*.tar.gz
           retention-days: 7
+
+      # 发布包同时挂到滚动的 GitHub Release「latest」上，服务器用 install-release.sh 不带参数就能下载，不经 CI 的 ssh 也能部署
+      - name: 更新 GitHub Release（latest）
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp dist/axiomos-*.tar.gz dist/axiomos-linux-amd64.tar.gz
+          gh release delete latest --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
+          gh release create latest dist/axiomos-linux-amd64.tar.gz --repo "$GITHUB_REPOSITORY" \
+            --title "latest（${GITHUB_SHA::12}）" --notes "master 最新构建：$GITHUB_SHA"
 
   deploy:
     needs: build

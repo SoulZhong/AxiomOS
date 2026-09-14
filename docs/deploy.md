@@ -1,6 +1,6 @@
 # 部署：axiom.tutorkin.com（HTTPS 证书、自动续期、自动化部署）
 
-参考 nook 的做法（`nook/docs/HTTPS证书部署指南-Certbot-Nginx.md`）：Nginx 终止 TLS，证书由 certbot 向 Let's Encrypt 申请、systemd timer 自动续期；代码走 GitHub Actions 在推送 master 时自动部署。与 nook 不同的是 AxiomOS 不在服务器上编译：CI 打好发布包（Go 二进制 + 静态前端）传上去，服务器只负责解包、切换、健康检查、回滚。
+参考 nook 的做法（`nook/docs/HTTPS证书部署指南-Certbot-Nginx.md`）：Nginx 终止 TLS，证书由 certbot 向 Let's Encrypt 申请、systemd timer 自动续期；代码走 GitHub Actions 在推送 master 时自动部署。与 nook 不同的是 AxiomOS 不在服务器上编译，**服务器上没有源码、不装 Go 与 Node**：CI 打好发布包（Go 二进制 + 静态前端）传上去，服务器只负责解包、切换、健康检查、回滚。发布包同时挂在 GitHub Release「latest」上，服务器随时能自己下载最新的装。
 
 ## 一、组成
 
@@ -9,7 +9,7 @@
 | `deploy/setup-server.sh` | 服务器，跑一次 | 装 Nginx / certbot / Docker，起数据库容器，生成密钥与环境文件，装 systemd 服务，申请证书，确认自动续期 |
 | `deploy/build-release.sh` | CI 或本机 | 构建前端、交叉编译 axiomd，打成 `dist/axiomos-<提交>.tar.gz` |
 | `deploy/install-release.sh` | 服务器，每次部署 | 解包到 `/opt/axiomos/releases/<时间-提交>`，切 `current` 符号链接，重启服务，健康检查不过就回滚 |
-| `.github/workflows/ci.yml` | GitHub Actions | 测试 → 打包 → scp 到服务器 → 调 install-release.sh；部署串行排队 |
+| `.github/workflows/ci.yml` | GitHub Actions | 测试 → 打包 → 更新 GitHub Release「latest」→ scp 到服务器 → 调 install-release.sh；部署串行排队 |
 | `deploy/nginx-axiomos.conf` | 服务器 `/etc/nginx/sites-available/axiomos` | 80 端口起始配置；certbot 原地加 443 与跳转 |
 | `deploy/axiomd.service` | 服务器 `/etc/systemd/system/axiomd.service` | 以 `axiomos` 用户跑 `/opt/axiomos/current/axiomd`，崩了自动拉起 |
 | `deploy/axiomd.env.example` | 服务器 `/etc/axiomos/axiomd.env` | 环境变量模板；首次由 setup 脚本生成随机密钥 |
@@ -31,9 +31,12 @@
 前置：域名 `axiom.tutorkin.com` 的 A 记录指向服务器公网 IP（81.70.8.203），安全组放开 80 / 443。
 
 ```bash
-# 在服务器上（ubuntu 用户，有 sudo）
-git clone https://github.com/SoulZhong/AxiomOS.git ~/AxiomOS
-sudo DOMAIN=axiom.tutorkin.com CERT_EMAIL=admin@tutorkin.com bash ~/AxiomOS/deploy/setup-server.sh
+# 在服务器上（ubuntu 用户，有 sudo）。只下载 deploy/ 里的六个文件，不 clone 仓库
+mkdir -p ~/axiomos-deploy && cd ~/axiomos-deploy
+for f in setup-server.sh install-release.sh docker-compose.yml axiomd.service axiomd.env.example nginx-axiomos.conf; do
+  curl -fsSLO "https://raw.githubusercontent.com/SoulZhong/AxiomOS/master/deploy/$f"
+done
+sudo DOMAIN=axiom.tutorkin.com CERT_EMAIL=admin@tutorkin.com bash setup-server.sh
 ```
 
 脚本可反复运行。它会：
@@ -46,6 +49,7 @@ sudo DOMAIN=axiom.tutorkin.com CERT_EMAIL=admin@tutorkin.com bash ~/AxiomOS/depl
 6. 写 Nginx 站点（只 80）、重载。
 7. 域名解析到本机时执行 `certbot --nginx -d axiom.tutorkin.com --key-type ecdsa --redirect`，非交互；否则提示 DNS 生效后重跑。
 8. 装续期钩子 `/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh`，确认 certbot 的 systemd timer（snap 装的叫 `snap.certbot.renew.timer`，apt 装的叫 `certbot.timer`）在跑，`certbot renew --dry-run` 走一遍。
+9. 还没有发布包时从 GitHub Release「latest」下载最新的装上（第一版部署）。Release 由 CI 在 master 上跑过一次后生成；还没有就跳过，之后推送 master 由 CI 部署。
 
 结束时打印平台管理员的邮箱与初始密码（后台 `/admin/`），登录后立刻改掉。
 
@@ -75,7 +79,10 @@ gh secret set SSH_PRIVATE_KEY --env prod-tencent-cloud < ~/.ssh/axiomos-deploy
 ## 四、手动部署与回滚
 
 ```bash
-# 本机打包并上传（不经 CI）
+# 在服务器上装 GitHub Release「latest」（CI 每次在 master 上跑完都会更新它）
+ssh ubuntu@81.70.8.203 'bash /opt/axiomos/deploy/install-release.sh'
+
+# 本机打包并上传（不经 CI 也不经 Release）
 PUBLIC_URL=https://axiom.tutorkin.com bash deploy/build-release.sh
 scp dist/axiomos-*.tar.gz ubuntu@81.70.8.203:/tmp/
 ssh ubuntu@81.70.8.203 'bash /opt/axiomos/deploy/install-release.sh /tmp/axiomos-*.tar.gz'
@@ -118,16 +125,17 @@ Agent 接入的 MCP 端点是 `https://axiom.tutorkin.com/mcp`；Nginx 对这个
 
 ## 八、交给服务器上的 AI 助手执行的指令
 
-把下面这段整个贴给服务器上的助手（腾讯云 OrcaTeam AI 之类）。前提：本仓库的 `deploy/` 与 `.github/` 已推到 GitHub master。
+把下面这段整个贴给服务器上的助手（腾讯云 OrcaTeam AI 之类）。服务器上只会有部署文件与发布包，没有源码。
 
 ```
 你在 Ubuntu 24.04 的服务器 81.70.8.203 上，当前用户 ubuntu 有免密 sudo。请按顺序执行，每步失败就停下来把输出给我：
 
-1. 取部署脚本：
-   git clone https://github.com/SoulZhong/AxiomOS.git ~/AxiomOS || (cd ~/AxiomOS && git fetch origin master && git reset --hard origin/master)
+1. 取部署文件（不 clone 仓库，服务器上不放源码）：
+   mkdir -p ~/axiomos-deploy && cd ~/axiomos-deploy
+   for f in setup-server.sh install-release.sh docker-compose.yml axiomd.service axiomd.env.example nginx-axiomos.conf; do curl -fsSLO "https://raw.githubusercontent.com/SoulZhong/AxiomOS/master/deploy/$f"; done
 
-2. 初始化服务器（装 Nginx / certbot / Docker，起 PostgreSQL，生成密钥，装 systemd 服务，申请 axiom.tutorkin.com 的证书并确认自动续期；可重复运行）：
-   sudo DOMAIN=axiom.tutorkin.com CERT_EMAIL=admin@tutorkin.com bash ~/AxiomOS/deploy/setup-server.sh
+2. 初始化服务器（装 Nginx / certbot / Docker，起 PostgreSQL，生成密钥，装 systemd 服务，申请 axiom.tutorkin.com 的证书并确认自动续期，最后从 GitHub Release 下载最新发布包装上；可重复运行）：
+   sudo DOMAIN=axiom.tutorkin.com CERT_EMAIL=admin@tutorkin.com bash setup-server.sh
    记下它最后打印的平台管理员密码。
 
 3. 允许 GitHub Actions 用专用密钥登录来部署：把这一行追加到 ~/.ssh/authorized_keys（已有就跳过）：
@@ -137,7 +145,8 @@ Agent 接入的 MCP 端点是 `https://axiom.tutorkin.com/mcp`；Nginx 对这个
    sudo certbot certificates
    systemctl list-timers --all --no-pager | grep certbot
    sudo nginx -t && curl -I https://axiom.tutorkin.com
-   （此时前端还没部署，返回 404 或 502 都正常；有证书、HTTP 跳 HTTPS 即可）
+   curl -s https://axiom.tutorkin.com/healthz
+   （healthz 返回 {"ok":true,...} 即部署成功；返回 502 说明发布包还没装上，等 CI 生成 Release 后运行 bash /opt/axiomos/deploy/install-release.sh）
 ```
 
 服务器初始化完成后，在本机（已登录 `gh`）把三个 secret 写进 GitHub 的 `prod-tencent-cloud` 环境（第三节的命令），然后推送一次 master，GitHub Actions 会打包并部署；或者不等 CI，按第四节手动打包上传。

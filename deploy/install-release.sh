@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# 在生产机上安装一个发布包并切换过去；健康检查不过就自动回滚到上一份。
-# CI（.github/workflows/ci.yml）把 build-release.sh 打出的包 scp 到服务器后调用它；手动部署也是同一条命令：
-#   bash /opt/axiomos/deploy/install-release.sh /tmp/axiomos-<提交>.tar.gz
+# 在生产机上安装一个发布包并切换过去；健康检查不过就自动回滚到上一份。服务器上不需要源码、Go 或 Node。
+#   bash /opt/axiomos/deploy/install-release.sh                      # 从 GitHub Release「latest」下载最新发布包并安装
+#   bash /opt/axiomos/deploy/install-release.sh /tmp/axiomos-x.tar.gz # 安装指定的包（CI 用 scp 传上来后就是这么调）
 #
 # 发布包里有：axiomd（linux/amd64 二进制）、web/（静态前端）、deploy/（这份脚本与配置）、VERSION（提交号）。
 set -euo pipefail
 
-TARBALL="${1:?用法：install-release.sh <发布包.tar.gz>}"
+RELEASE_URL="${RELEASE_URL:-https://github.com/SoulZhong/AxiomOS/releases/latest/download/axiomos-linux-amd64.tar.gz}"
+TARBALL="${1:-}"
+if [ -z "$TARBALL" ]; then
+  TARBALL="/tmp/axiomos-latest-$$.tar.gz"
+  echo "▶ 下载最新发布包 $RELEASE_URL"
+  curl -fsSL --retry 3 -o "$TARBALL" "$RELEASE_URL" || { echo "✗ 下载失败：GitHub Release「latest」还不存在（CI 在 master 上跑过一次后才有），或网络不通" >&2; exit 1; }
+  trap 'rm -f "$TARBALL"' EXIT
+fi
 APP_ROOT=/opt/axiomos
 RELEASES="$APP_ROOT/releases"
 HEALTH_URL="http://127.0.0.1:8080/healthz"
