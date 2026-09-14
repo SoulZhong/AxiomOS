@@ -370,7 +370,7 @@ func validateProvider(p Provider) error {
 	return nil
 }
 
-// Providers 列出全部能当 IM 集成的生产提供方，顺序即注册顺序（包内文件按文件名初始化：feishu、wecom…）。
+// Providers 列出全部能当 IM 集成的生产提供方，顺序即注册顺序（包内文件按文件名初始化：dingtalk、feishu、wecom…）。
 // 只发消息的提供方（邮件、webhook）不在这里，见 MessagingProviders。
 func Providers() []Provider {
 	regMu.RLock()

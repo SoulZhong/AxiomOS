@@ -71,7 +71,7 @@ func (p Provider) CalendarField(key string) *CredentialField {
 	return nil
 }
 
-// CalendarProviders 列出全部能读外部日历的生产提供方，顺序即注册顺序（feishu、googlecal、wecom 按文件名）。
+// CalendarProviders 列出全部能读外部日历的生产提供方，顺序即注册顺序（dingtalk、feishu、googlecal、wecom 按文件名）。
 func CalendarProviders() []Provider {
 	regMu.RLock()
 	defer regMu.RUnlock()

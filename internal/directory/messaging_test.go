@@ -245,7 +245,7 @@ func TestEmail(t *testing.T) {
 	}
 }
 
-// 注册表：只发消息的提供方不进 Providers()，进 MessagingProviders()；飞书、企业微信两边都在。
+// 注册表：只发消息的提供方不进 Providers()，进 MessagingProviders()；钉钉、飞书、企业微信两边都在。
 func TestMessagingRegistry(t *testing.T) {
 	keys := func(ps []Provider) []string {
 		out := []string{}
@@ -254,10 +254,10 @@ func TestMessagingRegistry(t *testing.T) {
 		}
 		return out
 	}
-	if got := strings.Join(keys(Providers()), ","); got != "feishu,wecom" {
-		t.Fatalf("IM 集成提供方应只有飞书与企业微信 %s", got)
+	if got := strings.Join(keys(Providers()), ","); got != "dingtalk,feishu,wecom" {
+		t.Fatalf("IM 集成提供方应只有钉钉、飞书与企业微信 %s", got)
 	}
-	if got := strings.Join(keys(MessagingProviders()), ","); got != "feishu,wecom,email,webhook" {
+	if got := strings.Join(keys(MessagingProviders()), ","); got != "dingtalk,feishu,wecom,email,webhook" {
 		t.Fatalf("发消息提供方 %s", got)
 	}
 	if p, _ := Lookup("wecom"); len(p.MessagingFields) != 2 || p.MessagingFields[0].Key != "agent_id" || !p.MessagingFields[1].Secret {

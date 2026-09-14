@@ -6,11 +6,11 @@ import (
 	"github.com/teemo/axiomos/internal/i18n"
 )
 
-// 注册表：生产提供方按文件顺序列出（feishu、wecom），字段声明齐全；测试提供方只 Lookup 得到、不进列表。
+// 注册表：生产提供方按文件顺序列出（dingtalk、feishu、wecom），字段声明齐全；测试提供方只 Lookup 得到、不进列表。
 func TestRegistry(t *testing.T) {
 	ps := Providers()
-	if len(ps) < 2 || ps[0].Key != "feishu" || ps[1].Key != "wecom" {
-		t.Fatalf("生产提供方顺序应为 feishu、wecom，实际 %+v", keys(ps))
+	if len(ps) < 3 || ps[0].Key != "dingtalk" || ps[1].Key != "feishu" || ps[2].Key != "wecom" {
+		t.Fatalf("生产提供方顺序应为 dingtalk、feishu、wecom，实际 %+v", keys(ps))
 	}
 	for _, p := range ps {
 		if p.Title.In(i18n.ZhCN) == "" || p.Title.In(i18n.EnUS) == "" || p.RootDepartmentID == "" || len(p.Fields) == 0 || len(p.Prerequisites) == 0 || p.New == nil {
@@ -35,7 +35,10 @@ func TestRegistry(t *testing.T) {
 	if wc, ok := Lookup("wecom"); !ok || wc.RootDepartmentID != "1" || !hasField(wc, "corp_id", false) || !hasField(wc, "corp_secret", true) {
 		t.Fatalf("企业微信声明不符 %+v", wc)
 	}
-	if _, ok := Lookup("dingtalk"); ok {
+	if dt, ok := Lookup("dingtalk"); !ok || dt.RootDepartmentID != "1" || !hasField(dt, "app_key", false) || !hasField(dt, "app_secret", true) || !dt.CanMessage() || !dt.CanCalendar() {
+		t.Fatalf("钉钉声明不符 %+v", dt)
+	}
+	if _, ok := Lookup("slack"); ok {
 		t.Fatal("未接入的平台不应被找到")
 	}
 

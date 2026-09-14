@@ -75,8 +75,8 @@ func TestDirectorySyncWithFake(t *testing.T) {
 
 	// 未配置的形状
 	v, err := a.GetDirectoryConfig(ctx, jia)
-	if err != nil || v.Provider != nil || v.Configured || len(v.SecretsSet) != 0 || len(v.Providers) != 2 || v.Providers[0].Key != "feishu" || v.Providers[1].Key != "wecom" {
-		t.Fatalf("未配置时应为空形状且列出两个生产提供方: %+v %v", v, err)
+	if err != nil || v.Provider != nil || v.Configured || len(v.SecretsSet) != 0 || len(v.Providers) != 3 || v.Providers[0].Key != "dingtalk" || v.Providers[1].Key != "feishu" || v.Providers[2].Key != "wecom" {
+		t.Fatalf("未配置时应为空形状且列出三个生产提供方: %+v %v", v, err)
 	}
 	if _, err := a.SaveDirectoryConfig(ctx, jia, DirectoryConfigInput{Credentials: creds("app_id", "x")}); err == nil {
 		t.Fatal("首次保存不选提供方应被拒")

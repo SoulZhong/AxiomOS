@@ -2957,6 +2957,19 @@ function mockProviders(): DirectoryProviderInfo[] {
       ],
       tip: { text: x("企业 ID 在企业微信管理后台「我的企业 → 企业信息」最底部；通讯录同步 Secret 在「管理工具 → 通讯录同步」开启 API 接口同步后显示，并要把服务器出网 IP 加入企业可信 IP。", "The Corp ID is at the bottom of “My Company → Company Info” in the WeCom admin console; the contacts-sync Secret appears under “Management Tools → Contacts Sync” after enabling API sync, and the server’s outbound IP must be added to the trusted IPs."), url: "https://work.weixin.qq.com/wework_admin/frame" },
     },
+    {
+      key: "dingtalk", title: x("钉钉", "DingTalk"), root_department_id: "1",
+      fields: [
+        { key: "app_key", title: "AppKey", secret: false, placeholder: "dingxxxxxxxxxxxxxxxx", hint: x("钉钉开放平台 → 应用开发 → 企业内部应用 → 该应用 → 凭证与基础信息", "DingTalk Open Platform → App development → Internal apps → the app → Credentials & basic info") },
+        { key: "app_secret", title: "AppSecret", secret: true, placeholder: "", hint: x("与 AppKey 同一页；保存后只显示是否已设置", "Same page as the AppKey; only whether it is set is shown after saving") },
+      ],
+      prerequisites: [
+        x("在钉钉开放平台创建一个企业内部应用", "Create an internal enterprise app on DingTalk Open Platform"),
+        x("为它开通通讯录只读权限；要同步手机号与邮箱再开通「个人手机号信息」「邮箱等个人信息」", "Grant it read-only contact permissions; to sync mobiles and emails also grant the personal mobile and email permissions"),
+        x("在应用的「开发管理」里把本系统的出网 IP 加进服务器出口 IP", "Under the app's “Development management” add this system's outbound IP to the server IP allowlist"),
+      ],
+      tip: { text: x("AppKey 和 AppSecret 在钉钉开放平台里你创建的企业内部应用的「凭证与基础信息」页；应用要开通通讯录只读权限，并把本系统的出网 IP 加进服务器出口 IP。", "The AppKey and AppSecret are on the “Credentials & basic info” page of your internal app on DingTalk Open Platform; the app needs read-only contact permissions and this system's outbound IP in its server IP allowlist."), url: "https://open-dev.dingtalk.com/fe/app#/corp/app" },
+    },
   ];
 }
 const providerOf = (key: string | null | undefined) => (key ? mockProviders().find((p) => p.key === key) ?? null : null);
@@ -4106,6 +4119,9 @@ function notifyChannelDefs(): Array<{ key: string; title: string; im: boolean; f
       { key: "agent_id", title: x("应用 AgentId", "App AgentId"), secret: false, optional: false, placeholder: "1000002", hint: x("管理后台 → 应用管理 → 自建应用 → 该应用页面上的 AgentId", "Admin console → Apps → your custom app → the AgentId on that page") },
       { key: "app_secret", title: x("应用 Secret", "App Secret"), secret: true, optional: false, placeholder: "", hint: x("同一页的 Secret（不是通讯录同步的 Secret）；保存后只显示是否已设置", "The Secret on the same page (not the contacts-sync one); only whether it is set is shown after saving") },
     ], prerequisites: [x("在企业微信管理后台创建一个自建应用，把要接收提醒的人加进它的可见范围", "Create a custom app in the WeCom admin console and add the people who should receive reminders to its visible range"), x("把本系统的出网 IP 加进该应用的企业可信 IP", "Add this system's outbound IP to the app's trusted IP list")] },
+    { key: "dingtalk", title: x("钉钉", "DingTalk"), im: true, fields: [
+      { key: "agent_id", title: x("应用 AgentId", "App AgentId"), secret: false, optional: false, placeholder: "1234567890", hint: x("与 AppKey 同一页的 AgentId", "The AgentId on the same page as the AppKey") },
+    ], prerequisites: [x("把要接收提醒的人加进应用的可见范围", "Add the people who should receive reminders to the app's visible range")] },
     { key: "email", title: x("邮件", "Email"), im: false, fields: [
       { key: "host", title: x("SMTP 主机", "SMTP host"), secret: false, optional: false, placeholder: "smtp.example.com", hint: x("留空表示用服务端配置的邮件服务", "Leave empty to use the mail service configured on the server") },
       { key: "port", title: x("端口", "Port"), secret: false, optional: false, placeholder: "587", hint: x("465 走 TLS，其余端口用 STARTTLS", "465 uses TLS; other ports use STARTTLS") },
